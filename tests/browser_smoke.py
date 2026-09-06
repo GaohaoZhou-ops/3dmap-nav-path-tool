@@ -28,12 +28,27 @@ def run():
         page.locator(".projection-status").wait_for(state="hidden", timeout=120_000)
         page.screenshot(path="/tmp/atlas-loaded.png", full_page=True)
 
+        vector_map = page.get_by_label("二维矢量点云截面")
+        assert vector_map.get_attribute("data-render-mode") == "vector-coordinate-webgl"
+        assert vector_map.get_attribute("data-source-point-count") == "2685018"
+        assert page.get_by_text("LIVE VECTOR", exact=True).is_visible()
+
         three_canvas = page.locator(".three-canvas")
         assert three_canvas.get_attribute("data-control-mode") == "free-trackball"
         assert three_canvas.get_attribute("data-zoom-mode") == "deep-detail"
         assert three_canvas.get_attribute("data-coordinate-origin") == "0,0,0"
         assert three_canvas.get_attribute("data-resolution-percent") == "100"
         assert three_canvas.get_attribute("data-render-point-count") == "2685018"
+        assert three_canvas.get_attribute("data-color-mode") == "source"
+        color_toggle = page.get_by_role("button", name="按高度渲染点云")
+        color_toggle.click()
+        page.wait_for_timeout(80)
+        assert three_canvas.get_attribute("data-color-mode") == "height"
+        assert color_toggle.get_attribute("aria-pressed") == "true"
+        assert page.get_by_label("点云高程比例尺").is_visible()
+        page.screenshot(path="/tmp/atlas-height-color.png", full_page=True)
+        color_toggle.click()
+        assert three_canvas.get_attribute("data-color-mode") == "source"
         projection_before_resolution = page.locator(".slice-badge strong").inner_text()
         decrease_resolution = page.get_by_role("button", name="降低点云分辨率")
         reset_resolution = page.get_by_role("button", name="重置点云分辨率")

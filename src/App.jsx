@@ -14,6 +14,8 @@ import {
   Plus,
   Route,
   Server,
+  ShieldAlert,
+  ShieldCheck,
   Upload,
   X,
   Zap,
@@ -32,6 +34,13 @@ import {
   normalizeProject,
   readFileWithProgress,
 } from './lib/io.js';
+import {
+  fetchServiceSession,
+  prepareWorkspaceSession,
+  resetWorkspaceSession,
+  saveWorkspaceConfig,
+  saveWorkspaceMap,
+} from './lib/sessionStore.js';
 
 const initialValidation = { status: 'idle', unreachableCount: 0, checkedAt: null };
 
@@ -73,6 +82,13 @@ export default function App() {
   const pathInputRef = useRef(null);
   const toastTimerRef = useRef(null);
   const view2dRef = useRef(null);
+  const sessionIdRef = useRef(null);
+  const sessionReadyRef = useRef(false);
+  const sessionSaveTimerRef = useRef(null);
+  const sessionWriteChainRef = useRef(Promise.resolve());
+  const sessionFailureNotifiedRef = useRef(false);
+  const hydrationRevisionRef = useRef(0);
+  const latestWorkspaceRef = useRef(null);
   const [mapData, setMapData] = useState(null);
   const [heightRange, setHeightRange] = useState([0, 1]);
   const [waypoints, setWaypoints] = useState([]);
@@ -83,8 +99,29 @@ export default function App() {
   const [selectedEdgeId, setSelectedEdgeId] = useState(null);
   const [validation, setValidation] = useState(initialValidation);
   const [projectionStats, setProjectionStats] = useState({ selectedCount: 0 });
-  const [loadState, setLoadState] = useState({ loading: false, progress: 0, phase: '' });
+  const [restoredView2d, setRestoredView2d] = useState(null);
+  const [pointColorMode, setPointColorMode] = useState('source');
+  const [sessionState, setSessionState] = useState({ status: 'checking', restored: false });
+  const [loadState, setLoadState] = useState({
+    loading: true,
+    progress: 0.08,
+    phase: '检查工作会话',
+    detail: '正在确认服务实例并查找上次快照',
+  });
   const [toast, setToast] = useState(null);
+
+  latestWorkspaceRef.current = {
+    mapData,
+    heightRange,
+    waypoints,
+    edges,
+    mode,
+    connectionSourceId,
+    selectedWaypointId,
+    selectedEdgeId,
+    validation,
+    pointColorMode,
+  };
 
   useEffect(() => {
     const geometry = mapData?.geometry;
@@ -94,6 +131,7 @@ export default function App() {
   useEffect(
     () => () => {
       if (toastTimerRef.current) window.clearTimeout(toastTimerRef.current);
+      if (sessionSaveTimerRef.current) window.clearTimeout(sessionSaveTimerRef.current);
     },
     [],
   );
@@ -104,6 +142,63 @@ export default function App() {
     toastTimerRef.current = window.setTimeout(() => setToast(null), 3200);
   }, []);
 
+  const reportSessionFailure = useCallback(
+    (error) => {
+      console.warn('工作会话自动保护失败', error);
+      sessionReadyRef.current = false;
+      setSessionState({ status: 'error', restored: false });
+      if (!sessionFailureNotifiedRef.current) {
+        sessionFailureNotifiedRef.current = true;
+        notify('自动保护暂不可用，请及时导出 JSON 备份', 'warning');
+      }
+    },
+    [notify],
+  );
+
+  const persistWorkspaceNow = useCallback(() => {
+    const sessionId = sessionIdRef.current;
+    const current = latestWorkspaceRef.current;
+    if (!sessionReadyRef.current || !sessionId || !current) return Promise.resolve();
+
+    const project = current.mapData
+      ? buildExport({
+          mapData: current.mapData,
+          heightRange: current.heightRange,
+          waypoints: current.waypoints,
+          edges: current.edges,
+          view2d: view2dRef.current,
+        })
+      : null;
+    const snapshot = {
+      schemaVersion: 1,
+      project,
+      ui: {
+        mode: current.mode,
+        connectionSourceId: current.connectionSourceId,
+        selectedWaypointId: current.selectedWaypointId,
+        selectedEdgeId: current.selectedEdgeId,
+        validation: current.validation,
+        pointColorMode: current.pointColorMode,
+      },
+    };
+    const mapId = current.mapData?.mapId || null;
+
+    sessionWriteChainRef.current = sessionWriteChainRef.current
+      .catch(() => undefined)
+      .then(() => saveWorkspaceConfig(sessionId, mapId, snapshot))
+      .catch(reportSessionFailure);
+    return sessionWriteChainRef.current;
+  }, [reportSessionFailure]);
+
+  const queueWorkspaceSave = useCallback(() => {
+    if (!sessionReadyRef.current) return;
+    if (sessionSaveTimerRef.current) window.clearTimeout(sessionSaveTimerRef.current);
+    sessionSaveTimerRef.current = window.setTimeout(() => {
+      sessionSaveTimerRef.current = null;
+      persistWorkspaceNow();
+    }, 180);
+  }, [persistWorkspaceNow]);
+
   const invalidateConnectivity = useCallback(() => {
     setValidation(initialValidation);
     setEdges((current) => current.map((edge) => ({ ...edge, status: 'unchecked' })));
@@ -111,8 +206,21 @@ export default function App() {
 
   const processMapBuffer = useCallback(
     async (buffer, name, options = {}) => {
-      const { preserveGraph = false, preferredSlice = null } = options;
-      setLoadState({ loading: true, progress: 1, phase: '解析点云结构' });
+      const {
+        preserveGraph = false,
+        preferredSlice = null,
+        preferredView = null,
+        persistSnapshot = true,
+        announce = true,
+        keepLoading = false,
+        mapId = createId('map'),
+      } = options;
+      setLoadState({
+        loading: true,
+        progress: 1,
+        phase: '解析点云结构',
+        detail: '正在构建三维几何与空间索引',
+      });
       await waitForPaint();
       let geometry;
       try {
@@ -129,6 +237,7 @@ export default function App() {
         const bounds = serializeBounds(geometry.boundingBox);
         const nextSlice = clampSlice(preferredSlice || suggestedSlice(positions, bounds), bounds);
         const nextMap = {
+          mapId,
           name,
           pointCount: positions.length / 3,
           bounds,
@@ -139,6 +248,8 @@ export default function App() {
         };
         setMapData(nextMap);
         setHeightRange(nextSlice);
+        setRestoredView2d(preferredView);
+        view2dRef.current = preferredView;
         setProjectionStats({ selectedCount: 0 });
         if (!preserveGraph) {
           setWaypoints([]);
@@ -148,8 +259,25 @@ export default function App() {
           setConnectionSourceId(null);
           setValidation(initialValidation);
         }
-        setLoadState({ loading: false, progress: 1, phase: '' });
-        notify(`${name} 已加载 · ${(positions.length / 3).toLocaleString('zh-CN')} 点`);
+
+        if (persistSnapshot && sessionReadyRef.current && sessionIdRef.current) {
+          setLoadState({
+            loading: true,
+            progress: 1,
+            phase: '保护地图快照',
+            detail: '只在首次打开地图时写入，后续配置将轻量保存',
+          });
+          try {
+            await saveWorkspaceMap(sessionIdRef.current, mapId, name, buffer);
+          } catch (error) {
+            reportSessionFailure(error);
+          }
+        }
+
+        if (!keepLoading) setLoadState({ loading: false, progress: 1, phase: '' });
+        if (announce) {
+          notify(`${name} 已加载 · ${(positions.length / 3).toLocaleString('zh-CN')} 点`);
+        }
         return nextMap;
       } catch (error) {
         geometry?.dispose?.();
@@ -157,8 +285,189 @@ export default function App() {
         throw error;
       }
     },
-    [notify],
+    [notify, reportSessionFailure],
   );
+
+  useEffect(() => {
+    const revision = ++hydrationRevisionRef.current;
+    const isCurrent = () => hydrationRevisionRef.current === revision;
+
+    const restoreWorkspace = async () => {
+      try {
+        const identity = await fetchServiceSession();
+        if (!isCurrent()) return;
+        sessionIdRef.current = identity.sessionId;
+
+        const stored = await prepareWorkspaceSession(identity.sessionId);
+        if (!isCurrent()) return;
+
+        let restored = false;
+        let repaired = false;
+        try {
+          const configMatchesMap =
+            !stored.map || (stored.config && stored.config.mapId === stored.map.mapId);
+          const snapshot = configMatchesMap ? stored.config?.config : null;
+          const project = snapshot?.project ? normalizeProject(snapshot.project) : null;
+
+          if (stored.map?.blob) {
+            setLoadState({
+              loading: true,
+              progress: 0.3,
+              phase: '恢复上次地图',
+              detail: `${stored.map.name} · ${Number(stored.map.byteLength || 0).toLocaleString('zh-CN')} bytes`,
+            });
+            const buffer = await stored.map.blob.arrayBuffer();
+            if (!isCurrent()) return;
+            await processMapBuffer(buffer, stored.map.name, {
+              preserveGraph: true,
+              preferredSlice: project?.slice,
+              preferredView: project?.view2d,
+              persistSnapshot: false,
+              announce: false,
+              keepLoading: true,
+              mapId: stored.map.mapId,
+            });
+            if (!isCurrent()) return;
+            restored = true;
+          } else if (project?.map?.bounds) {
+            const bounds = project.map.bounds;
+            setMapData({
+              mapId: stored.config?.mapId || createId('map-meta'),
+              name: project.map.fileName || '未绑定地图',
+              pointCount: Number(project.map.pointCount) || 0,
+              bounds,
+              positions: null,
+              colors: null,
+              geometry: null,
+              metadataOnly: true,
+            });
+            setHeightRange(project.slice || [bounds.min.z, bounds.max.z]);
+            setRestoredView2d(project.view2d);
+            view2dRef.current = project.view2d;
+            restored = true;
+          }
+
+          if (project) {
+            const pointIds = new Set(project.waypoints.map((point) => point.id));
+            const edgeIds = new Set(project.edges.map((edge) => edge.id));
+            const checked = project.edges.some((edge) => edge.status !== 'unchecked');
+            const connected = project.edges.length > 0
+              && project.edges.every((edge) => edge.status === 'connected');
+            const savedValidation = snapshot?.ui?.validation;
+
+            setWaypoints(project.waypoints);
+            setEdges(project.edges);
+            if (!stored.map && project.slice) setHeightRange(project.slice);
+            setRestoredView2d(project.view2d);
+            view2dRef.current = project.view2d;
+            setMode(['select', 'add', 'connect'].includes(snapshot?.ui?.mode) ? snapshot.ui.mode : 'select');
+            setConnectionSourceId(
+              pointIds.has(snapshot?.ui?.connectionSourceId)
+                ? snapshot.ui.connectionSourceId
+                : null,
+            );
+            setSelectedWaypointId(
+              pointIds.has(snapshot?.ui?.selectedWaypointId)
+                ? snapshot.ui.selectedWaypointId
+                : null,
+            );
+            setSelectedEdgeId(
+              edgeIds.has(snapshot?.ui?.selectedEdgeId) ? snapshot.ui.selectedEdgeId : null,
+            );
+            setPointColorMode(snapshot?.ui?.pointColorMode === 'height' ? 'height' : 'source');
+            setValidation(
+              savedValidation && ['idle', 'connected', 'partial'].includes(savedValidation.status)
+                ? savedValidation
+                : {
+                    status: checked ? (connected ? 'connected' : 'partial') : 'idle',
+                    unreachableCount: project.edges.filter(
+                      (edge) => edge.status === 'unreachable',
+                    ).length,
+                    checkedAt: null,
+                  },
+            );
+            restored = restored || project.waypoints.length > 0 || project.edges.length > 0;
+          }
+        } catch (error) {
+          console.warn('已忽略损坏的工作区快照', error);
+          await resetWorkspaceSession(identity.sessionId);
+          if (!isCurrent()) return;
+          setMapData(null);
+          setWaypoints([]);
+          setEdges([]);
+          setHeightRange([0, 1]);
+          setPointColorMode('source');
+          setRestoredView2d(null);
+          view2dRef.current = null;
+          repaired = true;
+        }
+
+        sessionReadyRef.current = true;
+        sessionFailureNotifiedRef.current = false;
+        setSessionState({ status: 'ready', restored });
+        setLoadState({ loading: false, progress: 1, phase: '' });
+
+        if (stored.restarted) {
+          notify('服务已重启，已建立全新工作会话', 'info');
+        } else if (repaired) {
+          notify('上次快照无法读取，已安全重置', 'warning');
+        } else if (restored) {
+          notify('已恢复上次工作现场', 'success');
+        }
+      } catch (error) {
+        if (!isCurrent()) return;
+        setLoadState({ loading: false, progress: 0, phase: '' });
+        reportSessionFailure(error);
+      }
+    };
+
+    restoreWorkspace();
+    return () => {
+      if (hydrationRevisionRef.current === revision) hydrationRevisionRef.current += 1;
+    };
+  }, [notify, processMapBuffer, reportSessionFailure]);
+
+  useEffect(() => {
+    queueWorkspaceSave();
+  }, [
+    connectionSourceId,
+    edges,
+    heightRange,
+    mapData?.mapId,
+    mode,
+    pointColorMode,
+    queueWorkspaceSave,
+    selectedEdgeId,
+    selectedWaypointId,
+    sessionState.status,
+    validation,
+    waypoints,
+  ]);
+
+  useEffect(() => {
+    const flushWhenHidden = () => {
+      if (document.visibilityState === 'hidden') persistWorkspaceNow();
+    };
+    window.addEventListener('pagehide', persistWorkspaceNow);
+    document.addEventListener('visibilitychange', flushWhenHidden);
+    return () => {
+      window.removeEventListener('pagehide', persistWorkspaceNow);
+      document.removeEventListener('visibilitychange', flushWhenHidden);
+    };
+  }, [persistWorkspaceNow]);
+
+  useEffect(() => {
+    if (sessionState.status !== 'ready') return undefined;
+    const timer = window.setInterval(async () => {
+      try {
+        const identity = await fetchServiceSession();
+        if (identity.sessionId !== sessionIdRef.current) window.location.reload();
+      } catch {
+        // A stopped service is expected; reset only after a new instance responds.
+      }
+    }, 5000);
+    return () => window.clearInterval(timer);
+  }, [sessionState.status]);
 
   const loadExample = useCallback(
     async (options = {}) => {
@@ -211,6 +520,8 @@ export default function App() {
       setSelectedEdgeId(null);
       setConnectionSourceId(null);
       setMode('select');
+      setRestoredView2d(project.view2d);
+      view2dRef.current = project.view2d;
       const importedConnected = project.edges.length > 0 && project.edges.every((edge) => edge.status === 'connected');
       const importedChecked = project.edges.some((edge) => edge.status !== 'unchecked');
       setValidation(
@@ -226,6 +537,7 @@ export default function App() {
       if (project.slice) setHeightRange(project.slice);
       if (!mapData && project.map?.bounds) {
         setMapData({
+          mapId: createId('map-meta'),
           name: project.map.fileName || '未绑定地图',
           pointCount: Number(project.map.pointCount) || 0,
           bounds: project.map.bounds,
@@ -239,7 +551,11 @@ export default function App() {
 
       const referencedMap = project.map?.fileName;
       if ((!mapData || mapData.metadataOnly) && referencedMap === 'xian_map.ply') {
-        await loadExample({ preserveGraph: true, preferredSlice: project.slice });
+        await loadExample({
+          preserveGraph: true,
+          preferredSlice: project.slice,
+          preferredView: project.view2d,
+        });
       } else if (project.slice && mapData?.bounds) {
         setHeightRange(clampSlice(project.slice, mapData.bounds));
       }
@@ -419,9 +735,13 @@ export default function App() {
   };
 
   const handleProjectionStats = useCallback((stats) => setProjectionStats(stats), []);
-  const handleViewChange = useCallback((nextView) => {
-    view2dRef.current = nextView;
-  }, []);
+  const handleViewChange = useCallback(
+    (nextView) => {
+      view2dRef.current = nextView;
+      queueWorkspaceSave();
+    },
+    [queueWorkspaceSave],
+  );
 
   const modeOptions = [
     { id: 'select', label: '选择 / 漫游', icon: MousePointer2 },
@@ -498,6 +818,8 @@ export default function App() {
                 waypoints={waypoints}
                 edges={edges}
                 selectedWaypointId={selectedWaypointId}
+                colorMode={pointColorMode}
+                onColorModeChange={setPointColorMode}
               />
               <HeightRange
                 bounds={mapData?.bounds}
@@ -517,7 +839,7 @@ export default function App() {
             <div className="panel-heading map-heading">
               <div className="panel-heading__title">
                 <span className="panel-index">02</span>
-                <div><small>COMPRESSED SLICE</small><strong>二维路径图</strong></div>
+                <div><small>LIVE VECTOR SLICE</small><strong>二维路径图</strong></div>
               </div>
               <div className="mode-switcher" role="toolbar" aria-label="二维地图工具">
                 {modeOptions.map((option) => {
@@ -544,6 +866,7 @@ export default function App() {
             <div className="panel-body">
               <Map2DView
                 mapData={mapData}
+                initialView={restoredView2d}
                 heightRange={heightRange}
                 waypoints={waypoints}
                 edges={edges}
@@ -585,6 +908,23 @@ export default function App() {
       <footer className="statusbar">
         <span><CircleDot size={10} /> FRAME / XY + Z-UP</span>
         <span><Zap size={10} /> GPU POINT RENDER</span>
+        <span
+          className={`session-guard is-${sessionState.status}`}
+          data-session-state={sessionState.status}
+          data-session-restored={sessionState.restored ? 'true' : 'false'}
+          title={
+            sessionState.status === 'error'
+              ? '自动保护不可用，请手动导出 JSON'
+              : '刷新页面可恢复当前工作现场，服务重启后重置'
+          }
+        >
+          {sessionState.status === 'error' ? <ShieldAlert size={10} /> : <ShieldCheck size={10} />}
+          {sessionState.status === 'checking'
+            ? 'SESSION CHECK'
+            : sessionState.status === 'error'
+              ? 'SESSION UNPROTECTED'
+              : 'SESSION AUTO-SAVE'}
+        </span>
         <span className="statusbar__hint">
           {mode === 'connect' && connectionSourceId ? '起点已锁定 · 请选择终点' : mode === 'add' ? '点击二维截面添加导航点' : '拖动二维地图平移 · 滚轮缩放'}
         </span>
@@ -596,7 +936,7 @@ export default function App() {
           <div className="loading-module">
             <div className="loading-module__top"><MapIcon size={18} /><span>{loadState.phase}</span><strong>{progressLabel}</strong></div>
             <div className="loading-track"><span style={{ width: `${Math.max(loadState.progress * 100, 4)}%` }} /></div>
-            <small>大型点云解析可能需要数秒，请保持页面开启</small>
+            <small>{loadState.detail || '大型点云解析可能需要数秒，请保持页面开启'}</small>
           </div>
         </div>
       )}

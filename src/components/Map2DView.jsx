@@ -8,8 +8,10 @@ import {
   Minus,
   Plus,
 } from 'lucide-react';
+import VectorPointLayer from './VectorPointLayer.jsx';
 
 const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
+const MAX_ZOOM_MULTIPLIER = 2500;
 
 const niceStep = (raw) => {
   const exponent = Math.floor(Math.log10(Math.max(raw, 0.0001)));
@@ -17,6 +19,11 @@ const niceStep = (raw) => {
   const nice = fraction < 2 ? 2 : fraction < 5 ? 5 : 10;
   return nice * 10 ** exponent;
 };
+
+const precisionForStep = (step) => clamp(Math.ceil(-Math.log10(step)), 0, 6);
+
+const precisionForScale = (scale) =>
+  clamp(Math.ceil(-Math.log10(1 / Math.max(scale, 0.001))) + 1, 2, 6);
 
 const pointOnCurve = (start, control, end, t) => {
   const inverse = 1 - t;
@@ -28,6 +35,7 @@ const pointOnCurve = (start, control, end, t) => {
 
 export default function Map2DView({
   mapData,
+  initialView,
   heightRange,
   waypoints,
   edges,
@@ -49,6 +57,7 @@ export default function Map2DView({
   const revisionRef = useRef(0);
   const pointerRef = useRef(null);
   const initializedBoundsRef = useRef('');
+  const appliedInitialViewRef = useRef('');
   const [size, setSize] = useState({ width: 1, height: 1 });
   const [view, setView] = useState({ centerX: 0, centerY: 0, scale: 1 });
   const [workerReady, setWorkerReady] = useState(false);
@@ -97,12 +106,47 @@ export default function Map2DView({
 
   useEffect(() => {
     if (!bounds || size.width < 2 || size.height < 2) return;
-    const key = [bounds.min.x, bounds.min.y, bounds.max.x, bounds.max.y].join(':');
+    const key = [
+      mapData?.mapId || mapData?.name || '',
+      bounds.min.x,
+      bounds.min.y,
+      bounds.max.x,
+      bounds.max.y,
+    ].join(':');
+    const restoredCenterX = Number(initialView?.centerX);
+    const restoredCenterY = Number(initialView?.centerY);
+    const restoredScale = Number(initialView?.scale);
+    const hasRestoredView =
+      Number.isFinite(restoredCenterX)
+      && Number.isFinite(restoredCenterY)
+      && Number.isFinite(restoredScale)
+      && restoredScale > 0;
+
+    if (hasRestoredView) {
+      const signature = `${key}:${restoredCenterX}:${restoredCenterY}:${restoredScale}`;
+      if (appliedInitialViewRef.current !== signature) {
+        const rangeX = Math.max(bounds.max.x - bounds.min.x, 0.001);
+        const rangeY = Math.max(bounds.max.y - bounds.min.y, 0.001);
+        const fullScale = Math.min(
+          Math.max(size.width - 72, 1) / rangeX,
+          Math.max(size.height - 72, 1) / rangeY,
+        );
+        appliedInitialViewRef.current = signature;
+        initializedBoundsRef.current = key;
+        setView({
+          centerX: restoredCenterX,
+          centerY: restoredCenterY,
+          scale: clamp(restoredScale, fullScale * 0.4, fullScale * MAX_ZOOM_MULTIPLIER),
+        });
+      }
+      return;
+    }
+
     if (initializedBoundsRef.current !== key) {
       initializedBoundsRef.current = key;
       fitView(true);
     }
-  }, [bounds, fitView, size.height, size.width]);
+  }, [bounds, fitView, initialView, mapData?.mapId, mapData?.name, size.height, size.width]);
 
   useEffect(() => {
     onViewChange?.(view);
@@ -125,14 +169,7 @@ export default function Map2DView({
         return;
       }
       if (message.type !== 'projection' || message.revision !== revisionRef.current) return;
-      const pixels = new Uint8ClampedArray(message.pixels);
-      const imageData = new ImageData(pixels, message.width, message.height);
-      const imageCanvas = document.createElement('canvas');
-      imageCanvas.width = message.width;
-      imageCanvas.height = message.height;
-      imageCanvas.getContext('2d').putImageData(imageData, 0, 0);
       const nextProjection = {
-        canvas: imageCanvas,
         width: message.width,
         height: message.height,
         zGrid: new Float32Array(message.zGrid),
@@ -144,11 +181,9 @@ export default function Map2DView({
     };
 
     const positionCopy = positions.slice();
-    const colorCopy = mapData.colors?.slice() || null;
     const transfers = [positionCopy.buffer];
-    if (colorCopy) transfers.push(colorCopy.buffer);
     worker.postMessage(
-      { type: 'init', positions: positionCopy, colors: colorCopy, bounds },
+      { type: 'init', positions: positionCopy, bounds },
       transfers,
     );
 
@@ -156,7 +191,7 @@ export default function Map2DView({
       worker.terminate();
       if (workerRef.current === worker) workerRef.current = null;
     };
-  }, [bounds, mapData?.colors, mapData?.positions, onProjectionStats]);
+  }, [bounds, mapData?.positions, onProjectionStats]);
 
   useEffect(() => {
     if (!workerReady || !workerRef.current) return undefined;
@@ -220,6 +255,7 @@ export default function Map2DView({
     const topLeft = screenToWorld(0, 0);
     const bottomRight = screenToWorld(size.width, size.height);
     const step = niceStep(88 / Math.max(view.scale, 0.0001));
+    const gridPrecision = precisionForStep(step);
     const firstX = Math.floor(topLeft.x / step) * step;
     const firstY = Math.floor(bottomRight.y / step) * step;
 
@@ -234,7 +270,7 @@ export default function Map2DView({
       context.lineTo(screen, size.height);
       context.stroke();
       context.fillStyle = 'rgba(148,178,180,.46)';
-      context.fillText(`${x.toFixed(step < 1 ? 1 : 0)}m`, screen + 4, 8);
+      context.fillText(`${x.toFixed(gridPrecision)}m`, screen + 4, 8);
     }
     for (let y = firstY; y <= topLeft.y + step; y += step) {
       const screen = worldToScreen(0, y).y;
@@ -257,13 +293,6 @@ export default function Map2DView({
     context.setLineDash([5, 6]);
     context.strokeRect(mapLeft, mapTop, mapWidth, mapHeight);
     context.setLineDash([]);
-    if (projection?.canvas) {
-      context.globalCompositeOperation = 'screen';
-      context.shadowColor = 'rgba(63, 210, 221, .45)';
-      context.shadowBlur = 8;
-      context.imageSmoothingEnabled = true;
-      context.drawImage(projection.canvas, mapLeft, mapTop, mapWidth, mapHeight);
-    }
     context.restore();
 
     const origin = worldToScreen(0, 0);
@@ -316,7 +345,7 @@ export default function Map2DView({
       context.stroke();
     }
     context.restore();
-  }, [bounds, projection, screenToWorld, size.height, size.width, view.scale, worldToScreen]);
+  }, [bounds, screenToWorld, size.height, size.width, view.scale, worldToScreen]);
 
   useEffect(() => {
     const host = hostRef.current;
@@ -334,7 +363,7 @@ export default function Map2DView({
       const nextScale = clamp(
         view.scale * Math.exp(-event.deltaY * 0.00135),
         fullScale * 0.4,
-        fullScale * 100,
+        fullScale * MAX_ZOOM_MULTIPLIER,
       );
       setView({
         centerX: before.x - (cursorX - size.width / 2) / nextScale,
@@ -386,7 +415,33 @@ export default function Map2DView({
   };
 
   const heightAtWorld = (point) => {
-    if (!projection || !bounds) return (heightRange[0] + heightRange[1]) / 2;
+    if (!bounds) return (heightRange[0] + heightRange[1]) / 2;
+    const positions = mapData?.positions;
+    if (positions?.length) {
+      const pickRadius = Math.max(8 / Math.max(view.scale, 0.001), 0.001);
+      let nearestDistance = pickRadius * pickRadius;
+      let nearestHeight = Number.NaN;
+      for (let index = 0; index < positions.length; index += 3) {
+        const z = positions[index + 2];
+        if (z < heightRange[0] || z > heightRange[1]) continue;
+        const dx = positions[index] - point.x;
+        const dy = positions[index + 1] - point.y;
+        const distance = dx * dx + dy * dy;
+        if (
+          distance <= nearestDistance
+          && (
+            !Number.isFinite(nearestHeight)
+            || distance < nearestDistance
+            || z > nearestHeight
+          )
+        ) {
+          nearestDistance = distance;
+          nearestHeight = z;
+        }
+      }
+      if (Number.isFinite(nearestHeight)) return nearestHeight;
+    }
+    if (!projection) return (heightRange[0] + heightRange[1]) / 2;
     const nx = (point.x - bounds.min.x) / Math.max(bounds.max.x - bounds.min.x, 0.001);
     const ny = (bounds.max.y - point.y) / Math.max(bounds.max.y - bounds.min.y, 0.001);
     const originX = clamp(Math.round(nx * (projection.width - 1)), 0, projection.width - 1);
@@ -425,7 +480,20 @@ export default function Map2DView({
     }
   };
 
-  const zoomBy = (factor) => setView((current) => ({ ...current, scale: current.scale * factor }));
+  const zoomBy = (factor) => setView((current) => {
+    if (!bounds) return current;
+    const rangeX = Math.max(bounds.max.x - bounds.min.x, 0.001);
+    const rangeY = Math.max(bounds.max.y - bounds.min.y, 0.001);
+    const fullScale = Math.min((size.width - 50) / rangeX, (size.height - 50) / rangeY);
+    return {
+      ...current,
+      scale: clamp(
+        current.scale * factor,
+        fullScale * 0.4,
+        fullScale * MAX_ZOOM_MULTIPLIER,
+      ),
+    };
+  });
   const pointById = useMemo(() => new Map(waypoints.map((point) => [point.id, point])), [waypoints]);
 
   const edgeVisuals = useMemo(() => {
@@ -485,6 +553,7 @@ export default function Map2DView({
     Math.PI;
   const centerOrigin = () =>
     setView((current) => ({ ...current, centerX: 0, centerY: 0 }));
+  const coordinatePrecision = precisionForScale(view.scale);
 
   return (
     <div
@@ -496,7 +565,17 @@ export default function Map2DView({
       onPointerLeave={() => setCursor(null)}
       onContextMenu={(event) => event.preventDefault()}
     >
-      <canvas ref={canvasRef} className="map2d-canvas" />
+      <canvas ref={canvasRef} className="map2d-canvas" data-layer="coordinate-grid" />
+      {mapData?.geometry && (
+        <VectorPointLayer
+          geometry={mapData.geometry}
+          bounds={bounds}
+          width={size.width}
+          height={size.height}
+          view={view}
+          heightRange={heightRange}
+        />
+      )}
 
       {bounds && (
         <svg className="route-layer" width={size.width} height={size.height} aria-label="有向路径图层">
@@ -616,9 +695,14 @@ export default function Map2DView({
         </div>
       )}
 
-      <div className="map2d-readout">
-        <span>{cursor ? `X ${cursor.x.toFixed(2)}  Y ${cursor.y.toFixed(2)}` : 'XY PLANE'}</span>
-        <span>{Math.round(view.scale * 100) / 100} px/m</span>
+      <div className="map2d-readout" data-coordinate-precision={coordinatePrecision}>
+        {mapData?.geometry && <span className="map2d-vector-state">LIVE VECTOR</span>}
+        <span>
+          {cursor
+            ? `X ${cursor.x.toFixed(coordinatePrecision)}  Y ${cursor.y.toFixed(coordinatePrecision)}`
+            : 'XY PLANE'}
+        </span>
+        <span className="map2d-scale-readout">{Math.round(view.scale * 100) / 100} px/m</span>
         {projection && <span>{projection.selectedCount.toLocaleString('zh-CN')} POINTS</span>}
       </div>
     </div>

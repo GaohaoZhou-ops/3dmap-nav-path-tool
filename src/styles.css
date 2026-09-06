@@ -629,8 +629,134 @@ code {
 .viewer-resolution-control > button.resolution-reset {
   width: 49px;
   gap: 4px;
+  font-size: 7px;
+}
+
+.viewer-resolution-control > button.height-color-toggle {
+  width: 61px;
+  gap: 4px;
   border-right: 0;
   font-size: 7px;
+  white-space: nowrap;
+}
+
+.viewer-resolution-control > button.height-color-toggle.is-active {
+  color: #efffff;
+  background:
+    linear-gradient(90deg, rgba(36, 74, 128, 0.2), rgba(85, 211, 156, 0.16), rgba(255, 112, 110, 0.2)),
+    rgba(89, 219, 232, 0.08);
+  box-shadow: inset 0 -2px 0 var(--cyan);
+}
+
+.height-color-legend {
+  position: absolute;
+  right: 94px;
+  bottom: 11px;
+  z-index: 7;
+  width: 88px;
+  padding: 8px 8px 7px;
+  border: 1px solid rgba(143, 200, 203, 0.25);
+  background: rgba(6, 16, 19, 0.86);
+  box-shadow: 0 12px 30px rgba(0, 0, 0, 0.35);
+  backdrop-filter: blur(10px);
+  pointer-events: none;
+  user-select: none;
+}
+
+.height-color-legend__heading {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 5px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--line);
+  font-family: "SFMono-Regular", Menlo, monospace;
+}
+
+.height-color-legend__heading span {
+  color: var(--muted-2);
+  font-size: 5px;
+  letter-spacing: 0.11em;
+}
+
+.height-color-legend__heading strong {
+  color: #d9ecea;
+  font-size: 7px;
+  font-weight: 600;
+}
+
+.height-color-legend__scale {
+  display: grid;
+  grid-template-columns: 10px minmax(0, 1fr);
+  gap: 8px;
+  height: 122px;
+  margin: 7px 0 6px;
+}
+
+.height-color-legend__bar {
+  position: relative;
+  width: 10px;
+  border: 1px solid rgba(236, 255, 255, 0.32);
+  background: linear-gradient(
+    to top,
+    #244a80 0%,
+    #28a8d0 25%,
+    #55d39c 50%,
+    #f4c95d 75%,
+    #ff706e 100%
+  );
+  box-shadow: 0 0 15px rgba(89, 219, 232, 0.14);
+}
+
+.height-color-legend__bar::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: repeating-linear-gradient(
+    to bottom,
+    transparent 0 23px,
+    rgba(255, 255, 255, 0.34) 23px 24px
+  );
+  mix-blend-mode: overlay;
+}
+
+.height-color-legend__ticks {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  min-width: 0;
+}
+
+.height-color-legend__ticks span {
+  position: relative;
+  color: rgba(218, 235, 232, 0.78);
+  font: 6px "SFMono-Regular", Menlo, monospace;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.height-color-legend__ticks span::before {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: -8px;
+  width: 5px;
+  border-top: 1px solid rgba(235, 250, 248, 0.46);
+}
+
+.height-color-legend__footer {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: 4px;
+  color: var(--muted-2);
+  font: 5px "SFMono-Regular", Menlo, monospace;
+  letter-spacing: 0.08em;
+}
+
+.height-color-legend__footer i {
+  height: 1px;
+  background: linear-gradient(90deg, #244a80, #55d39c, #ff706e);
 }
 
 .viewer-placeholder {
@@ -947,6 +1073,16 @@ input[type="number"]::-webkit-inner-spin-button {
   z-index: 1;
 }
 
+.map2d-vector-canvas {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  display: block;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+
 .route-layer,
 .waypoint-layer {
   position: absolute;
@@ -1216,6 +1352,12 @@ input[type="number"]::-webkit-inner-spin-button {
   color: rgba(156, 185, 185, 0.65);
   font: 8px "SFMono-Regular", Menlo, monospace;
   pointer-events: none;
+}
+
+.map2d-vector-state {
+  color: var(--green);
+  letter-spacing: 0.08em;
+  text-shadow: 0 0 7px rgba(94, 229, 154, 0.22);
 }
 
 .inspector-panel {
@@ -1788,6 +1930,33 @@ input[type="number"]::-webkit-inner-spin-button {
 }
 
 .statusbar svg { color: var(--cyan-deep); }
+
+.statusbar .session-guard {
+  padding-left: 18px;
+  border-left: 1px solid var(--line);
+  color: #6fa58f;
+}
+
+.statusbar .session-guard svg {
+  color: var(--green);
+  filter: drop-shadow(0 0 4px rgba(94, 229, 154, 0.25));
+}
+
+.statusbar .session-guard.is-checking {
+  color: var(--muted-2);
+}
+
+.statusbar .session-guard.is-checking svg {
+  color: var(--cyan-deep);
+}
+
+.statusbar .session-guard.is-error {
+  color: #b7955b;
+}
+
+.statusbar .session-guard.is-error svg {
+  color: var(--amber);
+}
 
 .statusbar__hint {
   justify-content: center;

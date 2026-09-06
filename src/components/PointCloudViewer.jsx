@@ -8,6 +8,7 @@ import {
   Minus,
   MousePointer2,
   Move3D,
+  Palette,
   Plus,
   Rotate3D,
   RotateCcw,
@@ -57,6 +58,65 @@ const formatPointCount = (count) => {
   if (count >= 1_000_000) return `${(count / 1_000_000).toFixed(2)}M`;
   if (count >= 1_000) return `${(count / 1_000).toFixed(count >= 100_000 ? 0 : 1)}K`;
   return String(count);
+};
+
+const formatHeight = (value) => (Math.abs(value) < 0.005 ? '0.00' : value.toFixed(2));
+
+// Keep the source buffer untouched and perform elevation coloring in the GPU.
+// The five stops match the on-screen scale from low (blue) to high (coral).
+const installHeightColorShader = (material, bounds, enabled) => {
+  material.userData.heightColorEnabled = enabled;
+  material.onBeforeCompile = (shader) => {
+    shader.uniforms.atlasHeightColorEnabled = {
+      value: material.userData.heightColorEnabled ? 1 : 0,
+    };
+    shader.uniforms.atlasHeightMin = { value: bounds.min.z };
+    shader.uniforms.atlasHeightMax = { value: bounds.max.z };
+    shader.vertexShader = shader.vertexShader
+      .replace(
+        '#include <common>',
+        '#include <common>\nvarying float vAtlasHeight;',
+      )
+      .replace(
+        '#include <begin_vertex>',
+        '#include <begin_vertex>\nvAtlasHeight = transformed.z;',
+      );
+    shader.fragmentShader = shader.fragmentShader
+      .replace(
+        '#include <common>',
+        `#include <common>
+varying float vAtlasHeight;
+uniform float atlasHeightColorEnabled;
+uniform float atlasHeightMin;
+uniform float atlasHeightMax;
+
+vec3 atlasHeightPalette(float heightValue) {
+  float t = clamp(
+    (heightValue - atlasHeightMin) / max(atlasHeightMax - atlasHeightMin, 0.000001),
+    0.0,
+    1.0
+  );
+  vec3 lowBlue = vec3(0.0176, 0.0685, 0.2159);
+  vec3 cyan = vec3(0.0212, 0.3916, 0.6308);
+  vec3 green = vec3(0.0908, 0.6514, 0.3325);
+  vec3 amber = vec3(0.9047, 0.5841, 0.1095);
+  vec3 highCoral = vec3(1.0, 0.1620, 0.1560);
+  if (t < 0.25) return mix(lowBlue, cyan, smoothstep(0.0, 0.25, t));
+  if (t < 0.50) return mix(cyan, green, smoothstep(0.25, 0.50, t));
+  if (t < 0.75) return mix(green, amber, smoothstep(0.50, 0.75, t));
+  return mix(amber, highCoral, smoothstep(0.75, 1.0, t));
+}`,
+      )
+      .replace(
+        '#include <color_fragment>',
+        `#include <color_fragment>
+if (atlasHeightColorEnabled > 0.5) {
+  diffuseColor.rgb = atlasHeightPalette(vAtlasHeight);
+}`,
+      );
+    material.userData.heightColorShader = shader;
+  };
+  material.customProgramCacheKey = () => 'atlas-height-color-v1';
 };
 
 const statusColor = (status) => {
@@ -112,6 +172,8 @@ export default function PointCloudViewer({
   waypoints,
   edges,
   selectedWaypointId,
+  colorMode = 'source',
+  onColorModeChange,
 }) {
   const mountRef = useRef(null);
   const sceneRef = useRef(null);
@@ -120,6 +182,9 @@ export default function PointCloudViewer({
   const controlsRef = useRef(null);
   const cameraRef = useRef(null);
   const displayGeometryRef = useRef(null);
+  const cloudMaterialRef = useRef(null);
+  const colorModeRef = useRef(colorMode);
+  colorModeRef.current = colorMode;
   const [interactionMode, setInteractionMode] = useState('rotate');
   const [resolutionIndex, setResolutionIndex] = useState(DEFAULT_RESOLUTION_INDEX);
 
@@ -128,6 +193,12 @@ export default function PointCloudViewer({
   const renderedPointCount = sourcePointCount
     ? Math.max(1, Math.round(sourcePointCount * resolution.ratio))
     : 0;
+  const isHeightColor = colorMode === 'height';
+  const heightMin = mapData?.bounds?.min?.z ?? 0;
+  const heightMax = mapData?.bounds?.max?.z ?? 1;
+  const heightLegendTicks = [1, 0.75, 0.5, 0.25, 0].map(
+    (ratio) => heightMin + (heightMax - heightMin) * ratio,
+  );
 
   useEffect(() => {
     const mount = mountRef.current;
@@ -193,6 +264,9 @@ export default function PointCloudViewer({
       transparent: true,
       opacity: 0.92,
     });
+    installHeightColorShader(material, bounds, colorModeRef.current === 'height');
+    cloudMaterialRef.current = material;
+    renderer.domElement.dataset.colorMode = colorModeRef.current;
     const cloud = new THREE.Points(displayGeometry, material);
     scene.add(cloud);
 
@@ -309,8 +383,21 @@ export default function PointCloudViewer({
       controlsRef.current = null;
       cameraRef.current = null;
       displayGeometryRef.current = null;
+      if (cloudMaterialRef.current === material) cloudMaterialRef.current = null;
     };
   }, [mapData?.geometry]);
+
+  useEffect(() => {
+    const material = cloudMaterialRef.current;
+    const canvas = controlsRef.current?.domElement;
+    if (!material || !canvas) return;
+
+    const enabled = colorMode === 'height';
+    material.userData.heightColorEnabled = enabled;
+    const shader = material.userData.heightColorShader;
+    if (shader) shader.uniforms.atlasHeightColorEnabled.value = enabled ? 1 : 0;
+    canvas.dataset.colorMode = enabled ? 'height' : 'source';
+  }, [colorMode, mapData?.geometry]);
 
   useEffect(() => {
     const displayGeometry = displayGeometryRef.current;
@@ -510,7 +597,39 @@ export default function PointCloudViewer({
               <RotateCcw size={12} />
               <span>重置</span>
             </button>
+            <button
+              type="button"
+              className={`height-color-toggle ${isHeightColor ? 'is-active' : ''}`}
+              aria-label="按高度渲染点云"
+              aria-pressed={isHeightColor}
+              title={isHeightColor ? '恢复点云原始颜色' : '按 Z 轴高度显示渐变颜色'}
+              onClick={() => onColorModeChange?.(isHeightColor ? 'source' : 'height')}
+            >
+              <Palette size={12} />
+              <span>高程色</span>
+            </button>
           </div>
+          {isHeightColor && (
+            <aside className="height-color-legend" aria-label="点云高程比例尺">
+              <div className="height-color-legend__heading">
+                <span>ELEVATION</span>
+                <strong>Z · m</strong>
+              </div>
+              <div className="height-color-legend__scale">
+                <div className="height-color-legend__bar" aria-hidden="true" />
+                <div className="height-color-legend__ticks">
+                  {heightLegendTicks.map((value, index) => (
+                    <span key={`${index}-${value}`}>{formatHeight(value)}</span>
+                  ))}
+                </div>
+              </div>
+              <div className="height-color-legend__footer">
+                <span>LOW</span>
+                <i />
+                <span>HIGH</span>
+              </div>
+            </aside>
+          )}
           <div className="viewer-help">
             <span>
               {interactionMode === 'pan' ? <Move3D size={12} /> : <Rotate3D size={12} />}

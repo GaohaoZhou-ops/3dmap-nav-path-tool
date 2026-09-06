@@ -1,10 +1,11 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import { Layers3 } from 'lucide-react';
 
 const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
 
 export default function HeightRange({ bounds, value, onChange, disabled }) {
   const railRef = useRef(null);
+  const dragPointerRef = useRef(null);
   const [dragging, setDragging] = useState(false);
   const min = bounds?.min?.z ?? 0;
   const max = bounds?.max?.z ?? 1;
@@ -17,7 +18,10 @@ export default function HeightRange({ bounds, value, onChange, disabled }) {
   const centerMin = min + halfWindow;
   const centerMax = max - halfWindow;
   const center = clamp((value[0] + value[1]) / 2, centerMin, centerMax);
-  const percentage = ((center - min) / span) * 100;
+  const centerTravel = Math.max(centerMax - centerMin, 0);
+  const percentage = centerTravel > 1e-9
+    ? ((center - centerMin) / centerTravel) * 100
+    : 50;
 
   const updateCenter = (rawValue) => {
     const next = Number(rawValue);
@@ -30,28 +34,32 @@ export default function HeightRange({ bounds, value, onChange, disabled }) {
     const rect = railRef.current?.getBoundingClientRect();
     if (!rect) return;
     const ratio = clamp((rect.bottom - event.clientY) / rect.height, 0, 1);
-    updateCenter(min + ratio * span);
+    updateCenter(centerMin + ratio * centerTravel);
   };
 
-  useEffect(() => {
-    if (!dragging) return undefined;
-
-    const move = (event) => {
-      updateFromPointer(event);
-    };
-    const stop = () => setDragging(false);
-    window.addEventListener('pointermove', move);
-    window.addEventListener('pointerup', stop, { once: true });
-    return () => {
-      window.removeEventListener('pointermove', move);
-      window.removeEventListener('pointerup', stop);
-    };
-  }, [dragging, centerMax, centerMin, halfWindow, min, onChange, span]);
-
   const startDragging = (event) => {
-    if (disabled) return;
+    if (disabled || event.button !== 0) return;
+    event.preventDefault();
+    dragPointerRef.current = event.pointerId;
+    event.currentTarget.setPointerCapture?.(event.pointerId);
+    event.target.closest('button')?.focus({ preventScroll: true });
     updateFromPointer(event);
     setDragging(true);
+  };
+
+  const continueDragging = (event) => {
+    if (!dragging || dragPointerRef.current !== event.pointerId) return;
+    updateFromPointer(event);
+  };
+
+  const stopDragging = (event) => {
+    if (dragPointerRef.current !== event.pointerId) return;
+    updateFromPointer(event);
+    dragPointerRef.current = null;
+    if (event.currentTarget.hasPointerCapture?.(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+    setDragging(false);
   };
 
   return (
@@ -67,6 +75,11 @@ export default function HeightRange({ bounds, value, onChange, disabled }) {
           className="height-range__rail"
           ref={railRef}
           onPointerDown={startDragging}
+          onPointerMove={continueDragging}
+          onPointerUp={stopDragging}
+          onPointerCancel={stopDragging}
+          data-center-min={centerMin}
+          data-center-max={centerMax}
         >
           <div
             className="height-range__selection"
@@ -78,12 +91,8 @@ export default function HeightRange({ bounds, value, onChange, disabled }) {
           <button
             type="button"
             role="slider"
-            className={`height-range__handle ${dragging ? 'is-active' : ''}`}
+            className={`height-range__handle ${dragging ? 'is-active' : ''} ${percentage <= 0.001 ? 'is-at-min' : ''} ${percentage >= 99.999 ? 'is-at-max' : ''}`}
             style={{ bottom: `${percentage}%` }}
-            onPointerDown={(event) => {
-              event.stopPropagation();
-              setDragging(true);
-            }}
             onKeyDown={(event) => {
               const step = Math.max(span / 160, 0.01);
               if (event.key === 'ArrowUp' || event.key === 'ArrowRight') {
@@ -104,7 +113,10 @@ export default function HeightRange({ bounds, value, onChange, disabled }) {
             aria-valuemin={centerMin}
             aria-valuemax={centerMax}
             aria-valuenow={center}
-            aria-valuetext={`${center.toFixed(2)} 米，截面窗口 ${windowSize.toFixed(2)} 米`}
+            aria-valuetext={`${center.toFixed(2)} 米，截面 ${value[0].toFixed(2)} 至 ${value[1].toFixed(2)} 米`}
+            data-track-percentage={percentage.toFixed(3)}
+            data-slice-min={value[0]}
+            data-slice-max={value[1]}
             disabled={disabled}
           />
         </div>

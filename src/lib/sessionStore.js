@@ -93,18 +93,30 @@ export async function prepareWorkspaceSession(sessionId) {
   };
 }
 
-export async function saveWorkspaceMap(sessionId, mapId, name, buffer) {
+export async function saveWorkspaceMap(sessionId, mapId, name, mapCache) {
   const database = await openDatabase();
   const transaction = database.transaction(STORE_NAME, 'readwrite');
-  transaction.objectStore(STORE_NAME).put({
-    key: 'map',
-    sessionId,
-    mapId,
-    name,
-    byteLength: buffer.byteLength,
-    blob: new Blob([buffer], { type: 'application/octet-stream' }),
-    savedAt: Date.now(),
-  });
+  const legacyBuffer = mapCache instanceof ArrayBuffer ? mapCache : null;
+  transaction.objectStore(STORE_NAME).put(
+    legacyBuffer
+      ? {
+          key: 'map',
+          sessionId,
+          mapId,
+          name,
+          byteLength: legacyBuffer.byteLength,
+          blob: new Blob([legacyBuffer], { type: 'application/octet-stream' }),
+          savedAt: Date.now(),
+        }
+      : {
+          ...mapCache,
+          key: 'map',
+          sessionId,
+          mapId,
+          name,
+          savedAt: Date.now(),
+        },
+  );
   await transactionComplete(transaction);
 }
 

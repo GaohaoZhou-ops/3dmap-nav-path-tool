@@ -43,6 +43,7 @@ export default function Map2DView({
   connectionSourceId,
   selectedWaypointId,
   selectedEdgeId,
+  colorMode,
   onAddWaypoint,
   onSelectWaypoint,
   onSelectEdge,
@@ -50,6 +51,7 @@ export default function Map2DView({
   onClearSelection,
   onProjectionStats,
   onViewChange,
+  focusRequest,
 }) {
   const hostRef = useRef(null);
   const canvasRef = useRef(null);
@@ -58,12 +60,15 @@ export default function Map2DView({
   const pointerRef = useRef(null);
   const initializedBoundsRef = useRef('');
   const appliedInitialViewRef = useRef('');
+  const focusAnimationRef = useRef(null);
+  const viewRef = useRef(null);
   const [size, setSize] = useState({ width: 1, height: 1 });
   const [view, setView] = useState({ centerX: 0, centerY: 0, scale: 1 });
   const [workerReady, setWorkerReady] = useState(false);
   const [projecting, setProjecting] = useState(false);
   const [projection, setProjection] = useState(null);
   const [cursor, setCursor] = useState(null);
+  viewRef.current = view;
 
   const bounds = mapData?.bounds || null;
   const hasCloud = Boolean(mapData?.positions?.length);
@@ -151,6 +156,97 @@ export default function Map2DView({
   useEffect(() => {
     onViewChange?.(view);
   }, [onViewChange, view]);
+
+  const cancelFocusAnimation = useCallback(() => {
+    if (!focusAnimationRef.current) return;
+    cancelAnimationFrame(focusAnimationRef.current);
+    focusAnimationRef.current = null;
+    if (hostRef.current) hostRef.current.dataset.synchronizedFocusState = 'interrupted';
+  }, []);
+
+  useEffect(() => {
+    const host = hostRef.current;
+    if (!focusRequest || !bounds || !host || size.width < 2 || size.height < 2) {
+      return undefined;
+    }
+    const pointById = new Map(waypoints.map((point) => [point.id, point]));
+    let centerX = null;
+    let centerY = null;
+    let spanX = 0;
+    let spanY = 0;
+    if (focusRequest.type === 'waypoint') {
+      const point = pointById.get(focusRequest.id);
+      if (point) {
+        centerX = point.pose.x;
+        centerY = point.pose.y;
+      }
+    } else if (focusRequest.type === 'edge') {
+      const edge = edges.find((item) => item.id === focusRequest.id);
+      const source = edge ? pointById.get(edge.from) : null;
+      const target = edge ? pointById.get(edge.to) : null;
+      if (source && target) {
+        centerX = (source.pose.x + target.pose.x) / 2;
+        centerY = (source.pose.y + target.pose.y) / 2;
+        spanX = Math.abs(source.pose.x - target.pose.x);
+        spanY = Math.abs(source.pose.y - target.pose.y);
+      }
+    }
+    if (!Number.isFinite(centerX) || !Number.isFinite(centerY)) return undefined;
+
+    cancelFocusAnimation();
+    const rangeX = Math.max(bounds.max.x - bounds.min.x, 0.001);
+    const rangeY = Math.max(bounds.max.y - bounds.min.y, 0.001);
+    const fullScale = Math.min(
+      Math.max(size.width - 72, 1) / rangeX,
+      Math.max(size.height - 72, 1) / rangeY,
+    );
+    const pathScale = Math.min(
+      spanX > 1e-9 ? Math.max(size.width - 150, 1) / spanX : Number.POSITIVE_INFINITY,
+      spanY > 1e-9 ? Math.max(size.height - 130, 1) / spanY : Number.POSITIVE_INFINITY,
+    );
+    const targetScale = focusRequest.type === 'waypoint'
+      ? fullScale * 5
+      : Number.isFinite(pathScale) ? pathScale : fullScale * 5;
+    const targetView = {
+      centerX,
+      centerY,
+      scale: clamp(targetScale, fullScale * 1.1, fullScale * 8),
+    };
+    const startView = { ...(viewRef.current || view) };
+    const startedAt = performance.now();
+    const duration = 520;
+    host.dataset.synchronizedFocusType = focusRequest.type;
+    host.dataset.synchronizedFocusId = focusRequest.id;
+    host.dataset.synchronizedFocusRevision = String(focusRequest.revision);
+    host.dataset.synchronizedFocusState = 'animating';
+
+    const animateFocus = (now) => {
+      const progress = Math.min(1, (now - startedAt) / duration);
+      const eased = 1 - (1 - progress) ** 3;
+      const nextView = {
+        centerX: startView.centerX + (targetView.centerX - startView.centerX) * eased,
+        centerY: startView.centerY + (targetView.centerY - startView.centerY) * eased,
+        scale: startView.scale + (targetView.scale - startView.scale) * eased,
+      };
+      viewRef.current = nextView;
+      setView(nextView);
+      host.dataset.synchronizedFocusProgress = progress.toFixed(3);
+      if (progress < 1) {
+        focusAnimationRef.current = requestAnimationFrame(animateFocus);
+      } else {
+        focusAnimationRef.current = null;
+        host.dataset.synchronizedFocusState = 'settled';
+      }
+    };
+    focusAnimationRef.current = requestAnimationFrame(animateFocus);
+
+    return () => {
+      if (focusAnimationRef.current) {
+        cancelAnimationFrame(focusAnimationRef.current);
+        focusAnimationRef.current = null;
+      }
+    };
+  }, [bounds, cancelFocusAnimation, focusRequest, size.height, size.width]);
 
   useEffect(() => {
     setProjection(null);
@@ -264,7 +360,9 @@ export default function Map2DView({
     context.textBaseline = 'top';
     for (let x = firstX; x <= bottomRight.x + step; x += step) {
       const screen = worldToScreen(x, 0).x;
-      context.strokeStyle = Math.abs(x) < step * 0.01 ? 'rgba(89,219,232,.28)' : 'rgba(112,151,154,.09)';
+      context.strokeStyle = Math.abs(x) < step * 0.01
+        ? 'rgba(56, 199, 90, .22)'
+        : 'rgba(112,151,154,.09)';
       context.beginPath();
       context.moveTo(screen, 0);
       context.lineTo(screen, size.height);
@@ -274,7 +372,9 @@ export default function Map2DView({
     }
     for (let y = firstY; y <= topLeft.y + step; y += step) {
       const screen = worldToScreen(0, y).y;
-      context.strokeStyle = Math.abs(y) < step * 0.01 ? 'rgba(89,219,232,.28)' : 'rgba(112,151,154,.09)';
+      context.strokeStyle = Math.abs(y) < step * 0.01
+        ? 'rgba(240, 68, 62, .22)'
+        : 'rgba(112,151,154,.09)';
       context.beginPath();
       context.moveTo(0, screen);
       context.lineTo(size.width, screen);
@@ -297,39 +397,11 @@ export default function Map2DView({
 
     const origin = worldToScreen(0, 0);
     context.save();
-    context.lineWidth = 1.35;
-    context.strokeStyle = 'rgba(99, 224, 232, .62)';
-    context.fillStyle = 'rgba(126, 235, 241, .86)';
-    context.font = '700 9px "SFMono-Regular", Menlo, monospace';
+    const axisPixels = clamp(niceStep(48 / Math.max(view.scale, 0.001)) * view.scale, 42, 76);
+    context.lineCap = 'round';
+    context.lineJoin = 'round';
+    context.font = '700 10px "SFMono-Regular", Menlo, monospace';
     context.textBaseline = 'middle';
-
-    if (origin.y >= 0 && origin.y <= size.height) {
-      context.beginPath();
-      context.moveTo(0, origin.y);
-      context.lineTo(size.width - 10, origin.y);
-      context.stroke();
-      context.beginPath();
-      context.moveTo(size.width - 10, origin.y);
-      context.lineTo(size.width - 17, origin.y - 4);
-      context.lineTo(size.width - 17, origin.y + 4);
-      context.closePath();
-      context.fill();
-      context.fillText('+X', size.width - 34, origin.y - 11);
-    }
-
-    if (origin.x >= 0 && origin.x <= size.width) {
-      context.beginPath();
-      context.moveTo(origin.x, size.height);
-      context.lineTo(origin.x, 10);
-      context.stroke();
-      context.beginPath();
-      context.moveTo(origin.x, 10);
-      context.lineTo(origin.x - 4, 17);
-      context.lineTo(origin.x + 4, 17);
-      context.closePath();
-      context.fill();
-      context.fillText('+Y', origin.x + 7, 17);
-    }
 
     if (
       origin.x >= 0 &&
@@ -337,11 +409,44 @@ export default function Map2DView({
       origin.y >= 0 &&
       origin.y <= size.height
     ) {
+      const xEnd = Math.min(origin.x + axisPixels, size.width - 12);
+      const yEnd = Math.max(origin.y - axisPixels, 12);
+
+      context.lineWidth = 3;
+      context.strokeStyle = '#f0443e';
       context.beginPath();
-      context.arc(origin.x, origin.y, 5, 0, Math.PI * 2);
-      context.fillStyle = '#f4f7ef';
+      context.moveTo(origin.x, origin.y);
+      context.lineTo(xEnd, origin.y);
+      context.stroke();
+      context.fillStyle = '#f0443e';
+      context.beginPath();
+      context.moveTo(xEnd + 1, origin.y);
+      context.lineTo(xEnd - 9, origin.y - 6);
+      context.lineTo(xEnd - 9, origin.y + 6);
+      context.closePath();
       context.fill();
-      context.strokeStyle = '#59dbe8';
+      context.fillText('X', xEnd - 2, origin.y - 12);
+
+      context.strokeStyle = '#38c75a';
+      context.beginPath();
+      context.moveTo(origin.x, origin.y);
+      context.lineTo(origin.x, yEnd);
+      context.stroke();
+      context.fillStyle = '#38c75a';
+      context.beginPath();
+      context.moveTo(origin.x, yEnd - 1);
+      context.lineTo(origin.x - 6, yEnd + 9);
+      context.lineTo(origin.x + 6, yEnd + 9);
+      context.closePath();
+      context.fill();
+      context.fillText('Y', origin.x + 12, yEnd + 2);
+
+      context.lineWidth = 1.5;
+      context.beginPath();
+      context.arc(origin.x, origin.y, 4.5, 0, Math.PI * 2);
+      context.fillStyle = '#0a1114';
+      context.fill();
+      context.strokeStyle = '#eef2f4';
       context.stroke();
     }
     context.restore();
@@ -352,6 +457,7 @@ export default function Map2DView({
     if (!host) return undefined;
     const wheel = (event) => {
       if (!bounds) return;
+      cancelFocusAnimation();
       event.preventDefault();
       const rect = host.getBoundingClientRect();
       const cursorX = event.clientX - rect.left;
@@ -373,7 +479,7 @@ export default function Map2DView({
     };
     host.addEventListener('wheel', wheel, { passive: false });
     return () => host.removeEventListener('wheel', wheel);
-  }, [bounds, screenToWorld, size.height, size.width, view.scale]);
+  }, [bounds, cancelFocusAnimation, screenToWorld, size.height, size.width, view.scale]);
 
   const localPointer = (event) => {
     const rect = hostRef.current.getBoundingClientRect();
@@ -382,6 +488,7 @@ export default function Map2DView({
 
   const onPointerDown = (event) => {
     if (!bounds) return;
+    cancelFocusAnimation();
     const local = localPointer(event);
     pointerRef.current = {
       id: event.pointerId,
@@ -513,8 +620,9 @@ export default function Map2DView({
         const start = { x: startRaw.x + ux * 14, y: startRaw.y + uy * 14 };
         const end = { x: endRaw.x - ux * 17, y: endRaw.y - uy * 17 };
         const hasReverse = edgeKeys.has(`${edge.to}:${edge.from}`);
-        const polarity = edge.from.localeCompare(edge.to) < 0 ? 1 : -1;
-        const offset = hasReverse ? 14 * polarity : 0;
+        // Reversing the edge also flips this normal, so reciprocal routes land
+        // on opposite sides and both directed paths remain independently clickable.
+        const offset = hasReverse ? 14 : 0;
         const control = {
           x: (start.x + end.x) / 2 - uy * offset,
           y: (start.y + end.y) / 2 + ux * offset,
@@ -524,6 +632,7 @@ export default function Map2DView({
           edge,
           path: `M ${start.x} ${start.y} Q ${control.x} ${control.y} ${end.x} ${end.y}`,
           label,
+          accessibleLabel: `配置路径 ${source.name || edge.from} 到 ${target.name || edge.to}`,
         };
       })
       .filter(Boolean);
@@ -559,6 +668,7 @@ export default function Map2DView({
     <div
       ref={hostRef}
       className={`map2d-view mode-${mode}`}
+      data-coordinate-origin-style="ros-rviz"
       onPointerDown={onPointerDown}
       onPointerMove={onPointerMove}
       onPointerUp={onPointerUp}
@@ -574,6 +684,7 @@ export default function Map2DView({
           height={size.height}
           view={view}
           heightRange={heightRange}
+          colorMode={colorMode}
         />
       )}
 
@@ -595,7 +706,7 @@ export default function Map2DView({
               </marker>
             ))}
           </defs>
-          {edgeVisuals.map(({ edge, path, label }) => {
+          {edgeVisuals.map(({ edge, path, label, accessibleLabel }) => {
             const kind = markerClass(edge);
             const selected = edge.id === selectedEdgeId;
             return (
@@ -604,11 +715,27 @@ export default function Map2DView({
                 <path
                   className="route-edge__hit"
                   d={path}
+                  role="button"
+                  tabIndex="0"
+                  focusable="true"
+                  aria-label={accessibleLabel}
+                  aria-pressed={selected}
+                  onPointerDown={(event) => {
+                    event.stopPropagation();
+                    if (event.button === 0) onSelectEdge(edge.id);
+                  }}
+                  onPointerUp={(event) => event.stopPropagation()}
                   onClick={(event) => {
                     event.stopPropagation();
                     onSelectEdge(edge.id);
                   }}
                   onDoubleClick={(event) => {
+                    event.stopPropagation();
+                    onSelectEdge(edge.id);
+                  }}
+                  onKeyDown={(event) => {
+                    if (event.key !== 'Enter' && event.key !== ' ') return;
+                    event.preventDefault();
                     event.stopPropagation();
                     onSelectEdge(edge.id);
                   }}
@@ -632,6 +759,7 @@ export default function Map2DView({
             <button
               type="button"
               key={point.id}
+              data-waypoint-id={point.id}
               className={`waypoint-marker ${selected ? 'is-selected' : ''} ${source ? 'is-source' : ''}`}
               style={{ left: screen.x, top: screen.y }}
               onPointerDown={(event) => event.stopPropagation()}
@@ -662,12 +790,13 @@ export default function Map2DView({
           title={originVisible ? '坐标原点 O (0, 0)' : '坐标原点在当前视野外，点击定位'}
         >
           {originVisible ? (
-            <Crosshair size={14} />
+            <span className="ros-origin-core" aria-hidden="true" />
           ) : (
-            <ArrowRight size={13} style={{ transform: `rotate(${originDirection}deg)` }} />
+            <>
+              <ArrowRight size={13} style={{ transform: `rotate(${originDirection}deg)` }} />
+              <span>O</span>
+            </>
           )}
-          <span>O</span>
-          {originVisible && <small>0,0</small>}
         </button>
       )}
 

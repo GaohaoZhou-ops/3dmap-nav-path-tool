@@ -1,8 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import * as THREE from 'three';
 import { PLYLoader } from 'three/examples/jsm/loaders/PLYLoader.js';
 import {
   Box,
   Check,
+  ChevronDown,
+  ChevronUp,
   CircleDot,
   Download,
   FileJson,
@@ -43,6 +46,7 @@ import {
 } from './lib/sessionStore.js';
 
 const initialValidation = { status: 'idle', unreachableCount: 0, checkedAt: null };
+const pointColorModes = new Set(['height', 'source', 'white']);
 
 const defaultLimits = {
   minSpeed: 0.2,
@@ -51,14 +55,129 @@ const defaultLimits = {
   maxAcceleration: 0.8,
 };
 
+const defaultMotion = {
+  direction: 'forward',
+  enable3DObstacleAvoidance: true,
+};
+
 const waitForPaint = () =>
   new Promise((resolve) => requestAnimationFrame(() => window.setTimeout(resolve, 0)));
+
+const GEOMETRY_CACHE_VERSION = 1;
 
 function serializeBounds(box) {
   return {
     min: { x: box.min.x, y: box.min.y, z: box.min.z },
     max: { x: box.max.x, y: box.max.y, z: box.max.z },
   };
+}
+
+function serializeSphere(sphere) {
+  return {
+    center: { x: sphere.center.x, y: sphere.center.y, z: sphere.center.z },
+    radius: sphere.radius,
+  };
+}
+
+function exactArrayBuffer(array) {
+  if (array.byteOffset === 0 && array.byteLength === array.buffer.byteLength) return array.buffer;
+  return array.buffer.slice(array.byteOffset, array.byteOffset + array.byteLength);
+}
+
+function packColorAttribute(attribute) {
+  if (!attribute?.array?.length || attribute.itemSize < 3) return null;
+  const source = attribute.array;
+  const packed = new Uint8Array(attribute.count * 3);
+  let scale = source.BYTES_PER_ELEMENT === 1 ? 1 : 255;
+  if (source.BYTES_PER_ELEMENT !== 1) {
+    const sampleLength = Math.min(source.length, 4096);
+    for (let index = 0; index < sampleLength; index += 1) {
+      if (Math.abs(source[index]) > 1.5) {
+        scale = 1;
+        break;
+      }
+    }
+  }
+  for (let point = 0; point < attribute.count; point += 1) {
+    const sourceOffset = point * attribute.itemSize;
+    const targetOffset = point * 3;
+    packed[targetOffset] = Math.round(Math.max(0, Math.min(255, source[sourceOffset] * scale)));
+    packed[targetOffset + 1] = Math.round(
+      Math.max(0, Math.min(255, source[sourceOffset + 1] * scale)),
+    );
+    packed[targetOffset + 2] = Math.round(
+      Math.max(0, Math.min(255, source[sourceOffset + 2] * scale)),
+    );
+  }
+  return packed;
+}
+
+function createGeometryCache(geometry, bounds, sourceByteLength) {
+  const positionAttribute = geometry.getAttribute('position');
+  const sourcePositions = positionAttribute?.array;
+  if (!sourcePositions?.length) throw new Error('无法缓存空点云');
+  const positions = sourcePositions instanceof Float32Array
+    ? sourcePositions
+    : Float32Array.from(sourcePositions);
+  const colors = packColorAttribute(geometry.getAttribute('color'));
+  const sphere = geometry.boundingSphere;
+  return {
+    geometryCacheVersion: GEOMETRY_CACHE_VERSION,
+    byteLength: Number(sourceByteLength) || positions.byteLength + (colors?.byteLength || 0),
+    pointCount: positionAttribute.count,
+    positionBuffer: exactArrayBuffer(positions),
+    colorBuffer: colors ? exactArrayBuffer(colors) : null,
+    bounds,
+    sphere: sphere ? serializeSphere(sphere) : null,
+  };
+}
+
+function restoreGeometryFromCache(record) {
+  if (
+    record?.geometryCacheVersion !== GEOMETRY_CACHE_VERSION
+    || !(record.positionBuffer instanceof ArrayBuffer)
+  ) {
+    throw new Error('点云几何缓存版本无效');
+  }
+
+  const positions = new Float32Array(record.positionBuffer);
+  if (!positions.length || positions.length % 3 !== 0) {
+    throw new Error('点云几何缓存坐标无效');
+  }
+
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+  if (record.colorBuffer instanceof ArrayBuffer) {
+    const colors = new Uint8Array(record.colorBuffer);
+    if (colors.length === positions.length) {
+      geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3, true));
+    }
+  }
+
+  const cachedBounds = record.bounds;
+  if (cachedBounds?.min && cachedBounds?.max) {
+    geometry.boundingBox = new THREE.Box3(
+      new THREE.Vector3(cachedBounds.min.x, cachedBounds.min.y, cachedBounds.min.z),
+      new THREE.Vector3(cachedBounds.max.x, cachedBounds.max.y, cachedBounds.max.z),
+    );
+  } else {
+    geometry.computeBoundingBox();
+  }
+
+  if (record.sphere?.center && Number.isFinite(record.sphere.radius)) {
+    geometry.boundingSphere = new THREE.Sphere(
+      new THREE.Vector3(
+        record.sphere.center.x,
+        record.sphere.center.y,
+        record.sphere.center.z,
+      ),
+      record.sphere.radius,
+    );
+  } else {
+    geometry.computeBoundingSphere();
+  }
+  geometry.userData.geometrySource = 'session-cache';
+  return geometry;
 }
 
 function suggestedSlice(positions, bounds) {
@@ -89,6 +208,7 @@ export default function App() {
   const sessionFailureNotifiedRef = useRef(false);
   const hydrationRevisionRef = useRef(0);
   const latestWorkspaceRef = useRef(null);
+  const focusRevisionRef = useRef(0);
   const [mapData, setMapData] = useState(null);
   const [heightRange, setHeightRange] = useState([0, 1]);
   const [waypoints, setWaypoints] = useState([]);
@@ -100,7 +220,10 @@ export default function App() {
   const [validation, setValidation] = useState(initialValidation);
   const [projectionStats, setProjectionStats] = useState({ selectedCount: 0 });
   const [restoredView2d, setRestoredView2d] = useState(null);
-  const [pointColorMode, setPointColorMode] = useState('source');
+  const [pointColorMode, setPointColorMode] = useState('height');
+  const [showWaypoints3D, setShowWaypoints3D] = useState(true);
+  const [collapsedPanel, setCollapsedPanel] = useState(null);
+  const [synchronizedFocus, setSynchronizedFocus] = useState(null);
   const [sessionState, setSessionState] = useState({ status: 'checking', restored: false });
   const [loadState, setLoadState] = useState({
     loading: true,
@@ -121,6 +244,8 @@ export default function App() {
     selectedEdgeId,
     validation,
     pointColorMode,
+    showWaypoints3D,
+    collapsedPanel,
   };
 
   useEffect(() => {
@@ -179,6 +304,8 @@ export default function App() {
         selectedEdgeId: current.selectedEdgeId,
         validation: current.validation,
         pointColorMode: current.pointColorMode,
+        showWaypoints3D: current.showWaypoints3D,
+        collapsedPanel: current.collapsedPanel,
       },
     };
     const mapId = current.mapData?.mapId || null;
@@ -204,8 +331,8 @@ export default function App() {
     setEdges((current) => current.map((edge) => ({ ...edge, status: 'unchecked' })));
   }, []);
 
-  const processMapBuffer = useCallback(
-    async (buffer, name, options = {}) => {
+  const installMapGeometry = useCallback(
+    async (geometry, name, options = {}) => {
       const {
         preserveGraph = false,
         preferredSlice = null,
@@ -214,78 +341,127 @@ export default function App() {
         announce = true,
         keepLoading = false,
         mapId = createId('map'),
+        sourceByteLength = 0,
+        geometrySource = 'ply-parse',
       } = options;
+      if (!geometry.boundingBox) geometry.computeBoundingBox();
+      if (!geometry.boundingSphere) geometry.computeBoundingSphere();
+      const positions = geometry.getAttribute('position')?.array;
+      if (!positions?.length || !geometry.boundingBox) {
+        throw new Error('PLY 文件中没有可用的顶点坐标');
+      }
+
+      geometry.userData.geometrySource = geometrySource;
+      const colors = geometry.getAttribute('color')?.array || null;
+      const bounds = serializeBounds(geometry.boundingBox);
+      const nextSlice = clampSlice(preferredSlice || suggestedSlice(positions, bounds), bounds);
+      const nextMap = {
+        mapId,
+        name,
+        pointCount: positions.length / 3,
+        bounds,
+        positions,
+        colors,
+        geometry,
+        geometrySource,
+        metadataOnly: false,
+      };
+      setMapData(nextMap);
+      setHeightRange(nextSlice);
+      setRestoredView2d(preferredView);
+      view2dRef.current = preferredView;
+      setProjectionStats({ selectedCount: 0 });
+      setSynchronizedFocus(null);
+      if (!preserveGraph) {
+        setWaypoints([]);
+        setEdges([]);
+        setSelectedWaypointId(null);
+        setSelectedEdgeId(null);
+        setConnectionSourceId(null);
+        setValidation(initialValidation);
+      }
+
+      if (persistSnapshot && sessionReadyRef.current && sessionIdRef.current) {
+        setLoadState({
+          loading: true,
+          progress: 1,
+          phase: '缓存已解析点云',
+          detail: '正在保存坐标缓存，后续刷新无需再次解析 PLY',
+        });
+        try {
+          await saveWorkspaceMap(
+            sessionIdRef.current,
+            mapId,
+            name,
+            createGeometryCache(geometry, bounds, sourceByteLength),
+          );
+        } catch (error) {
+          reportSessionFailure(error);
+        }
+      }
+
+      if (!keepLoading) setLoadState({ loading: false, progress: 1, phase: '' });
+      if (announce) {
+        notify(`${name} 已加载 · ${(positions.length / 3).toLocaleString('zh-CN')} 点`);
+      }
+      return nextMap;
+    },
+    [notify, reportSessionFailure],
+  );
+
+  const processMapBuffer = useCallback(
+    async (buffer, name, options = {}) => {
       setLoadState({
         loading: true,
         progress: 1,
         phase: '解析点云结构',
-        detail: '正在构建三维几何与空间索引',
+        detail: '首次载入正在构建三维几何与空间索引',
       });
       await waitForPaint();
       let geometry;
       try {
         const loader = new PLYLoader();
         geometry = loader.parse(buffer);
-        geometry.computeBoundingBox();
-        geometry.computeBoundingSphere();
-        const positions = geometry.getAttribute('position')?.array;
-        if (!positions?.length || !geometry.boundingBox) {
-          geometry.dispose();
-          throw new Error('PLY 文件中没有可用的顶点坐标');
-        }
-        const colors = geometry.getAttribute('color')?.array || null;
-        const bounds = serializeBounds(geometry.boundingBox);
-        const nextSlice = clampSlice(preferredSlice || suggestedSlice(positions, bounds), bounds);
-        const nextMap = {
-          mapId,
-          name,
-          pointCount: positions.length / 3,
-          bounds,
-          positions,
-          colors,
-          geometry,
-          metadataOnly: false,
-        };
-        setMapData(nextMap);
-        setHeightRange(nextSlice);
-        setRestoredView2d(preferredView);
-        view2dRef.current = preferredView;
-        setProjectionStats({ selectedCount: 0 });
-        if (!preserveGraph) {
-          setWaypoints([]);
-          setEdges([]);
-          setSelectedWaypointId(null);
-          setSelectedEdgeId(null);
-          setConnectionSourceId(null);
-          setValidation(initialValidation);
-        }
-
-        if (persistSnapshot && sessionReadyRef.current && sessionIdRef.current) {
-          setLoadState({
-            loading: true,
-            progress: 1,
-            phase: '保护地图快照',
-            detail: '只在首次打开地图时写入，后续配置将轻量保存',
-          });
-          try {
-            await saveWorkspaceMap(sessionIdRef.current, mapId, name, buffer);
-          } catch (error) {
-            reportSessionFailure(error);
-          }
-        }
-
-        if (!keepLoading) setLoadState({ loading: false, progress: 1, phase: '' });
-        if (announce) {
-          notify(`${name} 已加载 · ${(positions.length / 3).toLocaleString('zh-CN')} 点`);
-        }
-        return nextMap;
+        return await installMapGeometry(geometry, name, {
+          ...options,
+          sourceByteLength: buffer.byteLength,
+          geometrySource: options.geometrySource || 'ply-parse',
+        });
       } catch (error) {
         geometry?.dispose?.();
         setLoadState({ loading: false, progress: 0, phase: '' });
         throw error;
       }
     },
-    [notify, reportSessionFailure],
+    [installMapGeometry],
+  );
+
+  const processMapCache = useCallback(
+    async (record, options = {}) => {
+      setLoadState({
+        loading: true,
+        progress: 1,
+        phase: '恢复点云缓存',
+        detail: '正在直接装载已解析坐标，跳过 PLY 解析',
+      });
+      await waitForPaint();
+      let geometry;
+      try {
+        geometry = restoreGeometryFromCache(record);
+        return await installMapGeometry(geometry, record.name, {
+          ...options,
+          persistSnapshot: false,
+          sourceByteLength: record.byteLength,
+          geometrySource: 'session-cache',
+          mapId: record.mapId,
+        });
+      } catch (error) {
+        geometry?.dispose?.();
+        setLoadState({ loading: false, progress: 0, phase: '' });
+        throw error;
+      }
+    },
+    [installMapGeometry],
   );
 
   useEffect(() => {
@@ -308,8 +484,27 @@ export default function App() {
             !stored.map || (stored.config && stored.config.mapId === stored.map.mapId);
           const snapshot = configMatchesMap ? stored.config?.config : null;
           const project = snapshot?.project ? normalizeProject(snapshot.project) : null;
+          setCollapsedPanel(
+            snapshot?.ui?.collapsedPanel === '3d' || snapshot?.ui?.collapsedPanel === '2d'
+              ? snapshot.ui.collapsedPanel
+              : null,
+          );
+          setShowWaypoints3D(snapshot?.ui?.showWaypoints3D !== false);
 
-          if (stored.map?.blob) {
+          if (
+            stored.map?.geometryCacheVersion === GEOMETRY_CACHE_VERSION
+            && stored.map.positionBuffer instanceof ArrayBuffer
+          ) {
+            await processMapCache(stored.map, {
+              preserveGraph: true,
+              preferredSlice: project?.slice,
+              preferredView: project?.view2d,
+              announce: false,
+              keepLoading: true,
+            });
+            if (!isCurrent()) return;
+            restored = true;
+          } else if (stored.map?.blob) {
             setLoadState({
               loading: true,
               progress: 0.3,
@@ -318,7 +513,7 @@ export default function App() {
             });
             const buffer = await stored.map.blob.arrayBuffer();
             if (!isCurrent()) return;
-            await processMapBuffer(buffer, stored.map.name, {
+            const restoredMap = await processMapBuffer(buffer, stored.map.name, {
               preserveGraph: true,
               preferredSlice: project?.slice,
               preferredView: project?.view2d,
@@ -326,7 +521,21 @@ export default function App() {
               announce: false,
               keepLoading: true,
               mapId: stored.map.mapId,
+              geometrySource: 'legacy-ply-cache',
             });
+            if (!isCurrent()) return;
+            setLoadState({
+              loading: true,
+              progress: 1,
+              phase: '升级点云缓存',
+              detail: '旧版快照仅需此次解析，正在转换为已解析坐标缓存',
+            });
+            await saveWorkspaceMap(
+              identity.sessionId,
+              stored.map.mapId,
+              stored.map.name,
+              createGeometryCache(restoredMap.geometry, restoredMap.bounds, buffer.byteLength),
+            );
             if (!isCurrent()) return;
             restored = true;
           } else if (project?.map?.bounds) {
@@ -374,7 +583,11 @@ export default function App() {
             setSelectedEdgeId(
               edgeIds.has(snapshot?.ui?.selectedEdgeId) ? snapshot.ui.selectedEdgeId : null,
             );
-            setPointColorMode(snapshot?.ui?.pointColorMode === 'height' ? 'height' : 'source');
+            setPointColorMode(
+              pointColorModes.has(snapshot?.ui?.pointColorMode)
+                ? snapshot.ui.pointColorMode
+                : 'height',
+            );
             setValidation(
               savedValidation && ['idle', 'connected', 'partial'].includes(savedValidation.status)
                 ? savedValidation
@@ -396,7 +609,9 @@ export default function App() {
           setWaypoints([]);
           setEdges([]);
           setHeightRange([0, 1]);
-          setPointColorMode('source');
+          setPointColorMode('height');
+          setShowWaypoints3D(true);
+          setCollapsedPanel(null);
           setRestoredView2d(null);
           view2dRef.current = null;
           repaired = true;
@@ -425,11 +640,12 @@ export default function App() {
     return () => {
       if (hydrationRevisionRef.current === revision) hydrationRevisionRef.current += 1;
     };
-  }, [notify, processMapBuffer, reportSessionFailure]);
+  }, [notify, processMapBuffer, processMapCache, reportSessionFailure]);
 
   useEffect(() => {
     queueWorkspaceSave();
   }, [
+    collapsedPanel,
     connectionSourceId,
     edges,
     heightRange,
@@ -440,6 +656,7 @@ export default function App() {
     selectedEdgeId,
     selectedWaypointId,
     sessionState.status,
+    showWaypoints3D,
     validation,
     waypoints,
   ]);
@@ -520,6 +737,7 @@ export default function App() {
       setSelectedEdgeId(null);
       setConnectionSourceId(null);
       setMode('select');
+      setSynchronizedFocus(null);
       setRestoredView2d(project.view2d);
       view2dRef.current = project.view2d;
       const importedConnected = project.edges.length > 0 && project.edges.every((edge) => edge.status === 'connected');
@@ -571,6 +789,10 @@ export default function App() {
     if (nextMode === 'connect') notify('连接模式：先选择起点，再选择终点', 'info');
   };
 
+  const toggleCollapsedPanel = (panel) => {
+    setCollapsedPanel((current) => (current === panel ? null : panel));
+  };
+
   const addWaypoint = useCallback(
     (pose) => {
       const point = {
@@ -593,10 +815,32 @@ export default function App() {
     setSelectedEdgeId(null);
   }, []);
 
+  const requestSynchronizedFocus = useCallback((type, id) => {
+    focusRevisionRef.current += 1;
+    setSynchronizedFocus({ type, id, revision: focusRevisionRef.current });
+  }, []);
+
+  const focusWaypointFromInspector = useCallback(
+    (id) => {
+      setShowWaypoints3D(true);
+      selectWaypoint(id);
+      requestSynchronizedFocus('waypoint', id);
+    },
+    [requestSynchronizedFocus, selectWaypoint],
+  );
+
   const selectEdge = useCallback((id) => {
     setSelectedEdgeId(id);
     setSelectedWaypointId(null);
   }, []);
+
+  const focusEdgeFromInspector = useCallback(
+    (id) => {
+      selectEdge(id);
+      requestSynchronizedFocus('edge', id);
+    },
+    [requestSynchronizedFocus, selectEdge],
+  );
 
   const clearSelection = useCallback(() => {
     setSelectedWaypointId(null);
@@ -631,6 +875,7 @@ export default function App() {
         to: id,
         directed: true,
         limits: { ...defaultLimits },
+        motion: { ...defaultMotion },
         status: 'unchecked',
       };
       setEdges((current) => [
@@ -798,8 +1043,14 @@ export default function App() {
       </header>
 
       <main className="workspace">
-        <div className="visual-workspace">
-          <section className="viewport-panel panel-3d">
+        <div
+          className={`visual-workspace ${collapsedPanel ? `is-${collapsedPanel}-collapsed` : ''}`}
+          data-collapsed-panel={collapsedPanel || 'none'}
+        >
+          <section
+            className={`viewport-panel panel-3d ${collapsedPanel === '3d' ? 'is-collapsed' : ''}`}
+            data-collapsed={collapsedPanel === '3d' ? 'true' : 'false'}
+          >
             <div className="panel-heading">
               <div className="panel-heading__title">
                 <span className="panel-index">01</span>
@@ -810,16 +1061,38 @@ export default function App() {
                 <span><i className="axis y">Y</i>{mapData ? `${mapData.bounds.min.y.toFixed(1)} / ${mapData.bounds.max.y.toFixed(1)}` : '—'}</span>
                 <span><i className="axis z">Z</i>{mapData ? `${mapData.bounds.min.z.toFixed(1)} / ${mapData.bounds.max.z.toFixed(1)}` : '—'}</span>
               </div>
+              <button
+                type="button"
+                className="panel-collapse-button"
+                aria-label={collapsedPanel === '3d' ? '展开3D窗口' : '折叠3D窗口'}
+                aria-expanded={collapsedPanel !== '3d'}
+                aria-controls="panel-body-3d"
+                onClick={() => toggleCollapsedPanel('3d')}
+              >
+                {collapsedPanel === '3d' ? <ChevronDown size={13} /> : <ChevronUp size={13} />}
+                <span>{collapsedPanel === '3d' ? '展开' : '折叠'}</span>
+              </button>
             </div>
-            <div className="panel-body">
+            <div
+              id="panel-body-3d"
+              className="panel-body"
+              aria-hidden={collapsedPanel === '3d'}
+            >
               <PointCloudViewer
                 mapData={mapData}
                 heightRange={heightRange}
                 waypoints={waypoints}
                 edges={edges}
                 selectedWaypointId={selectedWaypointId}
+                selectedEdgeId={selectedEdgeId}
                 colorMode={pointColorMode}
                 onColorModeChange={setPointColorMode}
+                showWaypoints={showWaypoints3D}
+                onShowWaypointsChange={setShowWaypoints3D}
+                onSelectWaypoint={selectWaypoint}
+                onSelectEdge={selectEdge}
+                onClearSelection={clearSelection}
+                focusRequest={synchronizedFocus}
               />
               <HeightRange
                 bounds={mapData?.bounds}
@@ -835,7 +1108,10 @@ export default function App() {
             </div>
           </section>
 
-          <section className="viewport-panel panel-2d">
+          <section
+            className={`viewport-panel panel-2d ${collapsedPanel === '2d' ? 'is-collapsed' : ''}`}
+            data-collapsed={collapsedPanel === '2d' ? 'true' : 'false'}
+          >
             <div className="panel-heading map-heading">
               <div className="panel-heading__title">
                 <span className="panel-index">02</span>
@@ -862,8 +1138,23 @@ export default function App() {
                 <span>Z {heightRange[0].toFixed(2)} — {heightRange[1].toFixed(2)} m</span>
                 <strong>{projectionStats.selectedCount.toLocaleString('zh-CN')}</strong>
               </div>
+              <button
+                type="button"
+                className="panel-collapse-button"
+                aria-label={collapsedPanel === '2d' ? '展开2D窗口' : '折叠2D窗口'}
+                aria-expanded={collapsedPanel !== '2d'}
+                aria-controls="panel-body-2d"
+                onClick={() => toggleCollapsedPanel('2d')}
+              >
+                {collapsedPanel === '2d' ? <ChevronUp size={13} /> : <ChevronDown size={13} />}
+                <span>{collapsedPanel === '2d' ? '展开' : '折叠'}</span>
+              </button>
             </div>
-            <div className="panel-body">
+            <div
+              id="panel-body-2d"
+              className="panel-body"
+              aria-hidden={collapsedPanel === '2d'}
+            >
               <Map2DView
                 mapData={mapData}
                 initialView={restoredView2d}
@@ -874,6 +1165,7 @@ export default function App() {
                 connectionSourceId={connectionSourceId}
                 selectedWaypointId={selectedWaypointId}
                 selectedEdgeId={selectedEdgeId}
+                colorMode={pointColorMode}
                 onAddWaypoint={addWaypoint}
                 onSelectWaypoint={selectWaypoint}
                 onSelectEdge={selectEdge}
@@ -881,6 +1173,7 @@ export default function App() {
                 onClearSelection={clearSelection}
                 onProjectionStats={handleProjectionStats}
                 onViewChange={handleViewChange}
+                focusRequest={synchronizedFocus}
               />
             </div>
           </section>
@@ -895,8 +1188,9 @@ export default function App() {
           selectedEdgeId={selectedEdgeId}
           validation={validation}
           onRunConnectivity={runConnectivity}
-          onSelectWaypoint={selectWaypoint}
-          onSelectEdge={selectEdge}
+          onSelectWaypoint={focusWaypointFromInspector}
+          onSearchWaypoint={focusWaypointFromInspector}
+          onSelectEdge={focusEdgeFromInspector}
           onClearSelection={clearSelection}
           onUpdateWaypoint={updateWaypoint}
           onUpdateEdge={updateEdge}

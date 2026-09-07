@@ -1,11 +1,19 @@
 import { useEffect, useRef } from 'react';
 import * as THREE from 'three';
 
-const installSliceShader = (material, heightRange) => {
+const colorModeValue = (mode) => (mode === 'height' ? 1 : mode === 'white' ? 2 : 0);
+
+const installSliceShader = (material, heightRange, bounds, colorMode) => {
   material.userData.sliceRange = [...heightRange];
+  material.userData.pointColorMode = colorMode;
   material.onBeforeCompile = (shader) => {
     shader.uniforms.atlasSliceMin = { value: material.userData.sliceRange[0] };
     shader.uniforms.atlasSliceMax = { value: material.userData.sliceRange[1] };
+    shader.uniforms.atlasPointColorMode = {
+      value: colorModeValue(material.userData.pointColorMode),
+    };
+    shader.uniforms.atlasHeightMin = { value: bounds.min.z };
+    shader.uniforms.atlasHeightMax = { value: bounds.max.z };
     shader.vertexShader = shader.vertexShader
       .replace(
         '#include <common>',
@@ -21,12 +29,41 @@ const installSliceShader = (material, heightRange) => {
         `#include <common>
 varying float vAtlasSliceZ;
 uniform float atlasSliceMin;
-uniform float atlasSliceMax;`,
+uniform float atlasSliceMax;
+uniform float atlasPointColorMode;
+uniform float atlasHeightMin;
+uniform float atlasHeightMax;
+
+vec3 atlasSliceHeightPalette(float heightValue) {
+  float t = clamp(
+    (heightValue - atlasHeightMin) / max(atlasHeightMax - atlasHeightMin, 0.000001),
+    0.0,
+    1.0
+  );
+  vec3 lowBlue = vec3(0.0176, 0.0685, 0.2159);
+  vec3 cyan = vec3(0.0212, 0.3916, 0.6308);
+  vec3 green = vec3(0.0908, 0.6514, 0.3325);
+  vec3 amber = vec3(0.9047, 0.5841, 0.1095);
+  vec3 highCoral = vec3(1.0, 0.1620, 0.1560);
+  if (t < 0.25) return mix(lowBlue, cyan, smoothstep(0.0, 0.25, t));
+  if (t < 0.50) return mix(cyan, green, smoothstep(0.25, 0.50, t));
+  if (t < 0.75) return mix(green, amber, smoothstep(0.50, 0.75, t));
+  return mix(amber, highCoral, smoothstep(0.75, 1.0, t));
+}`,
       )
       .replace(
         '#include <clipping_planes_fragment>',
         `#include <clipping_planes_fragment>
 if (vAtlasSliceZ < atlasSliceMin || vAtlasSliceZ > atlasSliceMax) discard;`,
+      )
+      .replace(
+        '#include <color_fragment>',
+        `#include <color_fragment>
+if (atlasPointColorMode > 1.5) {
+  diffuseColor.rgb = vec3(1.0);
+} else if (atlasPointColorMode > 0.5) {
+  diffuseColor.rgb = atlasSliceHeightPalette(vAtlasSliceZ);
+}`,
       )
       .replace(
         '#include <alphatest_fragment>',
@@ -37,7 +74,7 @@ diffuseColor.a *= 1.0 - smoothstep(0.32, 0.5, atlasPointRadius);
       );
     material.userData.sliceShader = shader;
   };
-  material.customProgramCacheKey = () => 'atlas-vector-slice-v1';
+  material.customProgramCacheKey = () => 'atlas-vector-slice-color-v2';
 };
 
 export default function VectorPointLayer({
@@ -47,6 +84,7 @@ export default function VectorPointLayer({
   height,
   view,
   heightRange,
+  colorMode,
 }) {
   const canvasRef = useRef(null);
   const renderStateRef = useRef(null);
@@ -94,7 +132,7 @@ export default function VectorPointLayer({
       depthWrite: true,
       toneMapped: false,
     });
-    installSliceShader(material, sliceRangeRef.current);
+    installSliceShader(material, sliceRangeRef.current, bounds, colorMode);
 
     const points = new THREE.Points(vectorGeometry, material);
     points.frustumCulled = false;
@@ -130,13 +168,15 @@ export default function VectorPointLayer({
     camera.updateProjectionMatrix();
 
     material.userData.sliceRange = [...heightRange];
+    material.userData.pointColorMode = colorMode;
     const shader = material.userData.sliceShader;
     if (shader) {
       shader.uniforms.atlasSliceMin.value = heightRange[0];
       shader.uniforms.atlasSliceMax.value = heightRange[1];
+      shader.uniforms.atlasPointColorMode.value = colorModeValue(colorMode);
     }
     renderer.render(scene, camera);
-  }, [bounds, height, heightRange, view.centerX, view.centerY, view.scale, width]);
+  }, [bounds, colorMode, height, heightRange, view.centerX, view.centerY, view.scale, width]);
 
   return (
     <canvas
@@ -151,6 +191,7 @@ export default function VectorPointLayer({
       data-point-size-css="1.65"
       data-slice-min={heightRange[0]}
       data-slice-max={heightRange[1]}
+      data-color-mode={colorMode}
       aria-label="二维矢量点云截面"
     />
   );

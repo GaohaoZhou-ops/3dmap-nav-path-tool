@@ -13,6 +13,19 @@ def wait_for_session(page):
     page.locator(".loading-curtain").wait_for(state="hidden", timeout=30_000)
 
 
+def click_path_midpoint(page, path):
+    point = path.evaluate(
+        """
+        (element) => {
+          const local = element.getPointAtLength(element.getTotalLength() / 2);
+          const screen = new DOMPoint(local.x, local.y).matrixTransform(element.getScreenCTM());
+          return {x: screen.x, y: screen.y};
+        }
+        """
+    )
+    page.mouse.click(point["x"], point["y"])
+
+
 def read_workspace_records(page):
     return page.evaluate(
         """
@@ -35,6 +48,10 @@ def read_workspace_records(page):
             mapId: record.mapId || null,
             name: record.name || null,
             byteLength: record.byteLength || 0,
+            geometryCacheVersion: record.geometryCacheVersion || 0,
+            hasBlob: record.blob instanceof Blob,
+            positionByteLength: record.positionBuffer?.byteLength || 0,
+            colorByteLength: record.colorBuffer?.byteLength || 0,
           }));
         }
         """
@@ -86,11 +103,14 @@ def run():
         page.locator(".loading-curtain").wait_for(state="hidden")
         page.locator(".projection-status").wait_for(state="hidden")
 
-        color_toggle = page.get_by_role("button", name="按高度渲染点云")
+        color_toggle = page.get_by_role("button", name="切换点云颜色模式")
+        assert color_toggle.get_attribute("data-color-mode") == "height"
         color_toggle.click()
-        assert color_toggle.get_attribute("aria-pressed") == "true"
-        assert page.locator(".three-canvas").get_attribute("data-color-mode") == "height"
-        assert page.get_by_label("点云高程比例尺").is_visible()
+        color_toggle.click()
+        assert color_toggle.get_attribute("data-color-mode") == "white"
+        assert page.locator(".three-canvas").get_attribute("data-color-mode") == "white"
+        assert page.get_by_label("二维矢量点云截面").get_attribute("data-color-mode") == "white"
+        assert page.get_by_label("点云高程比例尺").count() == 0
         assert page.get_by_label("二维矢量点云截面").get_attribute("data-source-point-count") == "24"
 
         height_input = page.locator(".height-range__inputs input")
@@ -113,6 +133,25 @@ def run():
         page.locator(".waypoint-marker").nth(0).click()
         page.locator(".waypoint-marker").nth(1).click()
         assert page.locator(".route-edge").count() == 1
+        three_canvas = page.locator(".three-canvas")
+        assert three_canvas.get_attribute("data-rendered-waypoint-count") == "2"
+        assert three_canvas.get_attribute("data-route-edge-count") == "1"
+        assert three_canvas.get_attribute("data-waypoint-volume-ratio") == "0.2"
+        assert abs(float(three_canvas.get_attribute("data-waypoint-radius-scale")) - 0.584804) < 1e-6
+        visible_waypoint_frame = three_canvas.screenshot()
+        hide_waypoints = page.get_by_role("button", name="隐藏3D路径点")
+        assert hide_waypoints.get_attribute("aria-pressed") == "true"
+        hide_waypoints.click()
+        page.wait_for_timeout(120)
+        assert three_canvas.get_attribute("data-waypoints-visible") == "false"
+        assert page.get_by_role("button", name="显示3D路径点").get_attribute("aria-pressed") == "false"
+        assert three_canvas.get_attribute("data-route-edge-count") == "1"
+        hidden_waypoint_frame = three_canvas.screenshot()
+        assert hidden_waypoint_frame != visible_waypoint_frame
+        page.get_by_role("button", name="倒车", exact=True).click()
+        perception_switch = page.get_by_role("switch", name="3D感知避障")
+        perception_switch.click()
+        assert perception_switch.get_attribute("aria-checked") == "false"
         limit_inputs = page.locator(".property-editor .numeric-field input")
         limit_inputs.nth(1).fill("2.75")
         limit_inputs.nth(1).press("Enter")
@@ -128,6 +167,10 @@ def run():
         assert record_by_key["meta"]["sessionId"] == session_identity["sessionId"]
         assert record_by_key["map"]["name"] == FIXTURE.name
         assert record_by_key["map"]["byteLength"] == FIXTURE.stat().st_size
+        assert record_by_key["map"]["geometryCacheVersion"] == 1
+        assert not record_by_key["map"]["hasBlob"]
+        assert record_by_key["map"]["positionByteLength"] == 24 * 3 * 4
+        assert record_by_key["map"]["colorByteLength"] == 24 * 3
         assert record_by_key["map"]["mapId"] == record_by_key["config"]["mapId"]
 
         page.reload()
@@ -137,14 +180,30 @@ def run():
         assert session_guard.get_attribute("data-session-restored") == "true"
         assert page.locator(".map-identity strong").inner_text() == FIXTURE.name
         assert page.locator(".three-canvas").get_attribute("data-render-point-count") == "24"
-        assert page.locator(".three-canvas").get_attribute("data-color-mode") == "height"
-        assert page.get_by_role("button", name="按高度渲染点云").get_attribute("aria-pressed") == "true"
-        assert page.get_by_label("点云高程比例尺").is_visible()
+        assert page.locator(".three-canvas").get_attribute("data-geometry-source") == "session-cache"
+        assert page.locator(".three-canvas").get_attribute("data-color-mode") == "white"
+        assert page.locator(".three-canvas").get_attribute("data-waypoints-visible") == "false"
+        assert page.get_by_role("button", name="显示3D路径点").get_attribute("aria-pressed") == "false"
+        page.get_by_role("button", name="显示3D路径点").click()
+        assert page.locator(".three-canvas").get_attribute("data-waypoints-visible") == "true"
+        assert page.get_by_role("button", name="切换点云颜色模式").get_attribute("data-color-mode") == "white"
+        assert page.get_by_label("二维矢量点云截面").get_attribute("data-color-mode") == "white"
+        assert page.get_by_label("点云高程比例尺").count() == 0
         assert page.get_by_label("二维矢量点云截面").get_attribute("data-render-mode") == "vector-coordinate-webgl"
         assert page.locator(".waypoint-marker").count() == 2
         assert page.locator(".route-edge").count() == 1
         assert page.get_by_role("heading", name="路径参数").is_visible()
+        assert page.get_by_role("button", name="倒车", exact=True).get_attribute("aria-pressed") == "true"
+        assert page.get_by_role("switch", name="3D感知避障").get_attribute("aria-checked") == "false"
+        assert page.get_by_label("路径距离").is_visible()
         assert page.locator(".property-editor .numeric-field input").nth(1).input_value() == "2.75"
+        page.get_by_role("button", name="选择 / 漫游").click()
+        page.locator(".waypoint-marker").first.click()
+        assert page.locator(".route-edge.is-selected").count() == 0
+        route_button = page.get_by_role("button", name="配置路径 P01 到 P02")
+        click_path_midpoint(page, route_button)
+        assert page.locator(".route-edge.is-selected").count() == 1
+        assert page.get_by_role("heading", name="路径参数").is_visible()
         actual_restored_height = float(
             page.get_by_role("slider", name="截面中心高度").get_attribute("aria-valuenow")
         )

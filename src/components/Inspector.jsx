@@ -7,11 +7,16 @@ import {
   CircleGauge,
   Compass,
   GitBranch,
+  MoveHorizontal,
   Route,
+  Ruler,
+  ScanLine,
   ScanSearch,
+  Search,
   Trash2,
   TriangleAlert,
 } from 'lucide-react';
+import { calculatePathDistances } from '../lib/pathMetrics.js';
 
 function NumericField({ label, value, unit, step = '0.01', onCommit }) {
   const [draft, setDraft] = useState(String(Number(value).toFixed(2)));
@@ -62,6 +67,7 @@ export default function Inspector({
   validation,
   onRunConnectivity,
   onSelectWaypoint,
+  onSearchWaypoint,
   onSelectEdge,
   onClearSelection,
   onUpdateWaypoint,
@@ -72,6 +78,16 @@ export default function Inspector({
   const selectedWaypoint = waypoints.find((point) => point.id === selectedWaypointId);
   const selectedEdge = edges.find((edge) => edge.id === selectedEdgeId);
   const pointById = useMemo(() => new Map(waypoints.map((point) => [point.id, point])), [waypoints]);
+  const selectedPathMetrics = useMemo(
+    () =>
+      selectedEdge
+        ? calculatePathDistances(
+            pointById.get(selectedEdge.from)?.pose,
+            pointById.get(selectedEdge.to)?.pose,
+          )
+        : null,
+    [pointById, selectedEdge],
+  );
 
   const validationCopy =
     validation.status === 'connected'
@@ -90,6 +106,16 @@ export default function Inspector({
   const updateLimit = (key, value) => {
     onUpdateEdge(selectedEdge.id, {
       limits: { ...selectedEdge.limits, [key]: value },
+    });
+  };
+
+  const updateMotion = (patch) => {
+    onUpdateEdge(selectedEdge.id, {
+      motion: {
+        direction: selectedEdge.motion?.direction === 'reverse' ? 'reverse' : 'forward',
+        enable3DObstacleAvoidance: selectedEdge.motion?.enable3DObstacleAvoidance !== false,
+        ...patch,
+      },
     });
   };
 
@@ -122,6 +148,35 @@ export default function Inspector({
         >
           检测
         </button>
+      </section>
+
+      <section className="waypoint-search" aria-label="导航点搜索">
+        <div className="waypoint-search__copy">
+          <Search size={14} />
+          <div>
+            <strong>定位导航点</strong>
+            <span>仅显示当前地图已配置点位</span>
+          </div>
+        </div>
+        <label>
+          <span className="visually-hidden">搜索导航点</span>
+          <select
+            aria-label="搜索导航点"
+            value={selectedWaypointId || ''}
+            disabled={!waypoints.length}
+            onChange={(event) => {
+              if (event.target.value) onSearchWaypoint(event.target.value);
+              else onClearSelection();
+            }}
+          >
+            <option value="">{waypoints.length ? '选择导航点…' : '暂无导航点'}</option>
+            {waypoints.map((point) => (
+              <option key={point.id} value={point.id}>
+                {point.name} · X {point.pose.x.toFixed(2)} / Y {point.pose.y.toFixed(2)}
+              </option>
+            ))}
+          </select>
+        </label>
       </section>
 
       <div className="inspector-scroll">
@@ -207,6 +262,101 @@ export default function Inspector({
               <div>
                 <small>TO</small>
                 <strong>{pointById.get(selectedEdge.to)?.name || selectedEdge.to}</strong>
+              </div>
+            </div>
+
+            {selectedPathMetrics && (
+              <div
+                className="path-distance-card"
+                aria-label="路径距离"
+                data-straight-distance={selectedPathMetrics.straight3D}
+                data-xy-distance={selectedPathMetrics.planarXY}
+                data-vertical-delta={selectedPathMetrics.verticalDelta}
+              >
+                <div className="path-distance-card__heading">
+                  <Ruler size={13} />
+                  <span>几何距离</span>
+                  <small>LIVE CALC</small>
+                </div>
+                <div className="path-distance-card__metrics">
+                  <div>
+                    <Ruler size={14} />
+                    <span>3D 直线距离</span>
+                    <strong>{selectedPathMetrics.straight3D.toFixed(3)} <em>m</em></strong>
+                  </div>
+                  <div>
+                    <MoveHorizontal size={14} />
+                    <span>XY 平面距离</span>
+                    <strong>{selectedPathMetrics.planarXY.toFixed(3)} <em>m</em></strong>
+                  </div>
+                </div>
+                <p>
+                  XY 距离已排除定位高度误差
+                  <span>ΔZ {selectedPathMetrics.verticalDelta.toFixed(3)} m</span>
+                </p>
+              </div>
+            )}
+
+            <div className="field-section-heading">
+              <span>执行策略</span>
+              <small>motion behavior</small>
+            </div>
+            <div className="motion-config">
+              <div className="motion-config__row">
+                <div>
+                  <strong>车体行驶方式</strong>
+                  <span>不改变 FROM → TO 的有向关系</span>
+                </div>
+                <div className="motion-direction-toggle" role="group" aria-label="行驶方向">
+                  <button
+                    type="button"
+                    aria-pressed={selectedEdge.motion?.direction !== 'reverse'}
+                    className={selectedEdge.motion?.direction !== 'reverse' ? 'is-active' : ''}
+                    onClick={() => updateMotion({ direction: 'forward' })}
+                  >
+                    正走
+                  </button>
+                  <button
+                    type="button"
+                    aria-pressed={selectedEdge.motion?.direction === 'reverse'}
+                    className={selectedEdge.motion?.direction === 'reverse' ? 'is-active' : ''}
+                    onClick={() => updateMotion({ direction: 'reverse' })}
+                  >
+                    倒车
+                  </button>
+                </div>
+              </div>
+              <div className="motion-config__row">
+                <div className="motion-config__perception">
+                  <ScanLine size={15} />
+                  <div>
+                    <strong>3D 感知避障</strong>
+                    <span>行进过程中启用空间障碍物检测</span>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  role="switch"
+                  aria-label="3D感知避障"
+                  aria-checked={selectedEdge.motion?.enable3DObstacleAvoidance !== false}
+                  className={`perception-switch ${selectedEdge.motion?.enable3DObstacleAvoidance !== false ? 'is-on' : ''}`}
+                  title={
+                    selectedEdge.motion?.enable3DObstacleAvoidance !== false
+                      ? '点击关闭行进中的 3D 感知避障'
+                      : '点击启用行进中的 3D 感知避障'
+                  }
+                  onClick={() =>
+                    updateMotion({
+                      enable3DObstacleAvoidance:
+                        selectedEdge.motion?.enable3DObstacleAvoidance === false,
+                    })
+                  }
+                >
+                  <span><i /></span>
+                  <em>
+                    {selectedEdge.motion?.enable3DObstacleAvoidance !== false ? '已启用' : '已关闭'}
+                  </em>
+                </button>
               </div>
             </div>
 

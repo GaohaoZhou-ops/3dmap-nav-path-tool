@@ -1,6 +1,15 @@
+import { calculatePathDistances } from './pathMetrics.js';
+
 const numberOr = (value, fallback = 0) => {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : fallback;
+};
+
+const booleanOr = (value, fallback) => {
+  if (typeof value === 'boolean') return value;
+  if (value === 1 || value === '1' || value === 'true') return true;
+  if (value === 0 || value === '0' || value === 'false') return false;
+  return fallback;
 };
 
 export const createId = (prefix) =>
@@ -82,6 +91,10 @@ export function normalizeProject(payload) {
   const edges = rawEdges
     .map((edge) => {
       const limits = edge.limits || edge.constraints || edge;
+      const motion = edge.motion || edge.behavior || {};
+      const rawDirection = String(
+        motion.direction ?? edge.motionDirection ?? edge.travelDirection ?? 'forward',
+      ).toLowerCase();
       return {
         id: String(edge.id || createId('edge')),
         from: String(edge.from ?? edge.source ?? edge.start ?? ''),
@@ -97,6 +110,18 @@ export function normalizeProject(payload) {
           maxAcceleration: numberOr(
             limits.maxAcceleration ?? limits.max_acceleration,
             0.8,
+          ),
+        },
+        motion: {
+          direction: ['reverse', 'backward', 'back', '倒车'].includes(rawDirection)
+            ? 'reverse'
+            : 'forward',
+          enable3DObstacleAvoidance: booleanOr(
+            motion.enable3DObstacleAvoidance
+              ?? motion.enable_3d_obstacle_avoidance
+              ?? edge.enable3DObstacleAvoidance
+              ?? edge.enable_3d_obstacle_avoidance,
+            true,
           ),
         },
         status: ['connected', 'unreachable'].includes(edge.connectivity)
@@ -129,6 +154,7 @@ export function normalizeProject(payload) {
 }
 
 export function buildExport({ mapData, heightRange, waypoints, edges, view2d }) {
+  const pointById = new Map(waypoints.map((point) => [point.id, point]));
   return {
     schemaVersion: '1.0',
     exportedAt: new Date().toISOString(),
@@ -159,14 +185,31 @@ export function buildExport({ mapData, heightRange, waypoints, edges, view2d }) 
       rpy: [point.pose.roll, point.pose.pitch, point.pose.yaw],
       source: point.source || 'point-cloud-slice',
     })),
-    paths: edges.map((edge) => ({
-      id: edge.id,
-      from: edge.from,
-      to: edge.to,
-      directed: true,
-      limits: { ...edge.limits },
-      connectivity: edge.status || 'unchecked',
-    })),
+    paths: edges.map((edge) => {
+      const distance = calculatePathDistances(
+        pointById.get(edge.from)?.pose,
+        pointById.get(edge.to)?.pose,
+      );
+      return {
+        id: edge.id,
+        from: edge.from,
+        to: edge.to,
+        directed: true,
+        limits: { ...edge.limits },
+        motion: {
+          direction: edge.motion?.direction === 'reverse' ? 'reverse' : 'forward',
+          enable3DObstacleAvoidance: edge.motion?.enable3DObstacleAvoidance !== false,
+        },
+        distance: distance
+          ? {
+              straight3D: distance.straight3D,
+              planarXY: distance.planarXY,
+              verticalDelta: distance.verticalDelta,
+            }
+          : null,
+        connectivity: edge.status || 'unchecked',
+      };
+    }),
   };
 }
 

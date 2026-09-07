@@ -8,6 +8,13 @@ BASE_URL = os.environ.get("BASE_URL", "http://127.0.0.1:21990")
 FIXTURE = Path(__file__).parent / "fixtures" / "rotation-map.ply"
 
 
+def view_direction(camera, target):
+    delta = tuple(target[axis] - camera[axis] for axis in ("x", "y", "z"))
+    length = math.sqrt(sum(value * value for value in delta))
+    assert length > 1e-12
+    return tuple(value / length for value in delta)
+
+
 def run():
     errors = []
     with sync_playwright() as playwright:
@@ -29,8 +36,17 @@ def run():
         assert canvas.get_attribute("data-coordinate-axis-colors") == "x:red,y:green,z:blue"
         assert canvas.get_attribute("data-interaction-mode") == "rotate"
         assert canvas.get_attribute("data-keyboard-plane") == "xy-z-locked"
+        assert canvas.get_attribute("data-keyboard-vertical-axis") == (
+            "arrow-up:+z,arrow-down:-z"
+        )
         assert canvas.get_attribute("data-keyboard-enabled") == "true"
         assert canvas.get_attribute("data-keyboard-mode") == "always-on"
+        assert canvas.get_attribute("data-keyboard-look-mode") == "ijkl-orbit-target"
+        assert canvas.get_attribute("data-keyboard-look-keys") == (
+            "i:up,j:left,k:down,l:right"
+        )
+        assert "I J K L" in canvas.get_attribute("aria-keyshortcuts")
+        assert "ArrowUp ArrowDown" in canvas.get_attribute("aria-keyshortcuts")
         assert canvas.get_attribute("data-resolution-percent") == "100"
         assert canvas.get_attribute("data-render-point-count") == "24"
         assert canvas.get_attribute("data-resolution-selection") == "native"
@@ -96,6 +112,127 @@ def run():
             - (target_after["y"] - target_before["y"])
         ) < 1e-6
 
+        # ArrowUp/ArrowDown translate camera and target together on world Z.
+        # They must not introduce XY drift, rotation, or a distance change.
+        vertical_camera_before = camera_after
+        vertical_target_before = target_after
+        vertical_distance_before = distance_after
+        page.keyboard.press("ArrowUp")
+        page.wait_for_timeout(100)
+        vertical_up_camera = {
+            axis: float(canvas.get_attribute(f"data-camera-{axis}"))
+            for axis in ("x", "y", "z")
+        }
+        vertical_up_target = {
+            axis: float(canvas.get_attribute(f"data-target-{axis}"))
+            for axis in ("x", "y", "z")
+        }
+        assert canvas.get_attribute("data-last-keyboard-key") == "ArrowUp"
+        assert canvas.get_attribute("data-last-keyboard-vertical") == "z-up"
+        assert vertical_up_camera["z"] > vertical_camera_before["z"] + 0.01
+        assert vertical_up_target["z"] > vertical_target_before["z"] + 0.01
+        for axis in ("x", "y"):
+            assert abs(vertical_up_camera[axis] - vertical_camera_before[axis]) < 1e-9
+            assert abs(vertical_up_target[axis] - vertical_target_before[axis]) < 1e-9
+        assert abs(
+            (vertical_up_camera["z"] - vertical_camera_before["z"])
+            - (vertical_up_target["z"] - vertical_target_before["z"])
+        ) < 1e-6
+        assert abs(
+            float(canvas.get_attribute("data-camera-distance")) - vertical_distance_before
+        ) < 1e-6
+
+        page.keyboard.press("ArrowDown")
+        page.wait_for_timeout(100)
+        camera_after = {
+            axis: float(canvas.get_attribute(f"data-camera-{axis}"))
+            for axis in ("x", "y", "z")
+        }
+        target_after = {
+            axis: float(canvas.get_attribute(f"data-target-{axis}"))
+            for axis in ("x", "y", "z")
+        }
+        distance_after = float(canvas.get_attribute("data-camera-distance"))
+        assert canvas.get_attribute("data-last-keyboard-vertical") == "z-down"
+        assert camera_after["z"] < vertical_up_camera["z"] - 0.01
+        assert target_after["z"] < vertical_up_target["z"] - 0.01
+        for axis in ("x", "y"):
+            assert abs(camera_after[axis] - vertical_up_camera[axis]) < 1e-9
+            assert abs(target_after[axis] - vertical_up_target[axis]) < 1e-9
+        assert abs(distance_after - vertical_distance_before) < 1e-6
+
+        # I/J/K/L rotate around the current observation target. J/L yaw around
+        # world Z, while I/K pitch around the camera-local right axis. All four
+        # controls must preserve both the target and viewing distance.
+        look_camera = camera_after
+        look_target = target_after
+        look_distance = distance_after
+        look_before = view_direction(look_camera, look_target)
+
+        page.keyboard.press("j")
+        page.wait_for_timeout(100)
+        yaw_left_camera = {
+            axis: float(canvas.get_attribute(f"data-camera-{axis}"))
+            for axis in ("x", "y", "z")
+        }
+        yaw_left_target = {
+            axis: float(canvas.get_attribute(f"data-target-{axis}"))
+            for axis in ("x", "y", "z")
+        }
+        yaw_left = view_direction(yaw_left_camera, yaw_left_target)
+        assert canvas.get_attribute("data-last-keyboard-key") == "J"
+        assert canvas.get_attribute("data-last-keyboard-rotation") == "yaw-left"
+        assert look_before[0] * yaw_left[1] - look_before[1] * yaw_left[0] > 0.01
+        assert abs(yaw_left[2] - look_before[2]) < 1e-6
+        assert yaw_left_target == look_target
+        assert abs(float(canvas.get_attribute("data-camera-distance")) - look_distance) < 1e-6
+
+        page.keyboard.press("l")
+        page.wait_for_timeout(100)
+        yaw_right_camera = {
+            axis: float(canvas.get_attribute(f"data-camera-{axis}"))
+            for axis in ("x", "y", "z")
+        }
+        yaw_right_target = {
+            axis: float(canvas.get_attribute(f"data-target-{axis}"))
+            for axis in ("x", "y", "z")
+        }
+        yaw_right = view_direction(yaw_right_camera, yaw_right_target)
+        assert canvas.get_attribute("data-last-keyboard-rotation") == "yaw-right"
+        assert yaw_left[0] * yaw_right[1] - yaw_left[1] * yaw_right[0] < -0.01
+        assert yaw_right_target == look_target
+
+        page.keyboard.press("i")
+        page.wait_for_timeout(100)
+        pitch_up_camera = {
+            axis: float(canvas.get_attribute(f"data-camera-{axis}"))
+            for axis in ("x", "y", "z")
+        }
+        pitch_up_target = {
+            axis: float(canvas.get_attribute(f"data-target-{axis}"))
+            for axis in ("x", "y", "z")
+        }
+        pitch_up = view_direction(pitch_up_camera, pitch_up_target)
+        assert canvas.get_attribute("data-last-keyboard-rotation") == "pitch-up"
+        assert pitch_up[2] > yaw_right[2] + 0.01
+        assert pitch_up_target == look_target
+
+        page.keyboard.press("k")
+        page.wait_for_timeout(100)
+        pitch_down_camera = {
+            axis: float(canvas.get_attribute(f"data-camera-{axis}"))
+            for axis in ("x", "y", "z")
+        }
+        pitch_down_target = {
+            axis: float(canvas.get_attribute(f"data-target-{axis}"))
+            for axis in ("x", "y", "z")
+        }
+        pitch_down = view_direction(pitch_down_camera, pitch_down_target)
+        assert canvas.get_attribute("data-last-keyboard-rotation") == "pitch-down"
+        assert pitch_down[2] < pitch_up[2] - 0.01
+        assert pitch_down_target == look_target
+        assert abs(float(canvas.get_attribute("data-camera-distance")) - look_distance) < 1e-6
+
         # Numeric/text editing must retain normal keyboard ownership and must
         # never steer the 3D camera in the background.
         height_input = page.get_by_label("高度", exact=True)
@@ -111,6 +248,44 @@ def run():
             for axis in ("x", "y", "z")
         }
         assert edit_target_after == edit_target_before
+        edit_camera_before = {
+            key: float(canvas.get_attribute(f"data-{key}"))
+            for key in (
+                "camera-x",
+                "camera-y",
+                "camera-z",
+                "camera-up-x",
+                "camera-up-y",
+                "camera-up-z",
+            )
+        }
+        page.keyboard.press("j")
+        page.wait_for_timeout(100)
+        edit_camera_after = {
+            key: float(canvas.get_attribute(f"data-{key}"))
+            for key in edit_camera_before
+        }
+        assert edit_camera_after == edit_camera_before
+        edit_vertical_before = {
+            key: float(canvas.get_attribute(f"data-{key}"))
+            for key in (
+                "camera-x",
+                "camera-y",
+                "camera-z",
+                "target-x",
+                "target-y",
+                "target-z",
+            )
+        }
+        original_height_value = height_input.input_value()
+        page.keyboard.press("ArrowUp")
+        page.wait_for_timeout(100)
+        edit_vertical_after = {
+            key: float(canvas.get_attribute(f"data-{key}"))
+            for key in edit_vertical_before
+        }
+        assert edit_vertical_after == edit_vertical_before
+        height_input.fill(original_height_value)
         height_input.blur()
         page.screenshot(path="/tmp/atlas-keyboard-navigation.png", full_page=True)
         page.get_by_role("button", name="原点", exact=True).click()
@@ -118,6 +293,62 @@ def run():
         overview_axis_scale = float(canvas.get_attribute("data-coordinate-axis-scale"))
         assert 20 <= float(canvas.get_attribute("data-coordinate-axis-screen-length")) <= 68.1
         page.screenshot(path="/tmp/atlas-ros-origin.png", full_page=True)
+
+        # Pointer capture must be cancelled as soon as a held drag crosses the
+        # 3D canvas boundary. Returning without a new pointerdown must not keep
+        # rotating the cloud.
+        leave_box = canvas.bounding_box()
+        assert leave_box
+        page.mouse.move(
+            leave_box["x"] + leave_box["width"] * 0.52,
+            leave_box["y"] + leave_box["height"] * 0.52,
+        )
+        page.mouse.down()
+        page.mouse.move(
+            leave_box["x"] + leave_box["width"] * 0.7,
+            leave_box["y"] + leave_box["height"] * 0.4,
+            steps=3,
+        )
+        page.mouse.move(
+            leave_box["x"] + leave_box["width"] + 24,
+            leave_box["y"] + leave_box["height"] * 0.4,
+            steps=2,
+        )
+        page.wait_for_timeout(80)
+        assert canvas.get_attribute("data-pointer-gesture-state") == "cancelled-on-leave"
+        assert int(canvas.get_attribute("data-pointer-gesture-cancel-count")) >= 1
+        frozen_view = {
+            key: float(canvas.get_attribute(f"data-{key}"))
+            for key in (
+                "camera-x",
+                "camera-y",
+                "camera-z",
+                "camera-up-x",
+                "camera-up-y",
+                "camera-up-z",
+                "target-x",
+                "target-y",
+                "target-z",
+            )
+        }
+        page.mouse.up()
+        page.mouse.move(
+            leave_box["x"] + leave_box["width"] * 0.35,
+            leave_box["y"] + leave_box["height"] * 0.65,
+            steps=4,
+        )
+        page.mouse.move(
+            leave_box["x"] + leave_box["width"] * 0.68,
+            leave_box["y"] + leave_box["height"] * 0.3,
+            steps=4,
+        )
+        page.wait_for_timeout(100)
+        returned_view = {
+            key: float(canvas.get_attribute(f"data-{key}"))
+            for key in frozen_view
+        }
+        for key, expected in frozen_view.items():
+            assert abs(returned_view[key] - expected) < 1e-8
 
         # In rotate mode, Shift + left drag is a temporary pan gesture. It must
         # translate camera and target together without changing the active mode.
@@ -131,7 +362,15 @@ def run():
             axis: float(canvas.get_attribute(f"data-camera-{axis}"))
             for axis in ("x", "y", "z")
         }
+        rotate_mode_button = page.locator(".viewer-tool-switch button").nth(0)
+        pan_mode_button = page.locator(".viewer-tool-switch button").nth(1)
         page.keyboard.down("Shift")
+        page.wait_for_timeout(30)
+        assert canvas.get_attribute("data-shift-pan-armed") == "true"
+        assert canvas.get_attribute("data-effective-interaction-mode") == "shift-pan"
+        assert rotate_mode_button.get_attribute("aria-pressed") == "false"
+        assert pan_mode_button.get_attribute("aria-pressed") == "true"
+        assert "Shift 平移" in pan_mode_button.inner_text()
         page.mouse.move(
             shift_box["x"] + shift_box["width"] * 0.43,
             shift_box["y"] + shift_box["height"] * 0.47,
@@ -154,6 +393,8 @@ def run():
             for axis in ("x", "y", "z")
         }
         assert canvas.get_attribute("data-interaction-mode") == "rotate"
+        assert canvas.get_attribute("data-shift-pan-armed") == "false"
+        assert canvas.get_attribute("data-effective-interaction-mode") == "rotate"
         assert canvas.get_attribute("data-last-pointer-gesture") == "shift-pan"
         assert math.hypot(
             shift_target_after["x"] - shift_target_before["x"],
@@ -163,6 +404,52 @@ def run():
             assert abs(
                 (shift_camera_after[axis] - shift_camera_before[axis])
                 - (shift_target_after[axis] - shift_target_before[axis])
+            ) < 1e-6
+
+        # Shift must also promote an already-held rotate drag to precision pan.
+        # This covers users who press the modifier just after pointerdown.
+        late_shift_target_before = {
+            axis: float(canvas.get_attribute(f"data-target-{axis}"))
+            for axis in ("x", "y", "z")
+        }
+        late_shift_camera_before = {
+            axis: float(canvas.get_attribute(f"data-camera-{axis}"))
+            for axis in ("x", "y", "z")
+        }
+        page.mouse.move(
+            shift_box["x"] + shift_box["width"] * 0.46,
+            shift_box["y"] + shift_box["height"] * 0.48,
+        )
+        page.mouse.down()
+        page.keyboard.down("Shift")
+        page.wait_for_timeout(30)
+        assert canvas.get_attribute("data-last-pointer-gesture") == "shift-pan"
+        assert int(canvas.get_attribute("data-shift-pan-activation-count")) >= 1
+        page.mouse.move(
+            shift_box["x"] + shift_box["width"] * 0.58,
+            shift_box["y"] + shift_box["height"] * 0.61,
+            steps=4,
+        )
+        page.screenshot(path="/tmp/atlas-shift-pan-active.png", full_page=True)
+        page.mouse.up()
+        page.keyboard.up("Shift")
+        page.wait_for_timeout(80)
+        late_shift_target_after = {
+            axis: float(canvas.get_attribute(f"data-target-{axis}"))
+            for axis in ("x", "y", "z")
+        }
+        late_shift_camera_after = {
+            axis: float(canvas.get_attribute(f"data-camera-{axis}"))
+            for axis in ("x", "y", "z")
+        }
+        assert math.hypot(
+            late_shift_target_after["x"] - late_shift_target_before["x"],
+            late_shift_target_after["y"] - late_shift_target_before["y"],
+        ) > 0.01
+        for axis in ("x", "y", "z"):
+            assert abs(
+                (late_shift_camera_after[axis] - late_shift_camera_before[axis])
+                - (late_shift_target_after[axis] - late_shift_target_before[axis])
             ) < 1e-6
 
         resolution = page.get_by_role("group", name="点云显示分辨率")

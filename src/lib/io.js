@@ -150,10 +150,11 @@ export function normalizeProject(payload) {
         : null,
     map: payload.map || null,
     view2d: payload.view2d || null,
+    view3d: payload.view3d || null,
   };
 }
 
-export function buildExport({ mapData, heightRange, waypoints, edges, view2d }) {
+export function buildExport({ mapData, heightRange, waypoints, edges, view2d, view3d }) {
   const pointById = new Map(waypoints.map((point) => [point.id, point]));
   return {
     schemaVersion: '1.0',
@@ -177,6 +178,7 @@ export function buildExport({ mapData, heightRange, waypoints, edges, view2d }) 
       maxHeight: heightRange[1],
     },
     view2d: view2d || null,
+    view3d: view3d || null,
     waypoints: waypoints.map((point) => ({
       id: point.id,
       name: point.name,

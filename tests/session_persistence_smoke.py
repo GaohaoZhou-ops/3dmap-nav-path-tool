@@ -156,10 +156,60 @@ def run():
         limit_inputs.nth(1).fill("2.75")
         limit_inputs.nth(1).press("Enter")
 
+        # Move both independent viewports before refreshing. The session must
+        # retain the 2D world center/scale and the complete 3D camera pose.
+        page.get_by_role("button", name="选择 / 漫游").click()
+        page.mouse.move(center_x - 80, center_y - 35)
+        page.mouse.down()
+        page.mouse.move(center_x + 35, center_y + 30, steps=4)
+        page.mouse.up()
         page.mouse.move(center_x, center_y)
         page.mouse.wheel(0, -240)
+
+        three_box = three_canvas.bounding_box()
+        assert three_box
+        page.get_by_role("button", name="旋转", exact=True).click()
+        page.mouse.move(
+            three_box["x"] + three_box["width"] * 0.38,
+            three_box["y"] + three_box["height"] * 0.62,
+        )
+        page.mouse.down()
+        page.mouse.move(
+            three_box["x"] + three_box["width"] * 0.59,
+            three_box["y"] + three_box["height"] * 0.36,
+            steps=5,
+        )
+        page.mouse.up()
+        page.mouse.move(
+            three_box["x"] + three_box["width"] * 0.52,
+            three_box["y"] + three_box["height"] * 0.5,
+        )
+        page.mouse.wheel(0, -620)
         page.wait_for_timeout(700)
-        view_before_refresh = page.locator(".map2d-scale-readout").inner_text()
+        view2d_before_refresh = {
+            key: float(page.locator(".map2d-view").get_attribute(f"data-view-{key}"))
+            for key in ("center-x", "center-y", "scale")
+        }
+        view3d_before_refresh = {
+            key: float(three_canvas.get_attribute(f"data-{key}"))
+            for key in (
+                "camera-x",
+                "camera-y",
+                "camera-z",
+                "target-x",
+                "target-y",
+                "target-z",
+                "camera-up-x",
+                "camera-up-y",
+                "camera-up-z",
+                "optical-zoom",
+                "precision-pan-x",
+                "precision-pan-y",
+            )
+        }
+        assert "重置视角" in page.get_by_role("button", name="重置3D视角").inner_text()
+        assert "重置视角" in page.get_by_role("button", name="重置2D视角").inner_text()
+        assert page.get_by_role("button", name="重置全部视角").is_visible()
 
         records = read_workspace_records(page)
         record_by_key = {record["key"]: record for record in records}
@@ -209,8 +259,85 @@ def run():
         )
         print("restored_height=", restored_height, "actual=", actual_restored_height)
         assert abs(actual_restored_height - restored_height) < 0.01
-        assert page.locator(".map2d-scale-readout").inner_text() == view_before_refresh
+        restored_view2d = {
+            key: float(page.locator(".map2d-view").get_attribute(f"data-view-{key}"))
+            for key in ("center-x", "center-y", "scale")
+        }
+        restored_canvas = page.locator(".three-canvas")
+        restored_view3d = {
+            key: float(restored_canvas.get_attribute(f"data-{key}"))
+            for key in view3d_before_refresh
+        }
+        for key, expected in view2d_before_refresh.items():
+            assert abs(restored_view2d[key] - expected) <= max(1e-7, abs(expected) * 1e-8)
+        for key, expected in view3d_before_refresh.items():
+            assert abs(restored_view3d[key] - expected) <= max(1e-7, abs(expected) * 1e-8)
+        assert restored_canvas.get_attribute("data-view-restored") == "true"
         page.screenshot(path="/tmp/atlas-session-restored.png", full_page=True)
+
+        # The synchronous lightweight view snapshot closes the debounce gap:
+        # change both views and refresh immediately, without waiting for the
+        # IndexedDB workspace timer.
+        map_view = page.locator(".map2d-view")
+        scale_before_immediate_change = float(map_view.get_attribute("data-view-scale"))
+        page.locator(".map-zoom-controls").get_by_role("button", name="放大").click()
+        page.wait_for_function(
+            "([selector, previous]) => Number(document.querySelector(selector)?.dataset.viewScale) > previous",
+            arg=[".map2d-view", scale_before_immediate_change],
+        )
+        restored_box = restored_canvas.bounding_box()
+        assert restored_box
+        page.mouse.move(
+            restored_box["x"] + restored_box["width"] * 0.51,
+            restored_box["y"] + restored_box["height"] * 0.49,
+        )
+        camera_distance_before = float(
+            restored_canvas.get_attribute("data-effective-camera-distance")
+        )
+        page.mouse.wheel(0, -700)
+        page.wait_for_function(
+            "([selector, previous]) => Number(document.querySelector(selector)?.dataset.effectiveCameraDistance) !== previous",
+            arg=[".three-canvas", camera_distance_before],
+        )
+        immediate_view2d = {
+            key: float(map_view.get_attribute(f"data-view-{key}"))
+            for key in ("center-x", "center-y", "scale")
+        }
+        immediate_view3d = {
+            key: float(restored_canvas.get_attribute(f"data-{key}"))
+            for key in view3d_before_refresh
+        }
+        page.reload()
+        page.wait_for_load_state("networkidle")
+        wait_for_session(page)
+        immediate_restored_view2d = {
+            key: float(page.locator(".map2d-view").get_attribute(f"data-view-{key}"))
+            for key in immediate_view2d
+        }
+        immediate_restored_canvas = page.locator(".three-canvas")
+        immediate_restored_view3d = {
+            key: float(immediate_restored_canvas.get_attribute(f"data-{key}"))
+            for key in immediate_view3d
+        }
+        for key, expected in immediate_view2d.items():
+            assert abs(immediate_restored_view2d[key] - expected) <= max(1e-7, abs(expected) * 1e-8)
+        for key, expected in immediate_view3d.items():
+            assert abs(immediate_restored_view3d[key] - expected) <= max(1e-7, abs(expected) * 1e-8)
+
+        page.get_by_role("button", name="重置全部视角").click()
+        page.wait_for_timeout(120)
+        assert immediate_restored_canvas.get_attribute("data-view-state") == "reset"
+        assert immediate_restored_canvas.get_attribute("data-view-reset-count") == "1"
+        assert float(immediate_restored_canvas.get_attribute("data-optical-zoom")) == 1
+        assert float(immediate_restored_canvas.get_attribute("data-precision-pan-x")) == 0
+        assert float(immediate_restored_canvas.get_attribute("data-precision-pan-y")) == 0
+        assert page.locator(".map2d-view").get_attribute("data-view-state") == "reset"
+        assert page.locator(".map2d-view").get_attribute("data-view-reset-count") == "1"
+        assert abs(
+            float(page.locator(".map2d-view").get_attribute("data-view-scale"))
+            - immediate_view2d["scale"]
+        ) > 0.01
+        page.screenshot(path="/tmp/atlas-view-reset.png", full_page=True)
 
         simulate_service_restart(page)
         page.reload()
@@ -220,6 +347,7 @@ def run():
         assert page.locator(".map-identity strong").inner_text() == "NO MAP LOADED"
         assert page.locator(".three-canvas").count() == 0
         assert page.locator(".waypoint-marker").count() == 0
+        assert page.evaluate("localStorage.getItem('atlas-route-studio:view-state-v1')") is None
         remaining_records = read_workspace_records(page)
         remaining_by_key = {record["key"]: record for record in remaining_records}
         assert "map" not in remaining_by_key

@@ -15,7 +15,9 @@ import {
   Map as MapIcon,
   MousePointer2,
   Plus,
+  RotateCcw,
   Route,
+  ScanLine,
   Server,
   ShieldAlert,
   ShieldCheck,
@@ -39,10 +41,12 @@ import {
 } from './lib/io.js';
 import {
   fetchServiceSession,
+  loadWorkspaceViews,
   prepareWorkspaceSession,
   resetWorkspaceSession,
   saveWorkspaceConfig,
   saveWorkspaceMap,
+  saveWorkspaceViews,
 } from './lib/sessionStore.js';
 
 const initialValidation = { status: 'idle', unreachableCount: 0, checkedAt: null };
@@ -201,6 +205,7 @@ export default function App() {
   const pathInputRef = useRef(null);
   const toastTimerRef = useRef(null);
   const view2dRef = useRef(null);
+  const view3dRef = useRef(null);
   const sessionIdRef = useRef(null);
   const sessionReadyRef = useRef(false);
   const sessionSaveTimerRef = useRef(null);
@@ -209,6 +214,7 @@ export default function App() {
   const hydrationRevisionRef = useRef(0);
   const latestWorkspaceRef = useRef(null);
   const focusRevisionRef = useRef(0);
+  const viewResetRevisionRef = useRef(0);
   const [mapData, setMapData] = useState(null);
   const [heightRange, setHeightRange] = useState([0, 1]);
   const [waypoints, setWaypoints] = useState([]);
@@ -220,10 +226,12 @@ export default function App() {
   const [validation, setValidation] = useState(initialValidation);
   const [projectionStats, setProjectionStats] = useState({ selectedCount: 0 });
   const [restoredView2d, setRestoredView2d] = useState(null);
+  const [restoredView3d, setRestoredView3d] = useState(null);
   const [pointColorMode, setPointColorMode] = useState('height');
   const [showWaypoints3D, setShowWaypoints3D] = useState(true);
   const [collapsedPanel, setCollapsedPanel] = useState(null);
   const [synchronizedFocus, setSynchronizedFocus] = useState(null);
+  const [viewResetRequest, setViewResetRequest] = useState(null);
   const [sessionState, setSessionState] = useState({ status: 'checking', restored: false });
   const [loadState, setLoadState] = useState({
     loading: true,
@@ -285,6 +293,12 @@ export default function App() {
     const current = latestWorkspaceRef.current;
     if (!sessionReadyRef.current || !sessionId || !current) return Promise.resolve();
 
+    const mapId = current.mapData?.mapId || null;
+    saveWorkspaceViews(sessionId, mapId, {
+      view2d: view2dRef.current,
+      view3d: view3dRef.current,
+    });
+
     const project = current.mapData
       ? buildExport({
           mapData: current.mapData,
@@ -292,6 +306,7 @@ export default function App() {
           waypoints: current.waypoints,
           edges: current.edges,
           view2d: view2dRef.current,
+          view3d: view3dRef.current,
         })
       : null;
     const snapshot = {
@@ -308,8 +323,6 @@ export default function App() {
         collapsedPanel: current.collapsedPanel,
       },
     };
-    const mapId = current.mapData?.mapId || null;
-
     sessionWriteChainRef.current = sessionWriteChainRef.current
       .catch(() => undefined)
       .then(() => saveWorkspaceConfig(sessionId, mapId, snapshot))
@@ -337,6 +350,7 @@ export default function App() {
         preserveGraph = false,
         preferredSlice = null,
         preferredView = null,
+        preferredView3d = null,
         persistSnapshot = true,
         announce = true,
         keepLoading = false,
@@ -370,6 +384,8 @@ export default function App() {
       setHeightRange(nextSlice);
       setRestoredView2d(preferredView);
       view2dRef.current = preferredView;
+      setRestoredView3d(preferredView3d);
+      view3dRef.current = preferredView3d;
       setProjectionStats({ selectedCount: 0 });
       setSynchronizedFocus(null);
       if (!preserveGraph) {
@@ -484,6 +500,10 @@ export default function App() {
             !stored.map || (stored.config && stored.config.mapId === stored.map.mapId);
           const snapshot = configMatchesMap ? stored.config?.config : null;
           const project = snapshot?.project ? normalizeProject(snapshot.project) : null;
+          const restoredMapId = stored.map?.mapId || stored.config?.mapId || null;
+          const instantViews = loadWorkspaceViews(identity.sessionId, restoredMapId);
+          const preferredView2d = instantViews?.view2d ?? project?.view2d ?? null;
+          const preferredView3d = instantViews?.view3d ?? project?.view3d ?? null;
           setCollapsedPanel(
             snapshot?.ui?.collapsedPanel === '3d' || snapshot?.ui?.collapsedPanel === '2d'
               ? snapshot.ui.collapsedPanel
@@ -498,7 +518,8 @@ export default function App() {
             await processMapCache(stored.map, {
               preserveGraph: true,
               preferredSlice: project?.slice,
-              preferredView: project?.view2d,
+              preferredView: preferredView2d,
+              preferredView3d,
               announce: false,
               keepLoading: true,
             });
@@ -516,7 +537,8 @@ export default function App() {
             const restoredMap = await processMapBuffer(buffer, stored.map.name, {
               preserveGraph: true,
               preferredSlice: project?.slice,
-              preferredView: project?.view2d,
+              preferredView: preferredView2d,
+              preferredView3d,
               persistSnapshot: false,
               announce: false,
               keepLoading: true,
@@ -551,8 +573,10 @@ export default function App() {
               metadataOnly: true,
             });
             setHeightRange(project.slice || [bounds.min.z, bounds.max.z]);
-            setRestoredView2d(project.view2d);
-            view2dRef.current = project.view2d;
+            setRestoredView2d(preferredView2d);
+            view2dRef.current = preferredView2d;
+            setRestoredView3d(preferredView3d);
+            view3dRef.current = preferredView3d;
             restored = true;
           }
 
@@ -567,9 +591,11 @@ export default function App() {
             setWaypoints(project.waypoints);
             setEdges(project.edges);
             if (!stored.map && project.slice) setHeightRange(project.slice);
-            setRestoredView2d(project.view2d);
-            view2dRef.current = project.view2d;
-            setMode(['select', 'add', 'connect'].includes(snapshot?.ui?.mode) ? snapshot.ui.mode : 'select');
+            setRestoredView2d(preferredView2d);
+            view2dRef.current = preferredView2d;
+            setRestoredView3d(preferredView3d);
+            view3dRef.current = preferredView3d;
+            setMode(['select', 'box', 'add', 'connect'].includes(snapshot?.ui?.mode) ? snapshot.ui.mode : 'select');
             setConnectionSourceId(
               pointIds.has(snapshot?.ui?.connectionSourceId)
                 ? snapshot.ui.connectionSourceId
@@ -614,6 +640,8 @@ export default function App() {
           setCollapsedPanel(null);
           setRestoredView2d(null);
           view2dRef.current = null;
+          setRestoredView3d(null);
+          view3dRef.current = null;
           repaired = true;
         }
 
@@ -740,6 +768,8 @@ export default function App() {
       setSynchronizedFocus(null);
       setRestoredView2d(project.view2d);
       view2dRef.current = project.view2d;
+      setRestoredView3d(project.view3d);
+      view3dRef.current = project.view3d;
       const importedConnected = project.edges.length > 0 && project.edges.every((edge) => edge.status === 'connected');
       const importedChecked = project.edges.some((edge) => edge.status !== 'unchecked');
       setValidation(
@@ -773,6 +803,7 @@ export default function App() {
           preserveGraph: true,
           preferredSlice: project.slice,
           preferredView: project.view2d,
+          preferredView3d: project.view3d,
         });
       } else if (project.slice && mapData?.bounds) {
         setHeightRange(clampSlice(project.slice, mapData.bounds));
@@ -785,6 +816,7 @@ export default function App() {
   const setActiveMode = (nextMode) => {
     setMode(nextMode);
     setConnectionSourceId(null);
+    if (nextMode === 'box') notify('框选模式：在二维图空白处按住左键拖框', 'info');
     if (nextMode === 'add') notify('添加模式：在二维截面上点击放置导航点', 'info');
     if (nextMode === 'connect') notify('连接模式：先选择起点，再选择终点', 'info');
   };
@@ -903,6 +935,57 @@ export default function App() {
     );
   }, []);
 
+  const deleteMapSelection = useCallback(
+    ({ waypointIds = [], edgeIds = [] }) => {
+      const waypointIdSet = new Set(waypointIds);
+      const edgeIdSet = new Set(edgeIds);
+      const removedWaypointCount = waypoints.reduce(
+        (count, point) => count + (waypointIdSet.has(point.id) ? 1 : 0),
+        0,
+      );
+      const removedEdgeCount = edges.reduce(
+        (count, edge) =>
+          count
+          + (
+            edgeIdSet.has(edge.id)
+            || waypointIdSet.has(edge.from)
+            || waypointIdSet.has(edge.to)
+              ? 1
+              : 0
+          ),
+        0,
+      );
+      if (!removedWaypointCount && !removedEdgeCount) return;
+
+      setWaypoints((current) =>
+        current.filter((point) => !waypointIdSet.has(point.id)),
+      );
+      setEdges((current) =>
+        current
+          .filter(
+            (edge) =>
+              !edgeIdSet.has(edge.id)
+              && !waypointIdSet.has(edge.from)
+              && !waypointIdSet.has(edge.to),
+          )
+          .map((edge) => ({ ...edge, status: 'unchecked' })),
+      );
+      setConnectionSourceId((current) =>
+        current && waypointIdSet.has(current) ? null : current,
+      );
+      setSelectedWaypointId(null);
+      setSelectedEdgeId(null);
+      setSynchronizedFocus(null);
+      setValidation(initialValidation);
+
+      const removed = [];
+      if (removedWaypointCount) removed.push(`${removedWaypointCount} 个导航点`);
+      if (removedEdgeCount) removed.push(`${removedEdgeCount} 条路径`);
+      notify(`已删除 ${removed.join('和')}`, 'info');
+    },
+    [edges, notify, waypoints],
+  );
+
   const deleteWaypoint = useCallback(
     (id) => {
       setWaypoints((current) => current.filter((point) => point.id !== id));
@@ -973,6 +1056,7 @@ export default function App() {
       waypoints,
       edges,
       view2d: view2dRef.current,
+      view3d: view3dRef.current,
     });
     const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
     downloadJson(payload, `route-graph-${stamp}.json`);
@@ -987,9 +1071,28 @@ export default function App() {
     },
     [queueWorkspaceSave],
   );
+  const handleView3dChange = useCallback(
+    (nextView) => {
+      view3dRef.current = nextView;
+      queueWorkspaceSave();
+    },
+    [queueWorkspaceSave],
+  );
+
+  const resetAllViews = useCallback(() => {
+    if (!mapData?.bounds) {
+      notify('请先加载地图', 'warning');
+      return;
+    }
+    setSynchronizedFocus(null);
+    viewResetRevisionRef.current += 1;
+    setViewResetRequest({ revision: viewResetRevisionRef.current });
+    notify('2D 与 3D 视角已重置', 'info');
+  }, [mapData?.bounds, notify]);
 
   const modeOptions = [
     { id: 'select', label: '选择 / 漫游', icon: MousePointer2 },
+    { id: 'box', label: '框选', icon: ScanLine },
     { id: 'add', label: '添加导航点', icon: Plus },
     { id: 'connect', label: '连接路径', icon: GitBranch },
   ];
@@ -1030,6 +1133,16 @@ export default function App() {
           </button>
           <button type="button" className="action-button" onClick={() => pathInputRef.current?.click()}>
             <FileJson size={15} /> 加载路径
+          </button>
+          <button
+            type="button"
+            className="action-button view-reset-action"
+            onClick={resetAllViews}
+            disabled={!mapData?.bounds}
+            aria-label="重置全部视角"
+            title="同时恢复 3D 与 2D 地图的初始视角"
+          >
+            <RotateCcw size={15} /> 重置视角
           </button>
           <button type="button" className="action-button primary" onClick={exportProject}>
             <Download size={15} /> 导出 JSON
@@ -1093,6 +1206,9 @@ export default function App() {
                 onSelectEdge={selectEdge}
                 onClearSelection={clearSelection}
                 focusRequest={synchronizedFocus}
+                initialView={restoredView3d}
+                onViewChange={handleView3dChange}
+                resetRequest={viewResetRequest}
               />
               <HeightRange
                 bounds={mapData?.bounds}
@@ -1171,9 +1287,11 @@ export default function App() {
                 onSelectEdge={selectEdge}
                 onConnectTarget={connectTarget}
                 onClearSelection={clearSelection}
+                onDeleteSelection={deleteMapSelection}
                 onProjectionStats={handleProjectionStats}
                 onViewChange={handleViewChange}
                 focusRequest={synchronizedFocus}
+                resetRequest={viewResetRequest}
               />
             </div>
           </section>
@@ -1220,7 +1338,7 @@ export default function App() {
               : 'SESSION AUTO-SAVE'}
         </span>
         <span className="statusbar__hint">
-          {mode === 'connect' && connectionSourceId ? '起点已锁定 · 请选择终点' : mode === 'add' ? '点击二维截面添加导航点' : '拖动二维地图平移 · 滚轮缩放'}
+          {mode === 'connect' && connectionSourceId ? '起点已锁定 · 请选择终点' : mode === 'add' ? '点击二维截面添加导航点' : mode === 'box' ? '二维图左键拉框 · Delete 删除所选' : '拖动二维地图平移 · 滚轮缩放'}
         </span>
         <span>SCHEMA 1.0</span>
       </footer>

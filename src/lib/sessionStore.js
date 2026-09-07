@@ -1,8 +1,55 @@
 const DATABASE_NAME = 'atlas-route-studio';
 const DATABASE_VERSION = 1;
 const STORE_NAME = 'workspace-session';
+const VIEW_STATE_KEY = 'atlas-route-studio:view-state-v1';
 
 let databasePromise = null;
+
+const browserStorage = () => {
+  try {
+    return globalThis.localStorage || null;
+  } catch {
+    return null;
+  }
+};
+
+export function saveWorkspaceViews(sessionId, mapId, views) {
+  const storage = browserStorage();
+  if (!storage || !sessionId || !mapId) return false;
+  try {
+    storage.setItem(
+      VIEW_STATE_KEY,
+      JSON.stringify({
+        version: 1,
+        sessionId,
+        mapId,
+        view2d: views?.view2d || null,
+        view3d: views?.view3d || null,
+        savedAt: Date.now(),
+      }),
+    );
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export function loadWorkspaceViews(sessionId, mapId) {
+  const storage = browserStorage();
+  if (!storage || !sessionId) return null;
+  try {
+    const payload = JSON.parse(storage.getItem(VIEW_STATE_KEY) || 'null');
+    if (payload?.sessionId === sessionId && mapId && payload?.mapId === mapId) return payload;
+    storage.removeItem(VIEW_STATE_KEY);
+  } catch {
+    try {
+      storage.removeItem(VIEW_STATE_KEY);
+    } catch {
+      // A blocked storage backend should not prevent the IndexedDB fallback.
+    }
+  }
+  return null;
+}
 
 const requestResult = (request) =>
   new Promise((resolve, reject) => {

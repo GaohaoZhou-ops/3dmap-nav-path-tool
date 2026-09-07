@@ -34,17 +34,28 @@ const DETAIL_DOLLY_FLOOR_RATIO = 1e-5;
 const MAX_OPTICAL_ZOOM = 1e30;
 const WAYPOINT_VOLUME_RATIO = 0.2;
 const WAYPOINT_RADIUS_SCALE = Math.cbrt(WAYPOINT_VOLUME_RATIO);
+const WAYPOINT_FOCUS_DISTANCE_RATIO = 0.17;
+const WAYPOINT_DEFAULT_COLOR = '#ffd166';
+const WAYPOINT_SELECTED_BODY_COLOR = '#59dbe8';
+const WAYPOINT_SELECTED_HALO_COLOR = '#9b8cff';
 const MIN_WAYPOINT_SCREEN_DIAMETER = 8;
 const MAX_WAYPOINT_LOD_SCALE = 24;
 const ROS_AXIS_SCREEN_LENGTH = 68;
 const MIN_ROS_AXIS_LOD_SCALE = 1e-30;
 const PICK_DRAG_THRESHOLD = 5;
 const KEYBOARD_TAP_DURATION = 0.065;
-const KEYBOARD_MOVEMENT_CODES = new Set([
+const KEYBOARD_ROTATION_SPEED = THREE.MathUtils.degToRad(72);
+const KEYBOARD_CONTROL_CODES = new Set([
   'KeyW',
   'KeyA',
   'KeyS',
   'KeyD',
+  'KeyI',
+  'KeyJ',
+  'KeyK',
+  'KeyL',
+  'ArrowUp',
+  'ArrowDown',
   'ShiftLeft',
   'ShiftRight',
 ]);
@@ -53,13 +64,92 @@ const KEYBOARD_KEY_CODES = {
   a: 'KeyA',
   s: 'KeyS',
   d: 'KeyD',
+  i: 'KeyI',
+  j: 'KeyJ',
+  k: 'KeyK',
+  l: 'KeyL',
+  arrowup: 'ArrowUp',
+  arrowdown: 'ArrowDown',
   shift: 'ShiftLeft',
 };
 
+const KEYBOARD_ROTATION_ACTIONS = {
+  KeyI: 'pitch-up',
+  KeyJ: 'yaw-left',
+  KeyK: 'pitch-down',
+  KeyL: 'yaw-right',
+};
+
+const KEYBOARD_VERTICAL_ACTIONS = {
+  ArrowUp: 'z-up',
+  ArrowDown: 'z-down',
+};
+
 const movementCodeForEvent = (event) =>
-  KEYBOARD_MOVEMENT_CODES.has(event.code)
+  KEYBOARD_CONTROL_CODES.has(event.code)
     ? event.code
     : KEYBOARD_KEY_CODES[String(event.key || '').toLowerCase()] || null;
+
+const readViewVector = (value) => {
+  if (!value) return null;
+  const x = Number(Array.isArray(value) ? value[0] : value.x);
+  const y = Number(Array.isArray(value) ? value[1] : value.y);
+  const z = Number(Array.isArray(value) ? value[2] : value.z);
+  return [x, y, z].every(Number.isFinite) ? { x, y, z } : null;
+};
+
+const normalizeCameraView = (value) => {
+  if (!value || typeof value !== 'object') return null;
+  const position = readViewVector(value.position);
+  const target = readViewVector(value.target);
+  const up = readViewVector(value.up);
+  const zoom = Number(value.zoom);
+  const projectionX = Number(value.projectionOffset?.x ?? value.precisionPan?.x ?? 0);
+  const projectionY = Number(value.projectionOffset?.y ?? value.precisionPan?.y ?? 0);
+  if (
+    !position
+    || !target
+    || !up
+    || !Number.isFinite(zoom)
+    || zoom <= 0
+    || !Number.isFinite(projectionX)
+    || !Number.isFinite(projectionY)
+  ) {
+    return null;
+  }
+  const viewDistance = Math.hypot(
+    position.x - target.x,
+    position.y - target.y,
+    position.z - target.z,
+  );
+  if (viewDistance < 1e-12 || Math.hypot(up.x, up.y, up.z) < 1e-12) return null;
+  return {
+    position,
+    target,
+    up,
+    zoom: THREE.MathUtils.clamp(zoom, 1, MAX_OPTICAL_ZOOM),
+    projectionOffset: { x: projectionX, y: projectionY },
+  };
+};
+
+const cameraViewSignature = (view) => {
+  const normalized = normalizeCameraView(view);
+  if (!normalized) return '';
+  return [
+    normalized.position.x,
+    normalized.position.y,
+    normalized.position.z,
+    normalized.target.x,
+    normalized.target.y,
+    normalized.target.z,
+    normalized.up.x,
+    normalized.up.y,
+    normalized.up.z,
+    normalized.zoom,
+    normalized.projectionOffset.x,
+    normalized.projectionOffset.y,
+  ].map((value) => value.toExponential(12)).join('|');
+};
 
 const adaptiveResolutionIndex = (pointCount) => {
   if (!pointCount || pointCount <= AUTO_POINT_BUDGET) return DEFAULT_RESOLUTION_INDEX;
@@ -284,6 +374,9 @@ export default function PointCloudViewer({
   onSelectEdge,
   onClearSelection,
   focusRequest,
+  initialView,
+  onViewChange,
+  resetRequest,
 }) {
   const mountRef = useRef(null);
   const sceneRef = useRef(null);
@@ -303,12 +396,21 @@ export default function PointCloudViewer({
   const keyboardImpulseRef = useRef(new Set());
   const precisionPanRef = useRef(null);
   const focusAnimationRef = useRef(null);
+  const pointerInteractionRef = useRef(null);
+  const viewActionsRef = useRef(null);
+  const initialViewRef = useRef(initialView);
+  const onViewChangeRef = useRef(onViewChange);
+  const appliedInitialViewRef = useRef(null);
+  const appliedResetRevisionRef = useRef(0);
   const [interactionMode, setInteractionMode] = useState('rotate');
+  const [shiftPanArmed, setShiftPanArmed] = useState(false);
   const interactionModeRef = useRef(interactionMode);
   colorModeRef.current = colorMode;
   onSelectWaypointRef.current = onSelectWaypoint;
   onSelectEdgeRef.current = onSelectEdge;
   onClearSelectionRef.current = onClearSelection;
+  initialViewRef.current = initialView;
+  onViewChangeRef.current = onViewChange;
   interactionModeRef.current = interactionMode;
   const [manualResolution, setManualResolution] = useState({ mapKey: null, index: null });
 
@@ -366,7 +468,7 @@ export default function PointCloudViewer({
     renderer.domElement.setAttribute('aria-label', '三维点云交互画布');
     renderer.domElement.setAttribute(
       'aria-keyshortcuts',
-      'W A S D Shift+W Shift+A Shift+S Shift+D',
+      'W A S D I J K L ArrowUp ArrowDown Shift+W Shift+A Shift+S Shift+D Shift+I Shift+J Shift+K Shift+L Shift+ArrowUp Shift+ArrowDown',
     );
     renderer.domElement.dataset.geometrySource =
       mapData.geometrySource || geometry.userData.geometrySource || 'ply-parse';
@@ -397,17 +499,32 @@ export default function PointCloudViewer({
     // zoom. Pointer panning below uses a world/projection hybrid instead.
     controls.noPan = true;
     controls.staticMoving = true;
+    // WASD/IJKL are owned by the application. Disable TrackballControls' legacy
+    // A/S/D keyboard modes so movement and rotation keys cannot change its state.
+    controls.keys = [];
     controls.minDistance = detailDollyFloor;
     controls.maxDistance = radius * 6;
     renderer.domElement.dataset.controlMode = 'free-trackball';
     renderer.domElement.dataset.zoomMode = 'hybrid-continuous-detail';
     renderer.domElement.dataset.keyboardPlane = 'xy-z-locked';
+    renderer.domElement.dataset.keyboardVerticalAxis = 'arrow-up:+z,arrow-down:-z';
+    renderer.domElement.dataset.keyboardLookMode = 'ijkl-orbit-target';
+    renderer.domElement.dataset.keyboardLookKeys = 'i:up,j:left,k:down,l:right';
+    renderer.domElement.dataset.keyboardRotationSpeed = '72deg/s';
     renderer.domElement.dataset.minCameraDistance = detailDollyFloor.toPrecision(8);
     renderer.domElement.dataset.minEffectiveDistance = minimumEffectiveDistance.toExponential(6);
     renderer.domElement.dataset.maxOpticalZoom = MAX_OPTICAL_ZOOM.toExponential(0);
     renderer.domElement.dataset.cameraFov = String(camera.fov);
     controlsRef.current = controls;
     cameraRef.current = camera;
+    const defaultCameraView = {
+      position: { x: camera.position.x, y: camera.position.y, z: camera.position.z },
+      target: { x: controls.target.x, y: controls.target.y, z: controls.target.z },
+      up: { x: camera.up.x, y: camera.up.y, z: camera.up.z },
+      zoom: 1,
+      projectionOffset: { x: 0, y: 0 },
+    };
+    const projectionPan = { x: 0, y: 0 };
 
     const displayGeometry = new THREE.BufferGeometry();
     Object.entries(geometry.attributes).forEach(([name, attribute]) => {
@@ -474,8 +591,10 @@ export default function PointCloudViewer({
       renderer.domElement.dataset.targetX = controls.target.x.toPrecision(10);
       renderer.domElement.dataset.targetY = controls.target.y.toPrecision(10);
       renderer.domElement.dataset.targetZ = controls.target.z.toPrecision(10);
+      renderer.domElement.dataset.cameraUpX = camera.up.x.toPrecision(10);
+      renderer.domElement.dataset.cameraUpY = camera.up.y.toPrecision(10);
+      renderer.domElement.dataset.cameraUpZ = camera.up.z.toPrecision(10);
     };
-    controls.addEventListener('change', syncDetailView);
 
     const progressiveWheelZoom = (event) => {
       let delta = event.deltaY;
@@ -510,6 +629,7 @@ export default function PointCloudViewer({
       camera.updateProjectionMatrix();
       controls.update();
       syncDetailView();
+      reportCameraView();
     };
     renderer.domElement.addEventListener('wheel', progressiveWheelZoom, {
       passive: false,
@@ -593,7 +713,6 @@ export default function PointCloudViewer({
     const raycaster = new THREE.Raycaster();
     const normalizedPointer = new THREE.Vector2();
     let pointerStart = null;
-    const projectionPan = { x: 0, y: 0 };
 
     const applyProjectionPan = () => {
       const width = Math.max(renderer.domElement.clientWidth, 1);
@@ -621,8 +740,73 @@ export default function PointCloudViewer({
       applyProjectionPan();
       renderer.domElement.dataset.panImplementation = 'world';
     };
+
+    const captureCameraView = () => ({
+      version: 1,
+      position: { x: camera.position.x, y: camera.position.y, z: camera.position.z },
+      target: { x: controls.target.x, y: controls.target.y, z: controls.target.z },
+      up: { x: camera.up.x, y: camera.up.y, z: camera.up.z },
+      zoom: Math.max(camera.zoom, 1),
+      projectionOffset: { x: projectionPan.x, y: projectionPan.y },
+    });
+    let lastReportedView = '';
+    const reportCameraView = (force = false) => {
+      const nextView = captureCameraView();
+      const signature = cameraViewSignature(nextView);
+      if (!signature || (!force && signature === lastReportedView)) return;
+      lastReportedView = signature;
+      renderer.domElement.dataset.viewSignature = signature;
+      onViewChangeRef.current?.(nextView);
+    };
+    const applyCameraView = (candidate, state = 'restored') => {
+      const nextView = normalizeCameraView(candidate);
+      if (!nextView) return false;
+      camera.position.set(nextView.position.x, nextView.position.y, nextView.position.z);
+      controls.target.set(nextView.target.x, nextView.target.y, nextView.target.z);
+      camera.up.set(nextView.up.x, nextView.up.y, nextView.up.z).normalize();
+      camera.zoom = nextView.zoom;
+      projectionPan.x = nextView.projectionOffset.x;
+      projectionPan.y = nextView.projectionOffset.y;
+      applyProjectionPan();
+      controls.update();
+      syncDetailView();
+      renderer.domElement.dataset.viewState = state;
+      renderer.domElement.dataset.viewRestored = state === 'restored' ? 'true' : 'false';
+      reportCameraView(true);
+      return true;
+    };
+    const resetCameraView = () => {
+      if (focusAnimationRef.current) {
+        cancelAnimationFrame(focusAnimationRef.current);
+        focusAnimationRef.current = null;
+      }
+      applyCameraView(defaultCameraView, 'reset');
+      renderer.domElement.dataset.viewResetCount = String(
+        Number(renderer.domElement.dataset.viewResetCount || 0) + 1,
+      );
+    };
+    const onControlsChange = () => {
+      syncDetailView();
+      reportCameraView();
+    };
     precisionPanRef.current = { clear: clearProjectionPan };
-    clearProjectionPan();
+    viewActionsRef.current = {
+      apply: applyCameraView,
+      capture: captureCameraView,
+      reset: resetCameraView,
+    };
+    const restoredCameraView = normalizeCameraView(initialViewRef.current);
+    if (restoredCameraView) {
+      appliedInitialViewRef.current = initialViewRef.current;
+      applyCameraView(restoredCameraView, 'restored');
+    } else {
+      clearProjectionPan();
+      renderer.domElement.dataset.viewState = 'default';
+      renderer.domElement.dataset.viewRestored = 'false';
+      syncDetailView();
+      reportCameraView(true);
+    }
+    controls.addEventListener('change', onControlsChange);
 
     const panByPixels = (deltaX, deltaY) => {
       if (!deltaX && !deltaY) return;
@@ -656,6 +840,7 @@ export default function PointCloudViewer({
         projectionPan.x -= deltaX;
         projectionPan.y -= deltaY;
         applyProjectionPan();
+        reportCameraView();
         renderer.domElement.dataset.panImplementation = 'precision-offset';
       } else {
         camera.updateMatrixWorld(true);
@@ -705,6 +890,69 @@ export default function PointCloudViewer({
       renderer.domElement.dataset.hoverPickId = selection?.id || '';
     };
 
+    const cancelPointerGesture = (event, reason = 'cancelled') => {
+      const pointerId = event?.pointerId ?? pointerStart?.id;
+      const hadActiveGesture = Boolean(pointerStart) || controls.state !== -1;
+      pointerStart = null;
+      controls.state = -1;
+
+      const capturedPointerIds = controls._pointers?.map((pointer) => pointer.pointerId) || [];
+      const pointerIds = new Set([
+        ...capturedPointerIds,
+        ...(Number.isFinite(pointerId) ? [pointerId] : []),
+      ]);
+      pointerIds.forEach((id) => {
+        if (!renderer.domElement.hasPointerCapture?.(id)) return;
+        try {
+          renderer.domElement.releasePointerCapture(id);
+        } catch {
+          // The browser may already have released capture while crossing the edge.
+        }
+      });
+      if (controls._pointers) controls._pointers.length = 0;
+      controls._pointerPositions = {};
+      renderer.domElement.removeEventListener('pointermove', controls._onPointerMove);
+      renderer.domElement.removeEventListener('pointerup', controls._onPointerUp);
+      renderer.domElement.classList.remove('is-pick-hover', 'is-panning');
+      renderer.domElement.dataset.pointerGestureState = hadActiveGesture ? reason : 'idle';
+      if (hadActiveGesture) {
+        renderer.domElement.dataset.pointerGestureCancelCount = String(
+          Number(renderer.domElement.dataset.pointerGestureCancelCount || 0) + 1,
+        );
+      }
+      return hadActiveGesture;
+    };
+
+    const promotePointerToShiftPan = () => {
+      if (
+        !pointerStart
+        || pointerStart.button !== 0
+        || pointerStart.panGesture
+        || interactionModeRef.current !== 'rotate'
+      ) {
+        return false;
+      }
+
+      // A drag may already belong to TrackballControls when Shift is pressed
+      // after pointerdown. Stop only its native gesture while retaining pointer
+      // capture for the precision pan implementation below.
+      controls.state = -1;
+      controls.keyState = -1;
+      if (controls._pointers) controls._pointers.length = 0;
+      controls._pointerPositions = {};
+      renderer.domElement.removeEventListener('pointermove', controls._onPointerMove);
+      renderer.domElement.removeEventListener('pointerup', controls._onPointerUp);
+      pointerStart.panGesture = true;
+      pointerStart.shiftPanOverride = true;
+      renderer.domElement.dataset.lastPointerGesture = 'shift-pan';
+      renderer.domElement.dataset.effectiveInteractionMode = 'shift-pan';
+      renderer.domElement.dataset.shiftPanActivationCount = String(
+        Number(renderer.domElement.dataset.shiftPanActivationCount || 0) + 1,
+      );
+      return true;
+    };
+    pointerInteractionRef.current = { activateShiftPan: promotePointerToShiftPan };
+
     const onPickPointerDown = (event) => {
       if (event.button !== 0 && event.button !== 2) return;
       if (focusAnimationRef.current) {
@@ -712,15 +960,22 @@ export default function PointCloudViewer({
         focusAnimationRef.current = null;
         renderer.domElement.dataset.synchronizedFocusState = 'interrupted';
       }
+      const shiftPressed =
+        event.shiftKey
+        || pressedKeysRef.current.has('ShiftLeft')
+        || pressedKeysRef.current.has('ShiftRight');
       const shiftPanOverride =
         event.button === 0
         && interactionModeRef.current === 'rotate'
-        && event.shiftKey;
+        && shiftPressed;
       const panGesture =
         event.button === 2
         || (event.button === 0 && interactionModeRef.current === 'pan')
         || shiftPanOverride;
-      if (shiftPanOverride) event.stopImmediatePropagation();
+      if (shiftPanOverride) {
+        setShiftPanArmed(true);
+        event.stopImmediatePropagation();
+      }
       pointerStart = {
         id: event.pointerId,
         x: event.clientX,
@@ -739,10 +994,35 @@ export default function PointCloudViewer({
       renderer.domElement.dataset.lastPointerGesture = shiftPanOverride
         ? 'shift-pan'
         : panGesture ? 'pan' : 'rotate-or-pick';
+      renderer.domElement.dataset.pointerGestureState = 'active';
       renderer.domElement.classList.remove('is-pick-hover');
     };
     const onPickPointerMove = (event) => {
       if (pointerStart?.id === event.pointerId) {
+        const rect = renderer.domElement.getBoundingClientRect();
+        const outside =
+          event.clientX < rect.left
+          || event.clientX > rect.right
+          || event.clientY < rect.top
+          || event.clientY > rect.bottom;
+        if (outside) {
+          cancelPointerGesture(event, 'cancelled-on-leave');
+          event.preventDefault();
+          event.stopImmediatePropagation();
+          return;
+        }
+        const liveShiftPressed =
+          event.shiftKey
+          || pressedKeysRef.current.has('ShiftLeft')
+          || pressedKeysRef.current.has('ShiftRight');
+        if (
+          liveShiftPressed
+          && interactionModeRef.current === 'rotate'
+          && promotePointerToShiftPan()
+        ) {
+          event.preventDefault();
+          event.stopImmediatePropagation();
+        }
         pointerStart.moved =
           pointerStart.moved
           || Math.hypot(event.clientX - pointerStart.x, event.clientY - pointerStart.y)
@@ -764,6 +1044,7 @@ export default function PointCloudViewer({
       if (!pointerStart || pointerStart.id !== event.pointerId) return;
       const start = pointerStart;
       pointerStart = null;
+      renderer.domElement.dataset.pointerGestureState = 'ended';
       renderer.domElement.classList.remove('is-panning');
       if (renderer.domElement.hasPointerCapture?.(event.pointerId)) {
         renderer.domElement.releasePointerCapture(event.pointerId);
@@ -785,24 +1066,18 @@ export default function PointCloudViewer({
       else onClearSelectionRef.current?.();
     };
     const resetPickPointer = (event) => {
-      if (
-        pointerStart
-        && event?.pointerId === pointerStart.id
-        && renderer.domElement.hasPointerCapture?.(event.pointerId)
-      ) {
-        renderer.domElement.releasePointerCapture(event.pointerId);
-      }
-      pointerStart = null;
-      renderer.domElement.classList.remove('is-pick-hover');
-      renderer.domElement.classList.remove('is-panning');
+      cancelPointerGesture(event, 'cancelled-by-browser');
     };
     const onPickPointerLeave = (event) => {
-      if (pointerStart?.id === event.pointerId) return;
+      if (pointerStart?.id === event.pointerId) {
+        cancelPointerGesture(event, 'cancelled-on-leave');
+        return;
+      }
       renderer.domElement.classList.remove('is-pick-hover');
     };
 
     renderer.domElement.addEventListener('pointerdown', onPickPointerDown, true);
-    renderer.domElement.addEventListener('pointermove', onPickPointerMove);
+    renderer.domElement.addEventListener('pointermove', onPickPointerMove, true);
     renderer.domElement.addEventListener('pointerup', onPickPointerUp);
     renderer.domElement.addEventListener('pointercancel', resetPickPointer);
     renderer.domElement.addEventListener('pointerleave', onPickPointerLeave);
@@ -826,6 +1101,10 @@ export default function PointCloudViewer({
     const forward = new THREE.Vector3();
     const right = new THREE.Vector3();
     const movement = new THREE.Vector3();
+    const cameraOffset = new THREE.Vector3();
+    const lookForward = new THREE.Vector3();
+    const lookRight = new THREE.Vector3();
+    const keyboardRotation = new THREE.Quaternion();
     const waypointCameraPosition = new THREE.Vector3();
     const originCameraPosition = new THREE.Vector3();
     renderer.setAnimationLoop(() => {
@@ -845,6 +1124,8 @@ export default function PointCloudViewer({
         if (keyActive('KeyS')) movement.sub(forward);
         if (keyActive('KeyD')) movement.add(right);
         if (keyActive('KeyA')) movement.sub(right);
+        if (keyActive('ArrowUp')) movement.add(worldUp);
+        if (keyActive('ArrowDown')) movement.sub(worldUp);
 
         if (movement.lengthSq() > 0) {
           const distance = camera.position.distanceTo(controls.target);
@@ -860,14 +1141,51 @@ export default function PointCloudViewer({
             keyboardImpulses.has('KeyW')
             || keyboardImpulses.has('KeyA')
             || keyboardImpulses.has('KeyS')
-            || keyboardImpulses.has('KeyD');
+            || keyboardImpulses.has('KeyD')
+            || keyboardImpulses.has('ArrowUp')
+            || keyboardImpulses.has('ArrowDown');
           const movementDuration = hasTapImpulse
             ? Math.max(deltaSeconds, KEYBOARD_TAP_DURATION)
             : deltaSeconds;
           movement.normalize().multiplyScalar(baseSpeed * speedMultiplier * movementDuration);
-          movement.z = 0;
           camera.position.add(movement);
           controls.target.add(movement);
+          keyboardMoved = true;
+        }
+
+        const yawInput = Number(keyActive('KeyJ')) - Number(keyActive('KeyL'));
+        const pitchInput = Number(keyActive('KeyI')) - Number(keyActive('KeyK'));
+        if (yawInput || pitchInput) {
+          const hasRotationTapImpulse =
+            keyboardImpulses.has('KeyI')
+            || keyboardImpulses.has('KeyJ')
+            || keyboardImpulses.has('KeyK')
+            || keyboardImpulses.has('KeyL');
+          const rotationDuration = hasRotationTapImpulse
+            ? Math.max(deltaSeconds, KEYBOARD_TAP_DURATION)
+            : deltaSeconds;
+          const rotationSpeedMultiplier =
+            keyActive('ShiftLeft') || keyActive('ShiftRight') ? 1.8 : 1;
+          const rotationStep =
+            KEYBOARD_ROTATION_SPEED * rotationSpeedMultiplier * rotationDuration;
+
+          cameraOffset.copy(camera.position).sub(controls.target);
+          if (yawInput) {
+            keyboardRotation.setFromAxisAngle(worldUp, yawInput * rotationStep);
+            cameraOffset.applyQuaternion(keyboardRotation);
+            camera.up.applyQuaternion(keyboardRotation);
+          }
+          if (pitchInput) {
+            lookForward.copy(cameraOffset).multiplyScalar(-1).normalize();
+            lookRight.crossVectors(lookForward, camera.up).normalize();
+            if (lookRight.lengthSq() > 1e-12) {
+              keyboardRotation.setFromAxisAngle(lookRight, pitchInput * rotationStep);
+              cameraOffset.applyQuaternion(keyboardRotation);
+              camera.up.applyQuaternion(keyboardRotation);
+            }
+          }
+          camera.up.normalize();
+          camera.position.copy(controls.target).add(cameraOffset);
           keyboardMoved = true;
         }
       }
@@ -943,11 +1261,11 @@ export default function PointCloudViewer({
       observer.disconnect();
       renderer.domElement.removeEventListener('wheel', progressiveWheelZoom, true);
       renderer.domElement.removeEventListener('pointerdown', onPickPointerDown, true);
-      renderer.domElement.removeEventListener('pointermove', onPickPointerMove);
+      renderer.domElement.removeEventListener('pointermove', onPickPointerMove, true);
       renderer.domElement.removeEventListener('pointerup', onPickPointerUp);
       renderer.domElement.removeEventListener('pointercancel', resetPickPointer);
       renderer.domElement.removeEventListener('pointerleave', onPickPointerLeave);
-      controls.removeEventListener('change', syncDetailView);
+      controls.removeEventListener('change', onControlsChange);
       controls.dispose();
       displayGeometry.dispose();
       material.dispose();
@@ -967,12 +1285,32 @@ export default function PointCloudViewer({
       if (precisionPanRef.current?.clear === clearProjectionPan) {
         precisionPanRef.current = null;
       }
+      if (viewActionsRef.current?.reset === resetCameraView) {
+        viewActionsRef.current = null;
+      }
+      if (pointerInteractionRef.current?.activateShiftPan === promotePointerToShiftPan) {
+        pointerInteractionRef.current = null;
+      }
       controlsRef.current = null;
       cameraRef.current = null;
       displayGeometryRef.current = null;
       if (cloudMaterialRef.current === material) cloudMaterialRef.current = null;
     };
   }, [mapData?.geometry]);
+
+  useEffect(() => {
+    if (!initialView || appliedInitialViewRef.current === initialView) return;
+    if (viewActionsRef.current?.apply?.(initialView, 'restored')) {
+      appliedInitialViewRef.current = initialView;
+    }
+  }, [initialView, mapData?.geometry]);
+
+  useEffect(() => {
+    const revision = Number(resetRequest?.revision) || 0;
+    if (!revision || revision === appliedResetRevisionRef.current || !mapData?.geometry) return;
+    appliedResetRevisionRef.current = revision;
+    viewActionsRef.current?.reset?.();
+  }, [mapData?.geometry, resetRequest]);
 
   useEffect(() => {
     const controls = controlsRef.current;
@@ -1016,7 +1354,7 @@ export default function PointCloudViewer({
     const desiredDistance = THREE.MathUtils.clamp(
       focusRequest.type === 'edge'
         ? Math.max(subjectSpan * 1.45, sphere.radius * 0.12, routeScale * 12)
-        : Math.max(sphere.radius * 0.22, routeScale * 12),
+        : Math.max(sphere.radius * WAYPOINT_FOCUS_DISTANCE_RATIO, routeScale * 12),
       controls.minDistance * 2,
       controls.maxDistance * 0.82,
     );
@@ -1028,6 +1366,10 @@ export default function PointCloudViewer({
     canvas.dataset.synchronizedFocusId = focusRequest.id;
     canvas.dataset.synchronizedFocusRevision = String(focusRequest.revision);
     canvas.dataset.synchronizedFocusState = 'animating';
+    canvas.dataset.synchronizedFocusTargetDistance = desiredDistance.toPrecision(8);
+    if (focusRequest.type === 'waypoint') {
+      canvas.dataset.waypointFocusDistanceRatio = String(WAYPOINT_FOCUS_DISTANCE_RATIO);
+    }
 
     const animateFocus = (now) => {
       const progress = Math.min(1, (now - startedAt) / duration);
@@ -1081,19 +1423,30 @@ export default function PointCloudViewer({
   useEffect(() => {
     const controls = controlsRef.current;
     if (!controls) return;
+    const temporaryShiftPan = interactionMode === 'rotate' && shiftPanArmed;
     controls.mouseButtons.LEFT =
       interactionMode === 'pan' ? THREE.MOUSE.PAN : THREE.MOUSE.ROTATE;
     controls.mouseButtons.RIGHT = THREE.MOUSE.PAN;
     controls.domElement.dataset.interactionMode = interactionMode;
+    controls.domElement.dataset.shiftPanArmed = temporaryShiftPan ? 'true' : 'false';
+    controls.domElement.dataset.effectiveInteractionMode = temporaryShiftPan
+      ? 'shift-pan'
+      : interactionMode;
     controls.domElement.dataset.keyboardEnabled = 'true';
     controls.domElement.dataset.keyboardMode = 'always-on';
-  }, [interactionMode, mapData?.geometry]);
+  }, [interactionMode, mapData?.geometry, shiftPanArmed]);
 
   useEffect(() => {
     if (!mapData?.geometry) return undefined;
-    const resetKeys = () => {
+    const resetKeys = (updateUi = true) => {
       pressedKeysRef.current.clear();
       keyboardImpulseRef.current.clear();
+      if (updateUi) setShiftPanArmed(false);
+      const canvas = controlsRef.current?.domElement;
+      if (canvas) {
+        canvas.dataset.shiftPanArmed = 'false';
+        canvas.dataset.effectiveInteractionMode = interactionModeRef.current;
+      }
     };
     const onKeyDown = (event) => {
       const code = movementCodeForEvent(event);
@@ -1111,12 +1464,30 @@ export default function PointCloudViewer({
       ) {
         return;
       }
-      if (code.startsWith('Key')) event.preventDefault();
+      const isActionKey = code !== 'ShiftLeft' && code !== 'ShiftRight';
+      if (isActionKey) event.preventDefault();
       pressedKeysRef.current.add(code);
-      if (!event.repeat && code.startsWith('Key')) keyboardImpulseRef.current.add(code);
+      if (!event.repeat && isActionKey) keyboardImpulseRef.current.add(code);
       const canvas = controlsRef.current?.domElement;
-      if (canvas && code.startsWith('Key')) {
-        canvas.dataset.lastKeyboardKey = code.slice(3);
+      if (code === 'ShiftLeft' || code === 'ShiftRight') {
+        const temporaryShiftPan = interactionModeRef.current === 'rotate';
+        setShiftPanArmed(temporaryShiftPan);
+        if (canvas) {
+          canvas.dataset.shiftPanArmed = temporaryShiftPan ? 'true' : 'false';
+          canvas.dataset.effectiveInteractionMode = temporaryShiftPan
+            ? 'shift-pan'
+            : interactionModeRef.current;
+        }
+        if (temporaryShiftPan) pointerInteractionRef.current?.activateShiftPan?.();
+      }
+      if (canvas && isActionKey) {
+        canvas.dataset.lastKeyboardKey = code.startsWith('Key') ? code.slice(3) : code;
+        if (KEYBOARD_ROTATION_ACTIONS[code]) {
+          canvas.dataset.lastKeyboardRotation = KEYBOARD_ROTATION_ACTIONS[code];
+        }
+        if (KEYBOARD_VERTICAL_ACTIONS[code]) {
+          canvas.dataset.lastKeyboardVertical = KEYBOARD_VERTICAL_ACTIONS[code];
+        }
         canvas.dataset.keyboardInputCount = String(
           Number(canvas.dataset.keyboardInputCount || 0) + 1,
         );
@@ -1126,6 +1497,20 @@ export default function PointCloudViewer({
       const code = movementCodeForEvent(event);
       if (!code) return;
       pressedKeysRef.current.delete(code);
+      if (code === 'ShiftLeft' || code === 'ShiftRight') {
+        const shiftStillPressed =
+          pressedKeysRef.current.has('ShiftLeft')
+          || pressedKeysRef.current.has('ShiftRight');
+        const temporaryShiftPan = shiftStillPressed && interactionModeRef.current === 'rotate';
+        setShiftPanArmed(temporaryShiftPan);
+        const canvas = controlsRef.current?.domElement;
+        if (canvas) {
+          canvas.dataset.shiftPanArmed = temporaryShiftPan ? 'true' : 'false';
+          canvas.dataset.effectiveInteractionMode = temporaryShiftPan
+            ? 'shift-pan'
+            : interactionModeRef.current;
+        }
+      }
     };
     const onVisibilityChange = () => {
       if (document.visibilityState !== 'visible') resetKeys();
@@ -1140,7 +1525,7 @@ export default function PointCloudViewer({
       window.removeEventListener('keyup', onKeyUp);
       window.removeEventListener('blur', resetKeys);
       document.removeEventListener('visibilitychange', onVisibilityChange);
-      resetKeys();
+      resetKeys(false);
     };
   }, [mapData?.geometry]);
 
@@ -1284,7 +1669,7 @@ export default function PointCloudViewer({
         12,
       );
       const markerMaterial = new THREE.MeshBasicMaterial({
-        color: selected ? 0xffa94d : 0xffd166,
+        color: selected ? WAYPOINT_SELECTED_BODY_COLOR : WAYPOINT_DEFAULT_COLOR,
         depthTest: false,
       });
       const marker = new THREE.Mesh(markerGeometry, markerMaterial);
@@ -1292,7 +1677,7 @@ export default function PointCloudViewer({
       if (selected) {
         const haloGeometry = new THREE.SphereGeometry(waypointRadius * 1.48, 18, 12);
         const haloMaterial = new THREE.MeshBasicMaterial({
-          color: 0xffca63,
+          color: WAYPOINT_SELECTED_HALO_COLOR,
           transparent: true,
           opacity: 0.36,
           wireframe: true,
@@ -1325,6 +1710,8 @@ export default function PointCloudViewer({
       canvas.dataset.routeEdgeCount = String(group.children.length);
       canvas.dataset.renderedWaypointCount = String(waypointGroup.children.length);
       canvas.dataset.selectedWaypointPulseState = selectedWaypointId ? 'active' : 'idle';
+      canvas.dataset.selectedWaypointBodyColor = WAYPOINT_SELECTED_BODY_COLOR;
+      canvas.dataset.selectedWaypointHaloColor = WAYPOINT_SELECTED_HALO_COLOR;
     }
   }, [edges, mapData?.geometry, selectedEdgeId, selectedWaypointId, waypoints]);
 
@@ -1350,8 +1737,14 @@ export default function PointCloudViewer({
     controls.update();
   };
 
+  const resetView = () => viewActionsRef.current?.reset?.();
+  const temporaryShiftPan = interactionMode === 'rotate' && shiftPanArmed;
+
   return (
-    <div className="point-cloud-view" ref={mountRef}>
+    <div
+      className={`point-cloud-view ${temporaryShiftPan ? 'is-shift-pan-armed' : ''}`}
+      ref={mountRef}
+    >
       {!mapData?.geometry && (
         <div className="viewer-placeholder">
           <div className="placeholder-orbit">
@@ -1367,8 +1760,8 @@ export default function PointCloudViewer({
             <div className="viewer-tool-switch" role="toolbar" aria-label="三维视图工具">
               <button
                 type="button"
-                className={interactionMode === 'rotate' ? 'is-active' : ''}
-                aria-pressed={interactionMode === 'rotate'}
+                className={interactionMode === 'rotate' && !temporaryShiftPan ? 'is-active' : ''}
+                aria-pressed={interactionMode === 'rotate' && !temporaryShiftPan}
                 onClick={() => setInteractionMode('rotate')}
                 title="左键拖拽旋转"
               >
@@ -1376,12 +1769,12 @@ export default function PointCloudViewer({
               </button>
               <button
                 type="button"
-                className={interactionMode === 'pan' ? 'is-active' : ''}
-                aria-pressed={interactionMode === 'pan'}
+                className={`${interactionMode === 'pan' || temporaryShiftPan ? 'is-active' : ''} ${temporaryShiftPan ? 'is-temporary' : ''}`}
+                aria-pressed={interactionMode === 'pan' || temporaryShiftPan}
                 onClick={() => setInteractionMode('pan')}
-                title="左键拖拽平移"
+                title={temporaryShiftPan ? 'Shift 临时平移已启用' : '左键拖拽平移'}
               >
-                <Move3D size={13} /> 平移
+                <Move3D size={13} /> {temporaryShiftPan ? 'Shift 平移' : '平移'}
               </button>
               <button
                 type="button"
@@ -1396,6 +1789,14 @@ export default function PointCloudViewer({
               </button>
               <button type="button" onClick={focusOrigin} title="将三维视图中心定位到坐标原点">
                 <Crosshair size={13} /> 原点
+              </button>
+              <button
+                type="button"
+                onClick={resetView}
+                title="恢复点云初始相机位置、旋转与缩放"
+                aria-label="重置3D视角"
+              >
+                <RotateCcw size={13} /> 重置视角
               </button>
             </div>
             <div
@@ -1488,8 +1889,8 @@ export default function PointCloudViewer({
               {interactionMode === 'pan' ? <Move3D size={12} /> : <Rotate3D size={12} />}
               左键{interactionMode === 'pan' ? '平移' : '旋转'} · 点 / 路径可选
             </span>
-            <span><Keyboard size={12} /> WASD 随时横移 · Shift 加速 · Z 高度锁定</span>
-            <span><MousePointer2 size={12} /> 旋转时 Shift + 左键临时平移 · 右键始终平移</span>
+            <span><Keyboard size={12} /> WASD 平移 · ↑↓ Z升降 · I/K 仰俯 · J/L 转向</span>
+            <span><MousePointer2 size={12} /> Shift 加速 / 临时平移 · 右键平移</span>
             <span>
               <Gauge size={12} />
               {resolutionSelection === 'auto' ? '点数超限 · 已自动降采样' : '分辨率仅影响 3D 显示'}

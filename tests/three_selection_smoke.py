@@ -107,7 +107,7 @@ def run():
 
         # The inspector search is a closed list sourced only from this map.
         # Selecting a result restores hidden 3D markers and highlights the same
-        # waypoint in both views with a breathing animation.
+        # waypoint in both views with a closer framing and a breathing animation.
         waypoint_search = page.get_by_label("搜索导航点")
         assert waypoint_search.locator("option").count() == 3
         first_waypoint_id = waypoint_search.locator("option").nth(1).get_attribute("value")
@@ -128,6 +128,18 @@ def run():
         assert map_view.get_attribute("data-synchronized-focus-type") == "waypoint"
         assert canvas.get_attribute("data-synchronized-focus-id") == first_waypoint_id
         assert map_view.get_attribute("data-synchronized-focus-id") == first_waypoint_id
+        assert float(map_view.get_attribute("data-waypoint-focus-scale-multiplier")) == 6
+        assert abs(
+            float(map_view.get_attribute("data-view-scale"))
+            - float(map_view.get_attribute("data-synchronized-focus-target-scale"))
+        ) < 0.01
+        assert abs(float(canvas.get_attribute("data-waypoint-focus-distance-ratio")) - 0.17) < 1e-9
+        assert abs(
+            float(canvas.get_attribute("data-camera-distance"))
+            - float(canvas.get_attribute("data-synchronized-focus-target-distance"))
+        ) < 0.01
+        assert canvas.get_attribute("data-selected-waypoint-body-color") == "#59dbe8"
+        assert canvas.get_attribute("data-selected-waypoint-halo-color") == "#9b8cff"
         vector_canvas = page.get_by_label("二维矢量点云截面")
         assert abs(float(vector_canvas.get_attribute("data-view-center-x")) - poses[0][0]) < 0.01
         assert abs(float(vector_canvas.get_attribute("data-view-center-y")) - poses[0][1]) < 0.01
@@ -137,6 +149,12 @@ def run():
         assert "is-selected" in (selected_marker.get_attribute("class") or "")
         assert selected_marker.evaluate("node => getComputedStyle(node).animationName") == (
             "waypoint-selected-pulse"
+        )
+        assert selected_marker.evaluate("node => getComputedStyle(node).backgroundColor") == (
+            "rgb(89, 219, 232)"
+        )
+        assert "155, 140, 255" in selected_marker.evaluate(
+            "node => getComputedStyle(node).boxShadow"
         )
         page.wait_for_function(
             "canvas => Number.isFinite(Number(canvas.dataset.selectedWaypointPulse))",

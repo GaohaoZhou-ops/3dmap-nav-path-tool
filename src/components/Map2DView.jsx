@@ -2,16 +2,19 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ArrowRight,
   Crosshair,
-  Focus,
   LoaderCircle,
   Maximize2,
   Minus,
   Plus,
+  RotateCcw,
+  ScanLine,
+  Trash2,
 } from 'lucide-react';
 import VectorPointLayer from './VectorPointLayer.jsx';
 
 const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
 const MAX_ZOOM_MULTIPLIER = 2500;
+const WAYPOINT_FOCUS_SCALE_MULTIPLIER = 6;
 
 const niceStep = (raw) => {
   const exponent = Math.floor(Math.log10(Math.max(raw, 0.0001)));
@@ -33,6 +36,61 @@ const pointOnCurve = (start, control, end, t) => {
   };
 };
 
+const normalizeSelectionRect = (startX, startY, endX, endY) => ({
+  left: Math.min(startX, endX),
+  right: Math.max(startX, endX),
+  top: Math.min(startY, endY),
+  bottom: Math.max(startY, endY),
+});
+
+const expandSelectionRect = (rect, padding) => ({
+  left: rect.left - padding,
+  right: rect.right + padding,
+  top: rect.top - padding,
+  bottom: rect.bottom + padding,
+});
+
+const pointInsideRect = (point, rect) =>
+  point.x >= rect.left
+  && point.x <= rect.right
+  && point.y >= rect.top
+  && point.y <= rect.bottom;
+
+const segmentIntersectsRect = (start, end, rect) => {
+  if (pointInsideRect(start, rect) || pointInsideRect(end, rect)) return true;
+  const dx = end.x - start.x;
+  const dy = end.y - start.y;
+  let lower = 0;
+  let upper = 1;
+  const clips = [
+    [-dx, start.x - rect.left],
+    [dx, rect.right - start.x],
+    [-dy, start.y - rect.top],
+    [dy, rect.bottom - start.y],
+  ];
+  for (const [direction, distance] of clips) {
+    if (Math.abs(direction) < 1e-12) {
+      if (distance < 0) return false;
+      continue;
+    }
+    const ratio = distance / direction;
+    if (direction < 0) lower = Math.max(lower, ratio);
+    else upper = Math.min(upper, ratio);
+    if (lower > upper) return false;
+  }
+  return true;
+};
+
+const curveIntersectsRect = (start, control, end, rect) => {
+  let previous = start;
+  for (let step = 1; step <= 32; step += 1) {
+    const current = pointOnCurve(start, control, end, step / 32);
+    if (segmentIntersectsRect(previous, current, rect)) return true;
+    previous = current;
+  }
+  return false;
+};
+
 export default function Map2DView({
   mapData,
   initialView,
@@ -49,9 +107,11 @@ export default function Map2DView({
   onSelectEdge,
   onConnectTarget,
   onClearSelection,
+  onDeleteSelection,
   onProjectionStats,
   onViewChange,
   focusRequest,
+  resetRequest,
 }) {
   const hostRef = useRef(null);
   const canvasRef = useRef(null);
@@ -61,6 +121,7 @@ export default function Map2DView({
   const initializedBoundsRef = useRef('');
   const appliedInitialViewRef = useRef('');
   const focusAnimationRef = useRef(null);
+  const appliedResetRevisionRef = useRef(0);
   const viewRef = useRef(null);
   const [size, setSize] = useState({ width: 1, height: 1 });
   const [view, setView] = useState({ centerX: 0, centerY: 0, scale: 1 });
@@ -68,7 +129,18 @@ export default function Map2DView({
   const [projecting, setProjecting] = useState(false);
   const [projection, setProjection] = useState(null);
   const [cursor, setCursor] = useState(null);
+  const [selectionMarquee, setSelectionMarquee] = useState(null);
+  const [boxSelection, setBoxSelection] = useState({ waypointIds: [], edgeIds: [] });
   viewRef.current = view;
+
+  const clearBoxSelection = useCallback(() => {
+    setSelectionMarquee(null);
+    setBoxSelection((current) =>
+      current.waypointIds.length || current.edgeIds.length
+        ? { waypointIds: [], edgeIds: [] }
+        : current,
+    );
+  }, []);
 
   const bounds = mapData?.bounds || null;
   const hasCloud = Boolean(mapData?.positions?.length);
@@ -164,6 +236,23 @@ export default function Map2DView({
     if (hostRef.current) hostRef.current.dataset.synchronizedFocusState = 'interrupted';
   }, []);
 
+  const resetView = useCallback(() => {
+    cancelFocusAnimation();
+    fitView(true);
+    const host = hostRef.current;
+    if (host) {
+      host.dataset.viewResetCount = String(Number(host.dataset.viewResetCount || 0) + 1);
+      host.dataset.viewState = 'reset';
+    }
+  }, [cancelFocusAnimation, fitView]);
+
+  useEffect(() => {
+    const revision = Number(resetRequest?.revision) || 0;
+    if (!revision || revision === appliedResetRevisionRef.current || !bounds) return;
+    appliedResetRevisionRef.current = revision;
+    resetView();
+  }, [bounds, resetRequest, resetView]);
+
   useEffect(() => {
     const host = hostRef.current;
     if (!focusRequest || !bounds || !host || size.width < 2 || size.height < 2) {
@@ -205,7 +294,7 @@ export default function Map2DView({
       spanY > 1e-9 ? Math.max(size.height - 130, 1) / spanY : Number.POSITIVE_INFINITY,
     );
     const targetScale = focusRequest.type === 'waypoint'
-      ? fullScale * 5
+      ? fullScale * WAYPOINT_FOCUS_SCALE_MULTIPLIER
       : Number.isFinite(pathScale) ? pathScale : fullScale * 5;
     const targetView = {
       centerX,
@@ -219,6 +308,10 @@ export default function Map2DView({
     host.dataset.synchronizedFocusId = focusRequest.id;
     host.dataset.synchronizedFocusRevision = String(focusRequest.revision);
     host.dataset.synchronizedFocusState = 'animating';
+    host.dataset.synchronizedFocusTargetScale = targetView.scale.toPrecision(12);
+    if (focusRequest.type === 'waypoint') {
+      host.dataset.waypointFocusScaleMultiplier = String(WAYPOINT_FOCUS_SCALE_MULTIPLIER);
+    }
 
     const animateFocus = (now) => {
       const progress = Math.min(1, (now - startedAt) / duration);
@@ -493,12 +586,25 @@ export default function Map2DView({
     pointerRef.current = {
       id: event.pointerId,
       button: event.button,
+      action:
+        event.button === 0 && mode === 'box'
+          ? 'box-select'
+          : event.button !== 0 || mode === 'select' || mode === 'pan' ? 'pan' : 'click',
       startX: local.x,
       startY: local.y,
       centerX: view.centerX,
       centerY: view.centerY,
       moved: false,
     };
+    if (event.button === 0 && mode === 'box') {
+      setSelectionMarquee({
+        startX: local.x,
+        startY: local.y,
+        endX: local.x,
+        endY: local.y,
+        moved: false,
+      });
+    }
     event.currentTarget.setPointerCapture(event.pointerId);
   };
 
@@ -510,9 +616,24 @@ export default function Map2DView({
     if (!pointer || pointer.id !== event.pointerId) return;
     const dx = local.x - pointer.startX;
     const dy = local.y - pointer.startY;
-    if (Math.hypot(dx, dy) > 3) pointer.moved = true;
-    const canPan = pointer.button !== 0 || mode === 'select' || mode === 'pan';
-    if (pointer.moved && canPan) {
+    if (!pointer.moved && Math.hypot(dx, dy) > 3) {
+      pointer.moved = true;
+      if (pointer.action === 'box-select') {
+        clearBoxSelection();
+        onClearSelection();
+      }
+    }
+    if (pointer.moved && pointer.action === 'box-select') {
+      setSelectionMarquee({
+        startX: pointer.startX,
+        startY: pointer.startY,
+        endX: clamp(local.x, 0, size.width),
+        endY: clamp(local.y, 0, size.height),
+        moved: true,
+      });
+      return;
+    }
+    if (pointer.moved && pointer.action === 'pan') {
       setView((current) => ({
         ...current,
         centerX: pointer.centerX - dx / current.scale,
@@ -571,8 +692,38 @@ export default function Map2DView({
   const onPointerUp = (event) => {
     const pointer = pointerRef.current;
     pointerRef.current = null;
-    if (!pointer || pointer.id !== event.pointerId || pointer.moved || pointer.button !== 0) return;
+    if (!pointer || pointer.id !== event.pointerId) return;
     const local = localPointer(event);
+    if (pointer.action === 'box-select') {
+      setSelectionMarquee(null);
+      if (pointer.moved) {
+        const rect = normalizeSelectionRect(
+          pointer.startX,
+          pointer.startY,
+          clamp(local.x, 0, size.width),
+          clamp(local.y, 0, size.height),
+        );
+        const waypointHitRect = expandSelectionRect(rect, 12);
+        const edgeHitRect = expandSelectionRect(rect, 5);
+        const waypointIds = waypoints
+          .filter((point) =>
+            pointInsideRect(worldToScreen(point.pose.x, point.pose.y), waypointHitRect),
+          )
+          .map((point) => point.id);
+        const edgeIds = edgeVisuals
+          .filter(({ start, control, end }) =>
+            curveIntersectsRect(start, control, end, edgeHitRect),
+          )
+          .map(({ edge }) => edge.id);
+        setBoxSelection({ waypointIds, edgeIds });
+        onClearSelection();
+      } else {
+        clearBoxSelection();
+        onClearSelection();
+      }
+      return;
+    }
+    if (pointer.moved || pointer.button !== 0) return;
     const world = screenToWorld(local.x, local.y);
     const inside =
       bounds &&
@@ -583,8 +734,15 @@ export default function Map2DView({
     if (mode === 'add' && inside) {
       onAddWaypoint({ x: world.x, y: world.y, z: heightAtWorld(world) });
     } else if (mode === 'select') {
+      clearBoxSelection();
       onClearSelection();
     }
+  };
+
+  const onPointerCancel = (event) => {
+    if (pointerRef.current?.id !== event.pointerId) return;
+    pointerRef.current = null;
+    setSelectionMarquee(null);
   };
 
   const zoomBy = (factor) => setView((current) => {
@@ -630,6 +788,9 @@ export default function Map2DView({
         const label = pointOnCurve(start, control, end, 0.5);
         return {
           edge,
+          start,
+          control,
+          end,
           path: `M ${start.x} ${start.y} Q ${control.x} ${control.y} ${end.x} ${end.y}`,
           label,
           accessibleLabel: `配置路径 ${source.name || edge.from} 到 ${target.name || edge.to}`,
@@ -637,6 +798,75 @@ export default function Map2DView({
       })
       .filter(Boolean);
   }, [edges, pointById, worldToScreen]);
+
+  const boxWaypointIds = useMemo(
+    () => new Set(boxSelection.waypointIds),
+    [boxSelection.waypointIds],
+  );
+  const boxEdgeIds = useMemo(
+    () => new Set(boxSelection.edgeIds),
+    [boxSelection.edgeIds],
+  );
+  const boxSelectionCount = boxSelection.waypointIds.length + boxSelection.edgeIds.length;
+
+  useEffect(() => {
+    clearBoxSelection();
+  }, [clearBoxSelection, mapData?.mapId, mode]);
+
+  useEffect(() => {
+    if (selectedWaypointId || selectedEdgeId) clearBoxSelection();
+  }, [clearBoxSelection, selectedEdgeId, selectedWaypointId]);
+
+  useEffect(() => {
+    const waypointIds = new Set(waypoints.map((point) => point.id));
+    const edgeIds = new Set(edges.map((edge) => edge.id));
+    setBoxSelection((current) => {
+      const nextWaypointIds = current.waypointIds.filter((id) => waypointIds.has(id));
+      const nextEdgeIds = current.edgeIds.filter((id) => edgeIds.has(id));
+      return nextWaypointIds.length === current.waypointIds.length
+        && nextEdgeIds.length === current.edgeIds.length
+        ? current
+        : { waypointIds: nextWaypointIds, edgeIds: nextEdgeIds };
+    });
+  }, [edges, waypoints]);
+
+  useEffect(() => {
+    const deleteSelectedObjects = (event) => {
+      if ((event.key !== 'Delete' && event.key !== 'Backspace') || event.repeat) return;
+      const target = event.target;
+      const tagName = target?.tagName?.toLowerCase();
+      if (
+        target?.isContentEditable
+        || tagName === 'input'
+        || tagName === 'textarea'
+        || tagName === 'select'
+        || event.metaKey
+        || event.ctrlKey
+        || event.altKey
+      ) {
+        return;
+      }
+      const waypointIds = new Set(boxSelection.waypointIds);
+      const edgeIds = new Set(boxSelection.edgeIds);
+      if (selectedWaypointId) waypointIds.add(selectedWaypointId);
+      if (selectedEdgeId) edgeIds.add(selectedEdgeId);
+      if (!waypointIds.size && !edgeIds.size) return;
+      event.preventDefault();
+      onDeleteSelection?.({ waypointIds: [...waypointIds], edgeIds: [...edgeIds] });
+      clearBoxSelection();
+      onClearSelection();
+    };
+    window.addEventListener('keydown', deleteSelectedObjects);
+    return () => window.removeEventListener('keydown', deleteSelectedObjects);
+  }, [
+    boxSelection.edgeIds,
+    boxSelection.waypointIds,
+    clearBoxSelection,
+    onClearSelection,
+    onDeleteSelection,
+    selectedEdgeId,
+    selectedWaypointId,
+  ]);
 
   const markerClass = (edge) => {
     if (edge.status === 'connected') return 'connected';
@@ -669,9 +899,17 @@ export default function Map2DView({
       ref={hostRef}
       className={`map2d-view mode-${mode}`}
       data-coordinate-origin-style="ros-rviz"
+      data-view-center-x={view.centerX.toPrecision(12)}
+      data-view-center-y={view.centerY.toPrecision(12)}
+      data-view-scale={view.scale.toPrecision(12)}
+      data-box-selection-state={selectionMarquee?.moved ? 'dragging' : boxSelectionCount ? 'selected' : 'idle'}
+      data-box-selected-waypoint-count={boxSelection.waypointIds.length}
+      data-box-selected-edge-count={boxSelection.edgeIds.length}
+      data-delete-shortcut="Delete,Backspace"
       onPointerDown={onPointerDown}
       onPointerMove={onPointerMove}
       onPointerUp={onPointerUp}
+      onPointerCancel={onPointerCancel}
       onPointerLeave={() => setCursor(null)}
       onContextMenu={(event) => event.preventDefault()}
     >
@@ -688,10 +926,31 @@ export default function Map2DView({
         />
       )}
 
+      {selectionMarquee?.moved && (() => {
+        const rect = normalizeSelectionRect(
+          selectionMarquee.startX,
+          selectionMarquee.startY,
+          selectionMarquee.endX,
+          selectionMarquee.endY,
+        );
+        return (
+          <div
+            className="map-selection-marquee"
+            aria-hidden="true"
+            style={{
+              left: rect.left,
+              top: rect.top,
+              width: rect.right - rect.left,
+              height: rect.bottom - rect.top,
+            }}
+          />
+        );
+      })()}
+
       {bounds && (
         <svg className="route-layer" width={size.width} height={size.height} aria-label="有向路径图层">
           <defs>
-            {['unchecked', 'connected', 'unreachable', 'selected'].map((kind) => (
+            {['unchecked', 'connected', 'unreachable', 'selected', 'box-selected'].map((kind) => (
               <marker
                 key={kind}
                 id={`arrow-${kind}`}
@@ -709,9 +968,11 @@ export default function Map2DView({
           {edgeVisuals.map(({ edge, path, label, accessibleLabel }) => {
             const kind = markerClass(edge);
             const selected = edge.id === selectedEdgeId;
+            const boxSelected = boxEdgeIds.has(edge.id);
+            const arrowKind = boxSelected ? 'box-selected' : selected ? 'selected' : kind;
             return (
-              <g key={edge.id} className={`route-edge ${kind} ${selected ? 'is-selected' : ''}`}>
-                <path className="route-edge__visible" d={path} markerEnd={`url(#arrow-${kind})`} />
+              <g key={edge.id} className={`route-edge ${kind} ${selected ? 'is-selected' : ''} ${boxSelected ? 'is-box-selected' : ''}`}>
+                <path className="route-edge__visible" d={path} markerEnd={`url(#arrow-${arrowKind})`} />
                 <path
                   className="route-edge__hit"
                   d={path}
@@ -719,24 +980,30 @@ export default function Map2DView({
                   tabIndex="0"
                   focusable="true"
                   aria-label={accessibleLabel}
-                  aria-pressed={selected}
+                  aria-pressed={selected || boxSelected}
                   onPointerDown={(event) => {
                     event.stopPropagation();
-                    if (event.button === 0) onSelectEdge(edge.id);
+                    if (event.button === 0) {
+                      clearBoxSelection();
+                      onSelectEdge(edge.id);
+                    }
                   }}
                   onPointerUp={(event) => event.stopPropagation()}
                   onClick={(event) => {
                     event.stopPropagation();
+                    clearBoxSelection();
                     onSelectEdge(edge.id);
                   }}
                   onDoubleClick={(event) => {
                     event.stopPropagation();
+                    clearBoxSelection();
                     onSelectEdge(edge.id);
                   }}
                   onKeyDown={(event) => {
                     if (event.key !== 'Enter' && event.key !== ' ') return;
                     event.preventDefault();
                     event.stopPropagation();
+                    clearBoxSelection();
                     onSelectEdge(edge.id);
                   }}
                 />
@@ -754,17 +1021,19 @@ export default function Map2DView({
           const screen = worldToScreen(point.pose.x, point.pose.y);
           if (screen.x < -30 || screen.x > size.width + 30 || screen.y < -30 || screen.y > size.height + 30) return null;
           const selected = point.id === selectedWaypointId;
+          const boxSelected = boxWaypointIds.has(point.id);
           const source = point.id === connectionSourceId;
           return (
             <button
               type="button"
               key={point.id}
               data-waypoint-id={point.id}
-              className={`waypoint-marker ${selected ? 'is-selected' : ''} ${source ? 'is-source' : ''}`}
+              className={`waypoint-marker ${selected ? 'is-selected' : ''} ${boxSelected ? 'is-box-selected' : ''} ${source ? 'is-source' : ''}`}
               style={{ left: screen.x, top: screen.y }}
               onPointerDown={(event) => event.stopPropagation()}
               onClick={(event) => {
                 event.stopPropagation();
+                clearBoxSelection();
                 if (mode === 'connect') onConnectTarget(point.id);
                 else onSelectWaypoint(point.id);
               }}
@@ -775,6 +1044,21 @@ export default function Map2DView({
           );
         })}
       </div>
+
+      {boxSelectionCount > 0 && (
+        <div
+          className="map-selection-summary"
+          role="status"
+          aria-live="polite"
+          aria-label="框选结果"
+        >
+          <ScanLine size={14} />
+          <strong>
+            {boxSelection.waypointIds.length} 点 · {boxSelection.edgeIds.length} 路径
+          </strong>
+          <span><Trash2 size={11} /><kbd>Delete</kbd> 删除</span>
+        </div>
+      )}
 
       {bounds && (
         <button
@@ -819,7 +1103,7 @@ export default function Map2DView({
           <button type="button" onClick={() => zoomBy(1.35)} title="放大" aria-label="放大"><Plus size={15} /></button>
           <button type="button" onClick={() => zoomBy(0.74)} title="缩小" aria-label="缩小"><Minus size={15} /></button>
           <button type="button" onClick={centerOrigin} title="定位坐标原点" aria-label="定位坐标原点"><Crosshair size={15} /></button>
-          <button type="button" onClick={() => fitView(true)} title="聚焦地图" aria-label="聚焦地图"><Focus size={15} /></button>
+          <button type="button" className="map-view-reset" onClick={resetView} title="恢复地图初始视角" aria-label="重置2D视角"><RotateCcw size={14} /><span>重置视角</span></button>
           <button type="button" onClick={() => fitView(false)} title="适配全图" aria-label="适配全图"><Maximize2 size={15} /></button>
         </div>
       )}

@@ -572,7 +572,9 @@ export default function App() {
               geometry: null,
               metadataOnly: true,
             });
-            setHeightRange(project.slice || [bounds.min.z, bounds.max.z]);
+            setHeightRange(
+              clampSlice(project.slice || [bounds.min.z, bounds.max.z], bounds),
+            );
             setRestoredView2d(preferredView2d);
             view2dRef.current = preferredView2d;
             setRestoredView3d(preferredView3d);
@@ -590,7 +592,13 @@ export default function App() {
 
             setWaypoints(project.waypoints);
             setEdges(project.edges);
-            if (!stored.map && project.slice) setHeightRange(project.slice);
+            if (!stored.map && project.slice) {
+              setHeightRange(
+                project.map?.bounds
+                  ? clampSlice(project.slice, project.map.bounds)
+                  : project.slice,
+              );
+            }
             setRestoredView2d(preferredView2d);
             view2dRef.current = preferredView2d;
             setRestoredView3d(preferredView3d);
@@ -782,7 +790,12 @@ export default function App() {
           : initialValidation,
       );
 
-      if (project.slice) setHeightRange(project.slice);
+      if (project.slice) {
+        const importedBounds = mapData?.bounds || project.map?.bounds;
+        setHeightRange(
+          importedBounds ? clampSlice(project.slice, importedBounds) : project.slice,
+        );
+      }
       if (!mapData && project.map?.bounds) {
         setMapData({
           mapId: createId('map-meta'),

@@ -410,6 +410,7 @@ export default function Inspector({
                 <div><dt>投影平面</dt><dd>XY / Z 轴切片</dd></div>
                 <div><dt>截面下限</dt><dd>{heightRange[0].toFixed(2)} m</dd></div>
                 <div><dt>截面上限</dt><dd>{heightRange[1].toFixed(2)} m</dd></div>
+                <div><dt>截面跨度</dt><dd>{Math.max(0, heightRange[1] - heightRange[0]).toFixed(2)} m</dd></div>
               </dl>
             </section>
 

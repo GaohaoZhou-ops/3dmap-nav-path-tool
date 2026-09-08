@@ -123,11 +123,17 @@ def run():
         page.get_by_role("button", name="旋转", exact=True).click()
 
         height_bar = page.get_by_role("slider", name="截面中心高度")
+        span_bar = page.get_by_role("slider", name="截面高度跨度")
         assert page.get_by_role("slider", name="截面中心高度").count() == 1
+        assert span_bar.count() == 1
         assert page.locator(".height-range__handle").count() == 1
-        height_input = page.locator(".height-range__inputs input")
-        assert height_input.count() == 1
-        changed_height = float(height_input.input_value()) - 0.2
+        height_input = page.get_by_label("截面中心高度数值")
+        assert page.locator(".height-range__inputs input").count() == 2
+        current_height = float(height_input.input_value())
+        center_min = float(height_bar.get_attribute("aria-valuemin"))
+        center_max = float(height_bar.get_attribute("aria-valuemax"))
+        direction = 0.2 if current_height + 0.2 <= center_max else -0.2
+        changed_height = max(center_min, min(center_max, current_height + direction))
         height_input.fill(f"{changed_height:.2f}")
         page.wait_for_timeout(300)
         page.locator(".projection-status").wait_for(state="hidden", timeout=120_000)
@@ -193,10 +199,15 @@ def run():
         assert download.suggested_filename.startswith("route-graph-")
         assert download_path.stat().st_size > 500
         exported = json.loads(download_path.read_text())
-        exported_center = (
-            exported["projection"]["minHeight"] + exported["projection"]["maxHeight"]
-        ) / 2
-        assert abs(exported_center - changed_height) < 0.001
+        exported_slice = exported["projection"]
+        assert exported_slice["mode"] == "height-range"
+        exported_center = (exported_slice["minHeight"] + exported_slice["maxHeight"]) / 2
+        assert abs(exported_center - changed_height) < 0.01
+        assert abs(
+            exported_slice["heightSpan"]
+            - (exported_slice["maxHeight"] - exported_slice["minHeight"])
+        ) < 0.001
+        assert exported_slice["heightSpan"] > 0
         assert len(exported["waypoints"][0]["xzy"]) == 3
         assert len(exported["waypoints"][0]["rpy"]) == 3
         exported_path = exported["paths"][0]

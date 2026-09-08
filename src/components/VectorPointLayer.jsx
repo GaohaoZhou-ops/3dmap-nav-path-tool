@@ -189,8 +189,10 @@ export default function VectorPointLayer({
       data-view-center-y={view.centerY}
       data-world-units-per-pixel={1 / Math.max(view.scale, 0.001)}
       data-point-size-css="1.65"
+      data-slice-mode="range"
       data-slice-min={heightRange[0]}
       data-slice-max={heightRange[1]}
+      data-slice-span={Math.max(0, heightRange[1] - heightRange[0])}
       data-color-mode={colorMode}
       aria-label="二维矢量点云截面"
     />

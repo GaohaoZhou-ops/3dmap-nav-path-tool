@@ -902,6 +902,10 @@ export default function Map2DView({
       data-view-center-x={view.centerX.toPrecision(12)}
       data-view-center-y={view.centerY.toPrecision(12)}
       data-view-scale={view.scale.toPrecision(12)}
+      data-slice-mode="range"
+      data-slice-min={heightRange[0]}
+      data-slice-max={heightRange[1]}
+      data-slice-span={Math.max(0, heightRange[1] - heightRange[0])}
       data-box-selection-state={selectionMarquee?.moved ? 'dragging' : boxSelectionCount ? 'selected' : 'idle'}
       data-box-selected-waypoint-count={boxSelection.waypointIds.length}
       data-box-selected-edge-count={boxSelection.edgeIds.length}

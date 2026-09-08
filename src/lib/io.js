@@ -1,4 +1,5 @@
 import { calculatePathDistances } from './pathMetrics.js';
+import { getSliceControlBounds } from './sliceRange.js';
 
 const numberOr = (value, fallback = 0) => {
   const parsed = Number(value);
@@ -173,9 +174,12 @@ export function buildExport({ mapData, heightRange, waypoints, edges, view2d, vi
     },
     projection: {
       plane: 'XY',
+      mode: 'height-range',
       verticalAxis: 'Z',
       minHeight: heightRange[0],
       maxHeight: heightRange[1],
+      centerHeight: (heightRange[0] + heightRange[1]) / 2,
+      heightSpan: Math.max(0, heightRange[1] - heightRange[0]),
     },
     view2d: view2d || null,
     view3d: view3d || null,
@@ -231,11 +235,15 @@ export function downloadJson(payload, filename) {
 
 export function clampSlice(slice, bounds) {
   if (!slice || !bounds) return slice;
-  const low = Math.max(bounds.min.z, Math.min(bounds.max.z, slice[0]));
-  const high = Math.max(bounds.min.z, Math.min(bounds.max.z, slice[1]));
+  const controlBounds = getSliceControlBounds(bounds);
+  const low = Math.max(controlBounds.min, Math.min(controlBounds.max, slice[0]));
+  const high = Math.max(controlBounds.min, Math.min(controlBounds.max, slice[1]));
   if (low === high) {
-    const padding = Math.max((bounds.max.z - bounds.min.z) * 0.05, 0.01);
-    return [Math.max(bounds.min.z, low - padding), Math.min(bounds.max.z, high + padding)];
+    const padding = Math.max((controlBounds.max - controlBounds.min) * 0.05, 0.01);
+    return [
+      Math.max(controlBounds.min, low - padding),
+      Math.min(controlBounds.max, high + padding),
+    ];
   }
   return [Math.min(low, high), Math.max(low, high)];
 }

@@ -56,6 +56,8 @@ const KEYBOARD_CONTROL_CODES = new Set([
   'KeyL',
   'ArrowUp',
   'ArrowDown',
+  'ArrowLeft',
+  'ArrowRight',
   'ShiftLeft',
   'ShiftRight',
 ]);
@@ -70,6 +72,8 @@ const KEYBOARD_KEY_CODES = {
   l: 'KeyL',
   arrowup: 'ArrowUp',
   arrowdown: 'ArrowDown',
+  arrowleft: 'ArrowLeft',
+  arrowright: 'ArrowRight',
   shift: 'ShiftLeft',
 };
 
@@ -78,6 +82,8 @@ const KEYBOARD_ROTATION_ACTIONS = {
   KeyJ: 'yaw-left',
   KeyK: 'pitch-down',
   KeyL: 'yaw-right',
+  ArrowLeft: 'roll-left',
+  ArrowRight: 'roll-right',
 };
 
 const KEYBOARD_VERTICAL_ACTIONS = {
@@ -468,7 +474,7 @@ export default function PointCloudViewer({
     renderer.domElement.setAttribute('aria-label', '三维点云交互画布');
     renderer.domElement.setAttribute(
       'aria-keyshortcuts',
-      'W A S D I J K L ArrowUp ArrowDown Shift+W Shift+A Shift+S Shift+D Shift+I Shift+J Shift+K Shift+L Shift+ArrowUp Shift+ArrowDown',
+      'W A S D I J K L ArrowUp ArrowDown ArrowLeft ArrowRight Shift+W Shift+A Shift+S Shift+D Shift+I Shift+J Shift+K Shift+L Shift+ArrowUp Shift+ArrowDown Shift+ArrowLeft Shift+ArrowRight',
     );
     renderer.domElement.dataset.geometrySource =
       mapData.geometrySource || geometry.userData.geometrySource || 'ply-parse';
@@ -510,6 +516,8 @@ export default function PointCloudViewer({
     renderer.domElement.dataset.keyboardVerticalAxis = 'arrow-up:+z,arrow-down:-z';
     renderer.domElement.dataset.keyboardLookMode = 'ijkl-orbit-target';
     renderer.domElement.dataset.keyboardLookKeys = 'i:up,j:left,k:down,l:right';
+    renderer.domElement.dataset.keyboardRollMode = 'arrow-left-right-view-axis';
+    renderer.domElement.dataset.keyboardRollKeys = 'arrowleft:left,arrowright:right';
     renderer.domElement.dataset.keyboardPanMode = 'world-with-precision-offset';
     renderer.domElement.dataset.keyboardPanImplementation = 'world';
     renderer.domElement.dataset.keyboardPrecisionMovementCount = '0';
@@ -1118,6 +1126,7 @@ export default function PointCloudViewer({
     const cameraOffset = new THREE.Vector3();
     const lookForward = new THREE.Vector3();
     const lookRight = new THREE.Vector3();
+    const rollAxis = new THREE.Vector3();
     const keyboardRotation = new THREE.Quaternion();
     const waypointCameraPosition = new THREE.Vector3();
     const originCameraPosition = new THREE.Vector3();
@@ -1231,12 +1240,15 @@ export default function PointCloudViewer({
 
         const yawInput = Number(keyActive('KeyJ')) - Number(keyActive('KeyL'));
         const pitchInput = Number(keyActive('KeyI')) - Number(keyActive('KeyK'));
-        if (yawInput || pitchInput) {
+        const rollInput = Number(keyActive('ArrowLeft')) - Number(keyActive('ArrowRight'));
+        if (yawInput || pitchInput || rollInput) {
           const hasRotationTapImpulse =
             keyboardImpulses.has('KeyI')
             || keyboardImpulses.has('KeyJ')
             || keyboardImpulses.has('KeyK')
-            || keyboardImpulses.has('KeyL');
+            || keyboardImpulses.has('KeyL')
+            || keyboardImpulses.has('ArrowLeft')
+            || keyboardImpulses.has('ArrowRight');
           const rotationDuration = hasRotationTapImpulse
             ? Math.max(deltaSeconds, KEYBOARD_TAP_DURATION)
             : deltaSeconds;
@@ -1260,6 +1272,13 @@ export default function PointCloudViewer({
               camera.up.applyQuaternion(keyboardRotation);
             }
           }
+          if (rollInput && cameraOffset.lengthSq() > 1e-12) {
+            // Rotate only the camera's up vector around the backward viewing
+            // axis. Positive input tilts the camera top toward screen-left.
+            rollAxis.copy(cameraOffset).normalize();
+            keyboardRotation.setFromAxisAngle(rollAxis, rollInput * rotationStep);
+            camera.up.applyQuaternion(keyboardRotation);
+          }
           camera.up.normalize();
           camera.position.copy(controls.target).add(cameraOffset);
           keyboardMoved = true;
@@ -1267,7 +1286,12 @@ export default function PointCloudViewer({
       }
       keyboardImpulses.clear();
       controls.update();
-      if (keyboardMoved) syncDetailView();
+      if (keyboardMoved) {
+        syncDetailView();
+        // TrackballControls emits change events for position changes, but a
+        // pure roll only changes camera.up and therefore needs an explicit save.
+        reportCameraView();
+      }
 
       camera.updateMatrixWorld(true);
       const focalPixels =
@@ -1642,6 +1666,15 @@ export default function PointCloudViewer({
     const outline = new THREE.LineSegments(edgesGeometry, lineMaterial);
     outline.position.copy(mesh.position);
     group.add(outline);
+
+    const canvas = controlsRef.current?.domElement;
+    if (canvas) {
+      canvas.dataset.sliceMode = 'range';
+      canvas.dataset.sliceGeometry = 'box';
+      canvas.dataset.sliceMin = Number(heightRange[0]).toPrecision(10);
+      canvas.dataset.sliceMax = Number(heightRange[1]).toPrecision(10);
+      canvas.dataset.sliceSpan = Math.max(0, heightRange[1] - heightRange[0]).toPrecision(10);
+    }
   }, [heightRange, mapData?.geometry]);
 
   useEffect(() => {
@@ -1965,7 +1998,7 @@ export default function PointCloudViewer({
               {interactionMode === 'pan' ? <Move3D size={12} /> : <Rotate3D size={12} />}
               左键{interactionMode === 'pan' ? '平移' : '旋转'} · 点 / 路径可选
             </span>
-            <span><Keyboard size={12} /> WASD 平移 · ↑↓ Z升降 · I/K 仰俯 · J/L 转向</span>
+            <span><Keyboard size={12} /> WASD 平移 · ↑↓ Z升降 · ←→ 翻滚 · IJKL 视角</span>
             <span><MousePointer2 size={12} /> Shift 加速 / 临时平移 · 右键平移</span>
             <span>
               <Gauge size={12} />

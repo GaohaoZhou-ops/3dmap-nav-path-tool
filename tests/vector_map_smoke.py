@@ -31,6 +31,15 @@ def run():
         page.locator(".loading-curtain").wait_for(state="hidden")
         page.locator(".projection-status").wait_for(state="hidden")
 
+        # Narrow the range around the isolated Z=0.8 point so the extreme-zoom
+        # footprint assertion below measures one source point deterministically.
+        page.get_by_role("slider", name="截面高度跨度").press("Home")
+        height_input = page.get_by_label("截面中心高度数值")
+        height_input.fill("0.80")
+        height_input.press("Enter")
+        page.wait_for_timeout(220)
+        page.locator(".projection-status").wait_for(state="hidden")
+
         vector_canvas = page.get_by_label("二维矢量点云截面")
         assert vector_canvas.is_visible()
         assert vector_canvas.get_attribute("data-render-mode") == "vector-coordinate-webgl"

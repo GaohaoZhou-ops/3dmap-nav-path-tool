@@ -113,11 +113,36 @@ def run():
         assert page.get_by_label("点云高程比例尺").count() == 0
         assert page.get_by_label("二维矢量点云截面").get_attribute("data-source-point-count") == "24"
 
-        height_input = page.locator(".height-range__inputs input")
+        height_input = page.get_by_label("截面中心高度数值")
         requested_height = float(height_input.input_value()) + 0.25
         height_input.fill(f"{requested_height:.2f}")
         height_input.press("Enter")
-        restored_height = float(height_input.input_value())
+        span_input = page.get_by_role("slider", name="截面高度跨度")
+        requested_span = max(
+            float(span_input.get_attribute("min")),
+            float(span_input.input_value()) * 0.7,
+        )
+        span_input.evaluate(
+            """
+            (element, nextValue) => {
+              const setter = Object.getOwnPropertyDescriptor(
+                HTMLInputElement.prototype,
+                'value',
+              ).set;
+              setter.call(element, String(nextValue));
+              element.dispatchEvent(new Event('input', {bubbles: true}));
+              element.dispatchEvent(new Event('change', {bubbles: true}));
+            }
+            """,
+            requested_span,
+        )
+        restored_span = float(span_input.input_value())
+        center_slider = page.get_by_role("slider", name="截面中心高度")
+        center_slider.press("Home")
+        restored_height = float(center_slider.get_attribute("aria-valuenow"))
+        restored_slice_min = float(center_slider.get_attribute("data-slice-min"))
+        cloud_min = float(page.locator(".height-range").get_attribute("data-cloud-min"))
+        assert restored_slice_min < cloud_min
         page.locator(".projection-status").wait_for(state="hidden")
 
         page.get_by_role("button", name="添加导航点").click()
@@ -185,6 +210,8 @@ def run():
             three_box["y"] + three_box["height"] * 0.5,
         )
         page.mouse.wheel(0, -620)
+        three_canvas.focus()
+        page.keyboard.press("ArrowLeft")
         page.wait_for_timeout(700)
         view2d_before_refresh = {
             key: float(page.locator(".map2d-view").get_attribute(f"data-view-{key}"))
@@ -259,6 +286,15 @@ def run():
         )
         print("restored_height=", restored_height, "actual=", actual_restored_height)
         assert abs(actual_restored_height - restored_height) < 0.01
+        actual_restored_span = float(
+            page.get_by_role("slider", name="截面高度跨度").input_value()
+        )
+        print("restored_span=", restored_span, "actual=", actual_restored_span)
+        assert abs(actual_restored_span - restored_span) < 0.01
+        actual_restored_slice_min = float(
+            page.get_by_role("slider", name="截面中心高度").get_attribute("data-slice-min")
+        )
+        assert abs(actual_restored_slice_min - restored_slice_min) < 0.01
         restored_view2d = {
             key: float(page.locator(".map2d-view").get_attribute(f"data-view-{key}"))
             for key in ("center-x", "center-y", "scale")

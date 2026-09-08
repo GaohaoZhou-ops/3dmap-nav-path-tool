@@ -29,6 +29,7 @@ def run():
         page.locator(".loading-curtain").wait_for(state="hidden")
 
         canvas = page.locator(".three-canvas")
+        canvas.focus()
         assert canvas.get_attribute("data-control-mode") == "free-trackball"
         assert canvas.get_attribute("data-zoom-mode") == "hybrid-continuous-detail"
         assert canvas.get_attribute("data-coordinate-origin") == "0,0,0"
@@ -41,6 +42,9 @@ def run():
         )
         assert canvas.get_attribute("data-keyboard-enabled") == "true"
         assert canvas.get_attribute("data-keyboard-mode") == "always-on"
+        assert canvas.get_attribute("data-keyboard-pan-mode") == (
+            "world-with-precision-offset"
+        )
         assert canvas.get_attribute("data-keyboard-look-mode") == "ijkl-orbit-target"
         assert canvas.get_attribute("data-keyboard-look-keys") == (
             "i:up,j:left,k:down,l:right"
@@ -111,6 +115,7 @@ def run():
             (camera_after["y"] - camera_before["y"])
             - (target_after["y"] - target_before["y"])
         ) < 1e-6
+        assert canvas.get_attribute("data-keyboard-pan-implementation") == "world"
 
         # ArrowUp/ArrowDown translate camera and target together on world Z.
         # They must not introduce XY drift, rotation, or a distance change.
@@ -625,6 +630,33 @@ def run():
         )
         assert extreme_axis_scale < min(overview_axis_scale, axis_scale_before_deep_zoom) * 1e-3
         assert 62 <= extreme_axis_length <= 68.1
+
+        # WASD must remain visibly responsive after world-coordinate movement
+        # falls below render-matrix precision. Every direction uses the same
+        # persistent pixel-offset mechanism as microscopic mouse panning.
+        keyboard_precision_count = int(
+            canvas.get_attribute("data-keyboard-precision-movement-count") or 0
+        )
+        for key in ("w", "a", "s", "d"):
+            keyboard_x_before = float(canvas.get_attribute("data-precision-pan-x"))
+            keyboard_y_before = float(canvas.get_attribute("data-precision-pan-y"))
+            page.keyboard.press(key)
+            page.wait_for_timeout(70)
+            keyboard_x_after = float(canvas.get_attribute("data-precision-pan-x"))
+            keyboard_y_after = float(canvas.get_attribute("data-precision-pan-y"))
+            assert canvas.get_attribute("data-keyboard-pan-implementation") == (
+                "precision-offset"
+            )
+            assert math.hypot(
+                keyboard_x_after - keyboard_x_before,
+                keyboard_y_after - keyboard_y_before,
+            ) >= 4
+            assert float(canvas.get_attribute("data-keyboard-precision-pixels")) >= 4
+
+        assert int(
+            canvas.get_attribute("data-keyboard-precision-movement-count")
+        ) >= keyboard_precision_count + 4
+        page.screenshot(path="/tmp/atlas-keyboard-deep-zoom.png", full_page=True)
 
         # At microscopic optical zoom, panning switches to a pixel-based view
         # offset and must keep responding instead of rounding down to zero.

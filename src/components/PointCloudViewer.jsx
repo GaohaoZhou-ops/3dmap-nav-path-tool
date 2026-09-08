@@ -510,6 +510,9 @@ export default function PointCloudViewer({
     renderer.domElement.dataset.keyboardVerticalAxis = 'arrow-up:+z,arrow-down:-z';
     renderer.domElement.dataset.keyboardLookMode = 'ijkl-orbit-target';
     renderer.domElement.dataset.keyboardLookKeys = 'i:up,j:left,k:down,l:right';
+    renderer.domElement.dataset.keyboardPanMode = 'world-with-precision-offset';
+    renderer.domElement.dataset.keyboardPanImplementation = 'world';
+    renderer.domElement.dataset.keyboardPrecisionMovementCount = '0';
     renderer.domElement.dataset.keyboardRotationSpeed = '72deg/s';
     renderer.domElement.dataset.minCameraDistance = detailDollyFloor.toPrecision(8);
     renderer.domElement.dataset.minEffectiveDistance = minimumEffectiveDistance.toExponential(6);
@@ -808,15 +811,13 @@ export default function PointCloudViewer({
     }
     controls.addEventListener('change', onControlsChange);
 
-    const panByPixels = (deltaX, deltaY) => {
-      if (!deltaX && !deltaY) return;
+    const getPanMetrics = () => {
       const height = Math.max(renderer.domElement.clientHeight, 1);
       const distance = camera.position.distanceTo(controls.target);
       const effectiveDistance = distance / Math.max(camera.zoom, 1);
       const unitsPerPixel =
         (2 * effectiveDistance * Math.tan(THREE.MathUtils.degToRad(camera.fov / 2)))
         / height;
-      const intendedWorldDistance = unitsPerPixel * Math.hypot(deltaX, deltaY);
       const largestCoordinate = Math.max(
         1,
         radius,
@@ -828,11 +829,20 @@ export default function PointCloudViewer({
         Math.abs(controls.target.z),
       );
       const representableFloor = Number.EPSILON * largestCoordinate * 64;
-      const needsPrecisionPan =
-        camera.zoom > 32
-        || intendedWorldDistance <= representableFloor
-        || Math.abs(projectionPan.x) > 1e-9
-        || Math.abs(projectionPan.y) > 1e-9;
+      return { effectiveDistance, height, representableFloor, unitsPerPixel };
+    };
+
+    const needsPrecisionPanForDistance = (intendedWorldDistance, metrics) =>
+      camera.zoom > 32
+      || intendedWorldDistance <= metrics.representableFloor
+      || Math.abs(projectionPan.x) > 1e-9
+      || Math.abs(projectionPan.y) > 1e-9;
+
+    const panByPixels = (deltaX, deltaY) => {
+      if (!deltaX && !deltaY) return null;
+      const metrics = getPanMetrics();
+      const intendedWorldDistance = metrics.unitsPerPixel * Math.hypot(deltaX, deltaY);
+      const needsPrecisionPan = needsPrecisionPanForDistance(intendedWorldDistance, metrics);
 
       if (needsPrecisionPan) {
         // setViewOffset is measured in screen pixels, so it remains responsive
@@ -847,8 +857,8 @@ export default function PointCloudViewer({
         const cameraRight = new THREE.Vector3().setFromMatrixColumn(camera.matrixWorld, 0);
         const cameraUp = new THREE.Vector3().setFromMatrixColumn(camera.matrixWorld, 1);
         const translation = cameraRight
-          .multiplyScalar(-deltaX * unitsPerPixel)
-          .add(cameraUp.multiplyScalar(deltaY * unitsPerPixel));
+          .multiplyScalar(-deltaX * metrics.unitsPerPixel)
+          .add(cameraUp.multiplyScalar(deltaY * metrics.unitsPerPixel));
         camera.position.add(translation);
         controls.target.add(translation);
         controls.update();
@@ -858,6 +868,7 @@ export default function PointCloudViewer({
       renderer.domElement.dataset.panMovementCount = String(
         Number(renderer.domElement.dataset.panMovementCount || 0) + 1,
       );
+      return renderer.domElement.dataset.panImplementation;
     };
 
     const selectionAtPointer = (event) => {
@@ -1101,6 +1112,9 @@ export default function PointCloudViewer({
     const forward = new THREE.Vector3();
     const right = new THREE.Vector3();
     const movement = new THREE.Vector3();
+    const verticalMovement = new THREE.Vector3();
+    const screenRight = new THREE.Vector3();
+    const screenUp = new THREE.Vector3();
     const cameraOffset = new THREE.Vector3();
     const lookForward = new THREE.Vector3();
     const lookRight = new THREE.Vector3();
@@ -1119,15 +1133,80 @@ export default function PointCloudViewer({
         if (forward.lengthSq() < 1e-12) forward.set(0, 1, 0);
         else forward.normalize();
         right.crossVectors(forward, worldUp).normalize();
-        movement.set(0, 0, 0);
-        if (keyActive('KeyW')) movement.add(forward);
-        if (keyActive('KeyS')) movement.sub(forward);
-        if (keyActive('KeyD')) movement.add(right);
-        if (keyActive('KeyA')) movement.sub(right);
-        if (keyActive('ArrowUp')) movement.add(worldUp);
-        if (keyActive('ArrowDown')) movement.sub(worldUp);
+        const forwardInput = Number(keyActive('KeyW')) - Number(keyActive('KeyS'));
+        const strafeInput = Number(keyActive('KeyD')) - Number(keyActive('KeyA'));
+        const verticalInput = Number(keyActive('ArrowUp')) - Number(keyActive('ArrowDown'));
+        movement.copy(forward).multiplyScalar(forwardInput);
+        movement.addScaledVector(right, strafeInput);
 
         if (movement.lengthSq() > 0) {
+          const metrics = getPanMetrics();
+          const baseSpeed = THREE.MathUtils.clamp(
+            metrics.effectiveDistance * 0.75,
+            radius * 1e-8,
+            radius * 0.4,
+          );
+          const speedMultiplier =
+            keyActive('ShiftLeft') || keyActive('ShiftRight') ? 3 : 1;
+          const hasTapImpulse =
+            keyboardImpulses.has('KeyW')
+            || keyboardImpulses.has('KeyA')
+            || keyboardImpulses.has('KeyS')
+            || keyboardImpulses.has('KeyD');
+          const movementDuration = hasTapImpulse
+            ? Math.max(deltaSeconds, KEYBOARD_TAP_DURATION)
+            : deltaSeconds;
+          const worldStep = baseSpeed * speedMultiplier * movementDuration;
+          movement.normalize();
+
+          if (needsPrecisionPanForDistance(worldStep, metrics)) {
+            // At high optical zoom, adding the tiny XY delta to camera/target can
+            // disappear when Three.js uploads float32 view matrices. Express the
+            // same projected motion as pixels instead; setViewOffset remains
+            // responsive throughout the full optical zoom range.
+            camera.updateMatrixWorld(true);
+            screenRight.setFromMatrixColumn(camera.matrixWorld, 0).normalize();
+            screenUp.setFromMatrixColumn(camera.matrixWorld, 1).normalize();
+            const pixelStep =
+              (0.75 * speedMultiplier * movementDuration * metrics.height)
+              / (2 * Math.tan(THREE.MathUtils.degToRad(camera.fov / 2)));
+            let deltaX = -movement.dot(screenRight) * pixelStep;
+            let deltaY = movement.dot(screenUp) * pixelStep;
+            const projectedPixels = Math.hypot(deltaX, deltaY);
+            const minimumPerceptiblePixels = pixelStep * 0.28;
+
+            // A world-XY forward vector becomes almost parallel to the view at a
+            // level camera angle. Its true screen projection then approaches zero,
+            // so retain its direction and provide a small, reversible visual step.
+            if (projectedPixels < minimumPerceptiblePixels && forwardInput) {
+              if (projectedPixels > 1e-9) {
+                const boost = minimumPerceptiblePixels / projectedPixels;
+                deltaX *= boost;
+                deltaY *= boost;
+              } else {
+                deltaY = -Math.sign(forwardInput) * minimumPerceptiblePixels;
+              }
+            }
+
+            const implementation = panByPixels(deltaX, deltaY);
+            renderer.domElement.dataset.keyboardPanImplementation = implementation;
+            renderer.domElement.dataset.keyboardPrecisionPixels = Math.hypot(
+              deltaX,
+              deltaY,
+            ).toFixed(3);
+            renderer.domElement.dataset.keyboardPrecisionMovementCount = String(
+              Number(renderer.domElement.dataset.keyboardPrecisionMovementCount || 0) + 1,
+            );
+          } else {
+            movement.multiplyScalar(worldStep);
+            camera.position.add(movement);
+            controls.target.add(movement);
+            renderer.domElement.dataset.keyboardPanImplementation = 'world';
+          }
+          keyboardMoved = true;
+        }
+
+        if (verticalInput) {
           const distance = camera.position.distanceTo(controls.target);
           const effectiveDistance = distance / Math.max(camera.zoom, 1);
           const baseSpeed = THREE.MathUtils.clamp(
@@ -1138,18 +1217,15 @@ export default function PointCloudViewer({
           const speedMultiplier =
             keyActive('ShiftLeft') || keyActive('ShiftRight') ? 3 : 1;
           const hasTapImpulse =
-            keyboardImpulses.has('KeyW')
-            || keyboardImpulses.has('KeyA')
-            || keyboardImpulses.has('KeyS')
-            || keyboardImpulses.has('KeyD')
-            || keyboardImpulses.has('ArrowUp')
-            || keyboardImpulses.has('ArrowDown');
+            keyboardImpulses.has('ArrowUp') || keyboardImpulses.has('ArrowDown');
           const movementDuration = hasTapImpulse
             ? Math.max(deltaSeconds, KEYBOARD_TAP_DURATION)
             : deltaSeconds;
-          movement.normalize().multiplyScalar(baseSpeed * speedMultiplier * movementDuration);
-          camera.position.add(movement);
-          controls.target.add(movement);
+          verticalMovement
+            .copy(worldUp)
+            .multiplyScalar(verticalInput * baseSpeed * speedMultiplier * movementDuration);
+          camera.position.add(verticalMovement);
+          controls.target.add(verticalMovement);
           keyboardMoved = true;
         }
 

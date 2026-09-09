@@ -29,6 +29,7 @@ import HeightRange from './components/HeightRange.jsx';
 import Inspector from './components/Inspector.jsx';
 import Map2DView from './components/Map2DView.jsx';
 import PointCloudViewer from './components/PointCloudViewer.jsx';
+import RobotPicker from './components/RobotPicker.jsx';
 import { inspectConnectivity } from './lib/graph.js';
 import {
   buildExport,
@@ -39,6 +40,8 @@ import {
   normalizeProject,
   readFileWithProgress,
 } from './lib/io.js';
+import { normalizeRobotDescriptor, normalizeRobotPose } from './lib/robotLoader.js';
+import { sha256ArrayBuffer } from './lib/surfaceCache.js';
 import {
   fetchServiceSession,
   loadWorkspaceViews,
@@ -51,6 +54,7 @@ import {
 
 const initialValidation = { status: 'idle', unreachableCount: 0, checkedAt: null };
 const pointColorModes = new Set(['height', 'source', 'white']);
+const mapRenderModes = new Set(['points', 'surface']);
 
 const defaultLimits = {
   minSpeed: 0.2,
@@ -116,7 +120,13 @@ function packColorAttribute(attribute) {
   return packed;
 }
 
-function createGeometryCache(geometry, bounds, sourceByteLength) {
+function createGeometryCache(
+  geometry,
+  bounds,
+  sourceByteLength,
+  sourceHash = null,
+  sourceHashKind = 'file',
+) {
   const positionAttribute = geometry.getAttribute('position');
   const sourcePositions = positionAttribute?.array;
   if (!sourcePositions?.length) throw new Error('无法缓存空点云');
@@ -133,6 +143,8 @@ function createGeometryCache(geometry, bounds, sourceByteLength) {
     colorBuffer: colors ? exactArrayBuffer(colors) : null,
     bounds,
     sphere: sphere ? serializeSphere(sphere) : null,
+    sourceHash,
+    sourceHashKind,
   };
 }
 
@@ -215,6 +227,7 @@ export default function App() {
   const latestWorkspaceRef = useRef(null);
   const focusRevisionRef = useRef(0);
   const viewResetRevisionRef = useRef(0);
+  const robotNotificationRef = useRef('');
   const [mapData, setMapData] = useState(null);
   const [heightRange, setHeightRange] = useState([0, 1]);
   const [waypoints, setWaypoints] = useState([]);
@@ -228,10 +241,15 @@ export default function App() {
   const [restoredView2d, setRestoredView2d] = useState(null);
   const [restoredView3d, setRestoredView3d] = useState(null);
   const [pointColorMode, setPointColorMode] = useState('height');
+  const [mapRenderMode, setMapRenderMode] = useState('points');
   const [showWaypoints3D, setShowWaypoints3D] = useState(true);
   const [collapsedPanel, setCollapsedPanel] = useState(null);
   const [synchronizedFocus, setSynchronizedFocus] = useState(null);
   const [viewResetRequest, setViewResetRequest] = useState(null);
+  const [selectedRobot, setSelectedRobot] = useState(null);
+  const [robotLoadState, setRobotLoadState] = useState({ status: 'idle' });
+  const [robotPose, setRobotPose] = useState(() => normalizeRobotPose(null));
+  const [robotControlEnabled, setRobotControlEnabled] = useState(false);
   const [sessionState, setSessionState] = useState({ status: 'checking', restored: false });
   const [loadState, setLoadState] = useState({
     loading: true,
@@ -252,8 +270,11 @@ export default function App() {
     selectedEdgeId,
     validation,
     pointColorMode,
+    mapRenderMode,
     showWaypoints3D,
     collapsedPanel,
+    selectedRobot,
+    robotPose,
   };
 
   useEffect(() => {
@@ -307,6 +328,8 @@ export default function App() {
           edges: current.edges,
           view2d: view2dRef.current,
           view3d: view3dRef.current,
+          robot: current.selectedRobot,
+          robotPose: current.robotPose,
         })
       : null;
     const snapshot = {
@@ -319,8 +342,12 @@ export default function App() {
         selectedEdgeId: current.selectedEdgeId,
         validation: current.validation,
         pointColorMode: current.pointColorMode,
+        mapRenderMode: current.mapRenderMode,
         showWaypoints3D: current.showWaypoints3D,
         collapsedPanel: current.collapsedPanel,
+        selectedRobot: current.selectedRobot
+          ? { ...current.selectedRobot, origin: current.robotPose }
+          : null,
       },
     };
     sessionWriteChainRef.current = sessionWriteChainRef.current
@@ -357,6 +384,8 @@ export default function App() {
         mapId = createId('map'),
         sourceByteLength = 0,
         geometrySource = 'ply-parse',
+        sourceHash = null,
+        sourceHashKind = 'file',
       } = options;
       if (!geometry.boundingBox) geometry.computeBoundingBox();
       if (!geometry.boundingSphere) geometry.computeBoundingSphere();
@@ -378,6 +407,8 @@ export default function App() {
         colors,
         geometry,
         geometrySource,
+        sourceHash,
+        sourceHashKind,
         metadataOnly: false,
       };
       setMapData(nextMap);
@@ -395,6 +426,8 @@ export default function App() {
         setSelectedEdgeId(null);
         setConnectionSourceId(null);
         setValidation(initialValidation);
+        setRobotPose(normalizeRobotPose(null));
+        setRobotControlEnabled(false);
       }
 
       if (persistSnapshot && sessionReadyRef.current && sessionIdRef.current) {
@@ -409,7 +442,13 @@ export default function App() {
             sessionIdRef.current,
             mapId,
             name,
-            createGeometryCache(geometry, bounds, sourceByteLength),
+            createGeometryCache(
+              geometry,
+              bounds,
+              sourceByteLength,
+              sourceHash,
+              sourceHashKind,
+            ),
           );
         } catch (error) {
           reportSessionFailure(error);
@@ -436,12 +475,18 @@ export default function App() {
       await waitForPaint();
       let geometry;
       try {
+        const sourceHashPromise = options.sourceHash
+          ? Promise.resolve(options.sourceHash)
+          : sha256ArrayBuffer(buffer).catch(() => null);
         const loader = new PLYLoader();
         geometry = loader.parse(buffer);
+        const sourceHash = await sourceHashPromise;
         return await installMapGeometry(geometry, name, {
           ...options,
           sourceByteLength: buffer.byteLength,
           geometrySource: options.geometrySource || 'ply-parse',
+          sourceHash,
+          sourceHashKind: options.sourceHashKind || 'file',
         });
       } catch (error) {
         geometry?.dispose?.();
@@ -470,6 +515,8 @@ export default function App() {
           sourceByteLength: record.byteLength,
           geometrySource: 'session-cache',
           mapId: record.mapId,
+          sourceHash: record.sourceHash || null,
+          sourceHashKind: record.sourceHashKind || 'file',
         });
       } catch (error) {
         geometry?.dispose?.();
@@ -500,6 +547,9 @@ export default function App() {
             !stored.map || (stored.config && stored.config.mapId === stored.map.mapId);
           const snapshot = configMatchesMap ? stored.config?.config : null;
           const project = snapshot?.project ? normalizeProject(snapshot.project) : null;
+          const restoredRobot = normalizeRobotDescriptor(
+            project?.robot || snapshot?.ui?.selectedRobot,
+          );
           const restoredMapId = stored.map?.mapId || stored.config?.mapId || null;
           const instantViews = loadWorkspaceViews(identity.sessionId, restoredMapId);
           const preferredView2d = instantViews?.view2d ?? project?.view2d ?? null;
@@ -509,7 +559,21 @@ export default function App() {
               ? snapshot.ui.collapsedPanel
               : null,
           );
+          setMapRenderMode(
+            mapRenderModes.has(snapshot?.ui?.mapRenderMode)
+              ? snapshot.ui.mapRenderMode
+              : 'points',
+          );
           setShowWaypoints3D(snapshot?.ui?.showWaypoints3D !== false);
+          setSelectedRobot(restoredRobot);
+          setRobotPose(
+            restoredRobot
+              ? normalizeRobotPose(project?.robot?.origin || restoredRobot.origin)
+              : normalizeRobotPose(null),
+          );
+          setRobotControlEnabled(false);
+          setRobotLoadState({ status: restoredRobot ? 'pending' : 'idle' });
+          restored = restored || Boolean(restoredRobot);
 
           if (
             stored.map?.geometryCacheVersion === GEOMETRY_CACHE_VERSION
@@ -556,7 +620,13 @@ export default function App() {
               identity.sessionId,
               stored.map.mapId,
               stored.map.name,
-              createGeometryCache(restoredMap.geometry, restoredMap.bounds, buffer.byteLength),
+              createGeometryCache(
+                restoredMap.geometry,
+                restoredMap.bounds,
+                buffer.byteLength,
+                restoredMap.sourceHash,
+                restoredMap.sourceHashKind,
+              ),
             );
             if (!isCurrent()) return;
             restored = true;
@@ -570,6 +640,8 @@ export default function App() {
               positions: null,
               colors: null,
               geometry: null,
+              sourceHash: project.map.sourceHash || null,
+              sourceHashKind: project.map.sourceHashKind || 'file',
               metadataOnly: true,
             });
             setHeightRange(
@@ -633,7 +705,10 @@ export default function App() {
                     checkedAt: null,
                   },
             );
-            restored = restored || project.waypoints.length > 0 || project.edges.length > 0;
+            restored = restored
+              || project.waypoints.length > 0
+              || project.edges.length > 0
+              || Boolean(restoredRobot);
           }
         } catch (error) {
           console.warn('已忽略损坏的工作区快照', error);
@@ -644,8 +719,13 @@ export default function App() {
           setEdges([]);
           setHeightRange([0, 1]);
           setPointColorMode('height');
+          setMapRenderMode('points');
           setShowWaypoints3D(true);
           setCollapsedPanel(null);
+          setSelectedRobot(null);
+          setRobotPose(normalizeRobotPose(null));
+          setRobotControlEnabled(false);
+          setRobotLoadState({ status: 'idle' });
           setRestoredView2d(null);
           view2dRef.current = null;
           setRestoredView3d(null);
@@ -686,11 +766,14 @@ export default function App() {
     edges,
     heightRange,
     mapData?.mapId,
+    mapRenderMode,
     mode,
     pointColorMode,
     queueWorkspaceSave,
     selectedEdgeId,
     selectedWaypointId,
+    selectedRobot,
+    robotPose,
     sessionState.status,
     showWaypoints3D,
     validation,
@@ -773,6 +856,13 @@ export default function App() {
       setSelectedEdgeId(null);
       setConnectionSourceId(null);
       setMode('select');
+      const importedRobot = normalizeRobotDescriptor(project.robot);
+      setSelectedRobot(importedRobot);
+      setRobotPose(
+        importedRobot ? normalizeRobotPose(project.robot?.origin) : normalizeRobotPose(null),
+      );
+      setRobotControlEnabled(false);
+      setRobotLoadState({ status: importedRobot ? 'pending' : 'idle' });
       setSynchronizedFocus(null);
       setRestoredView2d(project.view2d);
       view2dRef.current = project.view2d;
@@ -1070,6 +1160,8 @@ export default function App() {
       edges,
       view2d: view2dRef.current,
       view3d: view3dRef.current,
+      robot: selectedRobot,
+      robotPose,
     });
     const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
     downloadJson(payload, `route-graph-${stamp}.json`);
@@ -1077,6 +1169,78 @@ export default function App() {
   };
 
   const handleProjectionStats = useCallback((stats) => setProjectionStats(stats), []);
+  const handleSelectRobot = useCallback(
+    (value) => {
+      const robot = normalizeRobotDescriptor(value);
+      if (!robot) {
+        notify('机器人模型描述无效', 'error');
+        return;
+      }
+      robotNotificationRef.current = '';
+      setSelectedRobot(robot);
+      setRobotPose(normalizeRobotPose(null));
+      setRobotControlEnabled(false);
+      setRobotLoadState({
+        status: mapData?.geometry ? 'loading' : 'pending',
+        robotId: robot.id,
+        name: robot.name,
+        loaded: 0,
+        total: 0,
+      });
+      notify(
+        mapData?.geometry
+          ? `${robot.name} 已选择，正在装配到地图原点`
+          : `${robot.name} 已选择，加载地图后将在原点显示`,
+        'info',
+      );
+    },
+    [mapData?.geometry, notify],
+  );
+  const handleRobotLoadState = useCallback((nextState) => {
+    setRobotLoadState(nextState);
+    if (nextState.status !== 'loaded') setRobotControlEnabled(false);
+  }, []);
+  const handleRobotPoseChange = useCallback((nextPose) => {
+    const normalized = normalizeRobotPose(nextPose);
+    setRobotPose((current) => {
+      const unchanged =
+        current.position.x === normalized.position.x
+        && current.position.y === normalized.position.y
+        && current.position.z === normalized.position.z
+        && current.rpy.roll === normalized.rpy.roll
+        && current.rpy.pitch === normalized.rpy.pitch
+        && current.rpy.yaw === normalized.rpy.yaw;
+      return unchanged ? current : normalized;
+    });
+  }, []);
+  const handleRobotControlChange = useCallback(
+    (enabled) => {
+      const nextEnabled = Boolean(enabled) && robotLoadState.status === 'loaded';
+      setRobotControlEnabled(nextEnabled);
+      notify(
+        nextEnabled
+          ? '机器人控制已启用 · WASD 全向移动 / ←→ 原地旋转'
+          : '机器人控制已关闭 · WASD 与 ←→ 已交还相机',
+        'info',
+      );
+    },
+    [notify, robotLoadState.status],
+  );
+
+  useEffect(() => {
+    if (!['loaded', 'error'].includes(robotLoadState.status)) return;
+    const signature = `${robotLoadState.status}:${robotLoadState.robotId}:${robotLoadState.message || ''}`;
+    if (robotNotificationRef.current === signature) return;
+    robotNotificationRef.current = signature;
+    if (robotLoadState.status === 'loaded') {
+      notify(
+        `${robotLoadState.name || '机器人'} 已加载 · X ${robotPose.position.x.toFixed(2)} / Y ${robotPose.position.y.toFixed(2)} / YAW ${robotPose.rpy.yaw.toFixed(1)}°`,
+        'success',
+      );
+    } else {
+      notify(`机器人加载失败：${robotLoadState.message || '未知错误'}`, 'error');
+    }
+  }, [notify, robotLoadState, robotPose]);
   const handleViewChange = useCallback(
     (nextView) => {
       view2dRef.current = nextView;
@@ -1147,6 +1311,11 @@ export default function App() {
           <button type="button" className="action-button" onClick={() => pathInputRef.current?.click()}>
             <FileJson size={15} /> 加载路径
           </button>
+          <RobotPicker
+            selectedRobot={selectedRobot}
+            loadState={robotLoadState}
+            onSelect={handleSelectRobot}
+          />
           <button
             type="button"
             className="action-button view-reset-action"
@@ -1213,6 +1382,8 @@ export default function App() {
                 selectedEdgeId={selectedEdgeId}
                 colorMode={pointColorMode}
                 onColorModeChange={setPointColorMode}
+                mapRenderMode={mapRenderMode}
+                onMapRenderModeChange={setMapRenderMode}
                 showWaypoints={showWaypoints3D}
                 onShowWaypointsChange={setShowWaypoints3D}
                 onSelectWaypoint={selectWaypoint}
@@ -1222,6 +1393,13 @@ export default function App() {
                 initialView={restoredView3d}
                 onViewChange={handleView3dChange}
                 resetRequest={viewResetRequest}
+                robotDescriptor={selectedRobot}
+                robotLoadState={robotLoadState}
+                robotPose={robotPose}
+                robotControlEnabled={robotControlEnabled}
+                onRobotLoadState={handleRobotLoadState}
+                onRobotPoseChange={handleRobotPoseChange}
+                onRobotControlChange={handleRobotControlChange}
               />
               <HeightRange
                 bounds={mapData?.bounds}
@@ -1318,6 +1496,10 @@ export default function App() {
           selectedWaypointId={selectedWaypointId}
           selectedEdgeId={selectedEdgeId}
           validation={validation}
+          robot={selectedRobot}
+          robotLoadState={robotLoadState}
+          robotPose={robotPose}
+          robotControlEnabled={robotControlEnabled}
           onRunConnectivity={runConnectivity}
           onSelectWaypoint={focusWaypointFromInspector}
           onSearchWaypoint={focusWaypointFromInspector}

@@ -142,6 +142,32 @@ export function normalizeProject(payload) {
     NaN,
   );
 
+  const rawRobot = payload.robot || payload.robotModel || null;
+  const robot = rawRobot && typeof rawRobot === 'object'
+    ? {
+        id: String(rawRobot.id || rawRobot.relativePath || rawRobot.path || ''),
+        name: String(rawRobot.name || rawRobot.fileName || 'robot'),
+        fileName: String(rawRobot.fileName || ''),
+        relativePath: String(rawRobot.relativePath || rawRobot.path || rawRobot.id || ''),
+        format: String(rawRobot.format || '').toLowerCase(),
+        packageName: rawRobot.packageName ? String(rawRobot.packageName) : null,
+        packagePath: rawRobot.packagePath ? String(rawRobot.packagePath) : null,
+        manifestUrl: rawRobot.manifestUrl ? String(rawRobot.manifestUrl) : null,
+        origin: {
+          position: {
+            x: numberOr(rawRobot.origin?.position?.x ?? rawRobot.origin?.x),
+            y: numberOr(rawRobot.origin?.position?.y ?? rawRobot.origin?.y),
+            z: numberOr(rawRobot.origin?.position?.z ?? rawRobot.origin?.z),
+          },
+          rpy: {
+            roll: numberOr(rawRobot.origin?.rpy?.roll ?? rawRobot.origin?.roll),
+            pitch: numberOr(rawRobot.origin?.rpy?.pitch ?? rawRobot.origin?.pitch),
+            yaw: numberOr(rawRobot.origin?.rpy?.yaw ?? rawRobot.origin?.yaw),
+          },
+        },
+      }
+    : null;
+
   return {
     waypoints,
     edges,
@@ -152,11 +178,22 @@ export function normalizeProject(payload) {
     map: payload.map || null,
     view2d: payload.view2d || null,
     view3d: payload.view3d || null,
+    robot: robot?.relativePath ? robot : null,
   };
 }
 
-export function buildExport({ mapData, heightRange, waypoints, edges, view2d, view3d }) {
+export function buildExport({
+  mapData,
+  heightRange,
+  waypoints,
+  edges,
+  view2d,
+  view3d,
+  robot,
+  robotPose,
+}) {
   const pointById = new Map(waypoints.map((point) => [point.id, point]));
+  const exportedRobotPose = robotPose || robot?.origin || {};
   return {
     schemaVersion: '1.0',
     exportedAt: new Date().toISOString(),
@@ -171,6 +208,8 @@ export function buildExport({ mapData, heightRange, waypoints, edges, view2d, vi
       format: 'ply',
       pointCount: mapData?.pointCount || 0,
       bounds: mapData?.bounds || null,
+      sourceHash: mapData?.sourceHash || null,
+      sourceHashKind: mapData?.sourceHashKind || null,
     },
     projection: {
       plane: 'XY',
@@ -183,6 +222,30 @@ export function buildExport({ mapData, heightRange, waypoints, edges, view2d, vi
     },
     view2d: view2d || null,
     view3d: view3d || null,
+    robot: robot
+      ? {
+          id: robot.id,
+          name: robot.name,
+          fileName: robot.fileName,
+          relativePath: robot.relativePath,
+          format: robot.format,
+          packageName: robot.packageName || null,
+          packagePath: robot.packagePath || null,
+          manifestUrl: robot.manifestUrl || null,
+          origin: {
+            position: {
+              x: numberOr(exportedRobotPose.position?.x ?? exportedRobotPose.x),
+              y: numberOr(exportedRobotPose.position?.y ?? exportedRobotPose.y),
+              z: numberOr(exportedRobotPose.position?.z ?? exportedRobotPose.z),
+            },
+            rpy: {
+              roll: numberOr(exportedRobotPose.rpy?.roll ?? exportedRobotPose.roll),
+              pitch: numberOr(exportedRobotPose.rpy?.pitch ?? exportedRobotPose.pitch),
+              yaw: numberOr(exportedRobotPose.rpy?.yaw ?? exportedRobotPose.yaw),
+            },
+          },
+        }
+      : null,
     waypoints: waypoints.map((point) => ({
       id: point.id,
       name: point.name,

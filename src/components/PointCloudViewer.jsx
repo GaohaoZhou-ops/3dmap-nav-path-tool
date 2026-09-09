@@ -2,12 +2,17 @@ import { useEffect, useRef, useState } from 'react';
 import * as THREE from 'three';
 import { TrackballControls } from 'three/examples/jsm/controls/TrackballControls.js';
 import {
+  Bot,
   Box,
+  CircleDot,
   Crosshair,
   Eye,
   EyeOff,
+  Gamepad2,
   Gauge,
   Keyboard,
+  Layers3,
+  LoaderCircle,
   Minus,
   MousePointer2,
   Move3D,
@@ -16,6 +21,12 @@ import {
   Rotate3D,
   RotateCcw,
 } from 'lucide-react';
+import {
+  disposeRobotModel,
+  loadRobotModel,
+  normalizeRobotPose,
+} from '../lib/robotLoader.js';
+import { loadOrBuildSurface } from '../lib/surfaceCache.js';
 
 const RESOLUTION_LEVELS = [
   { ratio: 0.05, label: '极速', tone: 'turbo' },
@@ -45,6 +56,17 @@ const MIN_ROS_AXIS_LOD_SCALE = 1e-30;
 const PICK_DRAG_THRESHOLD = 5;
 const KEYBOARD_TAP_DURATION = 0.065;
 const KEYBOARD_ROTATION_SPEED = THREE.MathUtils.degToRad(72);
+const ROBOT_LINEAR_SPEED = 0.9;
+const ROBOT_ROTATION_SPEED = THREE.MathUtils.degToRad(72);
+const ROBOT_POSE_REPORT_INTERVAL = 70;
+const ROBOT_CONTROL_CODES = new Set([
+  'KeyW',
+  'KeyA',
+  'KeyS',
+  'KeyD',
+  'ArrowLeft',
+  'ArrowRight',
+]);
 const KEYBOARD_CONTROL_CODES = new Set([
   'KeyW',
   'KeyA',
@@ -89,6 +111,15 @@ const KEYBOARD_ROTATION_ACTIONS = {
 const KEYBOARD_VERTICAL_ACTIONS = {
   ArrowUp: 'z-up',
   ArrowDown: 'z-down',
+};
+
+const ROBOT_CONTROL_ACTIONS = {
+  KeyW: 'forward',
+  KeyA: 'strafe-left',
+  KeyS: 'backward',
+  KeyD: 'strafe-right',
+  ArrowLeft: 'yaw-left',
+  ArrowRight: 'yaw-right',
 };
 
 const movementCodeForEvent = (event) =>
@@ -204,6 +235,41 @@ const formatPointCount = (count) => {
 
 const formatHeight = (value) => (Math.abs(value) < 0.005 ? '0.00' : value.toFixed(2));
 
+const normalizeDegrees = (value) => {
+  const wrapped = ((Number(value) + 180) % 360 + 360) % 360 - 180;
+  return Math.abs(wrapped) < 1e-12 ? 0 : wrapped;
+};
+
+const applyRobotPose = (layer, value) => {
+  if (!layer) return normalizeRobotPose(value);
+  const pose = normalizeRobotPose(value);
+  layer.position.set(pose.position.x, pose.position.y, pose.position.z);
+  layer.rotation.set(
+    THREE.MathUtils.degToRad(pose.rpy.roll),
+    THREE.MathUtils.degToRad(pose.rpy.pitch),
+    THREE.MathUtils.degToRad(pose.rpy.yaw),
+    'XYZ',
+  );
+  layer.updateMatrixWorld(true);
+  return pose;
+};
+
+const writeRobotPoseDataset = (canvas, value) => {
+  if (!canvas) return;
+  const pose = normalizeRobotPose(value);
+  canvas.dataset.robotX = pose.position.x.toFixed(6);
+  canvas.dataset.robotY = pose.position.y.toFixed(6);
+  canvas.dataset.robotZ = pose.position.z.toFixed(6);
+  canvas.dataset.robotRoll = pose.rpy.roll.toFixed(6);
+  canvas.dataset.robotPitch = pose.rpy.pitch.toFixed(6);
+  canvas.dataset.robotYaw = pose.rpy.yaw.toFixed(6);
+  canvas.dataset.robotOrigin = [
+    pose.position.x,
+    pose.position.y,
+    pose.position.z,
+  ].join(',');
+};
+
 const colorModeValue = (mode) => (mode === 'height' ? 1 : mode === 'white' ? 2 : 0);
 const POINT_COLOR_MODES = [
   { id: 'height', label: '高程色' },
@@ -213,8 +279,9 @@ const POINT_COLOR_MODES = [
 
 // Keep the source buffer untouched and perform all three color modes in the GPU.
 // The five height stops match the on-screen scale from low (blue) to high (coral).
-const installPointColorShader = (material, bounds, colorMode) => {
+const installPointColorShader = (material, bounds, colorMode, variant = 'points') => {
   material.userData.pointColorMode = colorMode;
+  material.userData.mapSurface = variant !== 'points';
   material.onBeforeCompile = (shader) => {
     shader.uniforms.atlasPointColorMode = {
       value: colorModeValue(material.userData.pointColorMode),
@@ -228,7 +295,12 @@ const installPointColorShader = (material, bounds, colorMode) => {
       )
       .replace(
         '#include <begin_vertex>',
-        '#include <begin_vertex>\nvAtlasHeight = transformed.z;',
+        `#include <begin_vertex>
+#ifdef USE_INSTANCING
+  vAtlasHeight = (modelMatrix * instanceMatrix * vec4(transformed, 1.0)).z;
+#else
+  vAtlasHeight = (modelMatrix * vec4(transformed, 1.0)).z;
+#endif`,
       );
     shader.fragmentShader = shader.fragmentShader
       .replace(
@@ -267,7 +339,7 @@ if (atlasPointColorMode > 1.5) {
       );
     material.userData.pointColorShader = shader;
   };
-  material.customProgramCacheKey = () => 'atlas-point-color-v2';
+  material.customProgramCacheKey = () => `atlas-point-color-v4-${variant}`;
 };
 
 const statusColor = (status, selected = false) => {
@@ -307,6 +379,54 @@ const disposeObject = (object) => {
       material.dispose?.();
     });
   });
+};
+
+const createVoxelSurfaceMesh = (surface, bounds, colorMode) => {
+  const { centers, colors, metadata } = surface;
+  const voxelSize = Number(metadata.voxelSize);
+  const overlapScale = Number(metadata.overlapScale) || 1;
+  const renderedSize = voxelSize * overlapScale;
+  const geometry = new THREE.BoxGeometry(renderedSize, renderedSize, renderedSize);
+  const material = new THREE.MeshStandardMaterial({
+    color: 0xffffff,
+    vertexColors: true,
+    roughness: 0.76,
+    metalness: 0.02,
+    flatShading: false,
+  });
+  installPointColorShader(material, bounds, colorMode, 'voxel-triangle-mesh');
+
+  const mesh = new THREE.InstancedMesh(geometry, material, metadata.cellCount);
+  mesh.name = 'cached-adaptive-voxel-triangle-surface';
+  mesh.instanceMatrix.setUsage(THREE.StaticDrawUsage);
+  const matrices = mesh.instanceMatrix.array;
+  for (let index = 0; index < metadata.cellCount; index += 1) {
+    const matrixOffset = index * 16;
+    const pointOffset = index * 3;
+    matrices[matrixOffset] = 1;
+    matrices[matrixOffset + 5] = 1;
+    matrices[matrixOffset + 10] = 1;
+    matrices[matrixOffset + 12] = centers[pointOffset];
+    matrices[matrixOffset + 13] = centers[pointOffset + 1];
+    matrices[matrixOffset + 14] = centers[pointOffset + 2];
+    matrices[matrixOffset + 15] = 1;
+  }
+  mesh.instanceMatrix.needsUpdate = true;
+  mesh.instanceColor = new THREE.InstancedBufferAttribute(colors, 3, true);
+  mesh.instanceColor.setUsage(THREE.StaticDrawUsage);
+  mesh.instanceColor.needsUpdate = true;
+  mesh.computeBoundingBox();
+  mesh.computeBoundingSphere();
+  mesh.userData = {
+    ...mesh.userData,
+    sourceHash: surface.sourceHash,
+    cacheHit: surface.cacheHit,
+    primitive: 'triangles',
+    triangleCount: metadata.triangleCount,
+    cellCount: metadata.cellCount,
+    voxelSize,
+  };
+  return mesh;
 };
 
 const createRosAxisLabel = (text, color, worldHeight) => {
@@ -374,6 +494,8 @@ export default function PointCloudViewer({
   selectedEdgeId,
   colorMode = 'height',
   onColorModeChange,
+  mapRenderMode = 'points',
+  onMapRenderModeChange,
   showWaypoints = true,
   onShowWaypointsChange,
   onSelectWaypoint,
@@ -383,18 +505,36 @@ export default function PointCloudViewer({
   initialView,
   onViewChange,
   resetRequest,
+  robotDescriptor,
+  robotLoadState,
+  robotPose,
+  robotControlEnabled = false,
+  onRobotLoadState,
+  onRobotPoseChange,
+  onRobotControlChange,
 }) {
   const mountRef = useRef(null);
   const sceneRef = useRef(null);
   const sliceGroupRef = useRef(null);
   const routeGroupRef = useRef(null);
   const waypointGroupRef = useRef(null);
+  const robotLayerRef = useRef(null);
   const selectedWaypointPulseRef = useRef(null);
   const controlsRef = useRef(null);
   const cameraRef = useRef(null);
   const displayGeometryRef = useRef(null);
+  const mapPointCloudRef = useRef(null);
+  const mapSurfaceRef = useRef(null);
   const cloudMaterialRef = useRef(null);
+  const surfaceMaterialRef = useRef(null);
+  const surfaceBuildRef = useRef({
+    mapKey: null,
+    status: 'idle',
+    controller: null,
+    token: null,
+  });
   const colorModeRef = useRef(colorMode);
+  const mapRenderModeRef = useRef(mapRenderMode);
   const onSelectWaypointRef = useRef(onSelectWaypoint);
   const onSelectEdgeRef = useRef(onSelectEdge);
   const onClearSelectionRef = useRef(onClearSelection);
@@ -406,17 +546,37 @@ export default function PointCloudViewer({
   const viewActionsRef = useRef(null);
   const initialViewRef = useRef(initialView);
   const onViewChangeRef = useRef(onViewChange);
+  const onRobotLoadStateRef = useRef(onRobotLoadState);
+  const onRobotPoseChangeRef = useRef(onRobotPoseChange);
+  const onRobotControlChangeRef = useRef(onRobotControlChange);
+  const robotPoseRef = useRef(normalizeRobotPose(robotPose));
+  const robotControlEnabledRef = useRef(Boolean(robotControlEnabled));
+  const robotPoseActionsRef = useRef(null);
+  const lastRobotPoseReportRef = useRef(0);
   const appliedInitialViewRef = useRef(null);
   const appliedResetRevisionRef = useRef(0);
   const [interactionMode, setInteractionMode] = useState('rotate');
   const [shiftPanArmed, setShiftPanArmed] = useState(false);
+  const [surfaceState, setSurfaceState] = useState({
+    mapKey: null,
+    status: 'idle',
+    progress: 0,
+    phase: '',
+    cacheHit: false,
+    error: '',
+  });
   const interactionModeRef = useRef(interactionMode);
   colorModeRef.current = colorMode;
+  mapRenderModeRef.current = mapRenderMode === 'surface' ? 'surface' : 'points';
   onSelectWaypointRef.current = onSelectWaypoint;
   onSelectEdgeRef.current = onSelectEdge;
   onClearSelectionRef.current = onClearSelection;
   initialViewRef.current = initialView;
   onViewChangeRef.current = onViewChange;
+  onRobotLoadStateRef.current = onRobotLoadState;
+  onRobotPoseChangeRef.current = onRobotPoseChange;
+  onRobotControlChangeRef.current = onRobotControlChange;
+  robotControlEnabledRef.current = Boolean(robotControlEnabled);
   interactionModeRef.current = interactionMode;
   const [manualResolution, setManualResolution] = useState({ mapKey: null, index: null });
 
@@ -438,6 +598,15 @@ export default function PointCloudViewer({
   const renderedPointCount = sourcePointCount
     ? Math.max(1, Math.round(sourcePointCount * resolution.ratio))
     : 0;
+  const isSurfaceMode = mapRenderMode === 'surface';
+  const surfaceMapKey = mapData?.sourceHash || resolutionMapKey;
+  const activeSurfaceState = surfaceState.mapKey === surfaceMapKey
+    ? surfaceState
+    : { status: 'idle', progress: 0, phase: '', cacheHit: false, error: '' };
+  const surfaceBusy = isSurfaceMode
+    && ['idle', 'hashing', 'uploading', 'building', 'loading'].includes(
+      activeSurfaceState.status,
+    );
   const isHeightColor = colorMode === 'height';
   const colorModeIndex = Math.max(
     0,
@@ -458,6 +627,13 @@ export default function PointCloudViewer({
   };
 
   useEffect(() => {
+    const nextPose = normalizeRobotPose(robotPose);
+    robotPoseRef.current = nextPose;
+    applyRobotPose(robotLayerRef.current, nextPose);
+    writeRobotPoseDataset(controlsRef.current?.domElement, nextPose);
+  }, [mapData?.geometry, robotPose]);
+
+  useEffect(() => {
     const mount = mountRef.current;
     const geometry = mapData?.geometry;
     if (!mount || !geometry) return undefined;
@@ -465,6 +641,12 @@ export default function PointCloudViewer({
     const scene = new THREE.Scene();
     scene.background = new THREE.Color(0x071014);
     scene.fog = new THREE.FogExp2(0x071014, 0.0032);
+    const hemisphereLight = new THREE.HemisphereLight(0xd8f4f3, 0x172229, 2.15);
+    const keyLight = new THREE.DirectionalLight(0xffffff, 2.65);
+    keyLight.position.set(-4, -6, 9);
+    const fillLight = new THREE.DirectionalLight(0x76dce7, 1.15);
+    fillLight.position.set(5, 3, 2);
+    scene.add(hemisphereLight, keyLight, fillLight);
 
     const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false });
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
@@ -561,7 +743,30 @@ export default function PointCloudViewer({
     cloudMaterialRef.current = material;
     renderer.domElement.dataset.colorMode = colorModeRef.current;
     const cloud = new THREE.Points(displayGeometry, material);
-    scene.add(cloud);
+    cloud.name = 'scene-map-point-cloud';
+
+    const surfaceLayer = new THREE.Group();
+    surfaceLayer.name = 'scene-map-structure-surface';
+    surfaceLayer.visible = false;
+
+    const mapLayer = new THREE.Group();
+    mapLayer.name = 'scene-map-render-layer';
+    mapLayer.add(cloud, surfaceLayer);
+    mapPointCloudRef.current = cloud;
+    mapSurfaceRef.current = surfaceLayer;
+    surfaceMaterialRef.current = null;
+    const initialMapRenderMode = mapRenderModeRef.current;
+    // Keep the source points visible while an uncached structure is built. The
+    // requested mode remains "surface", so the async cache effect starts below.
+    cloud.visible = true;
+    renderer.domElement.dataset.mapRenderMode = initialMapRenderMode;
+    renderer.domElement.dataset.mapPointCloudVisible = cloud.visible ? 'true' : 'false';
+    renderer.domElement.dataset.mapSurfaceVisible = 'false';
+    renderer.domElement.dataset.mapSurfaceStatus = 'idle';
+    renderer.domElement.dataset.mapSurfaceImplementation = 'adaptive-voxel-triangle-mesh';
+    renderer.domElement.dataset.mapSurfacePrimitive = 'triangles';
+    renderer.domElement.dataset.mapRenderIsolation = 'scene-map-only';
+    scene.add(mapLayer);
 
     const zoomBoostForDistance = (effectiveDistance) => {
       const detailOrders = Math.max(
@@ -713,13 +918,46 @@ export default function PointCloudViewer({
     const sliceGroup = new THREE.Group();
     const routeGroup = new THREE.Group();
     const waypointGroup = new THREE.Group();
+    const robotLayer = new THREE.Group();
     routeGroup.name = 'directed-route-edges';
     waypointGroup.name = 'navigation-waypoint-markers';
-    scene.add(sliceGroup, routeGroup, waypointGroup);
+    robotLayer.name = 'loaded-robot-model';
+    robotLayer.visible = true;
+    scene.add(sliceGroup, robotLayer, routeGroup, waypointGroup);
     sliceGroupRef.current = sliceGroup;
     routeGroupRef.current = routeGroup;
     waypointGroupRef.current = waypointGroup;
+    robotLayerRef.current = robotLayer;
+    robotPoseRef.current = applyRobotPose(robotLayer, robotPoseRef.current);
+    writeRobotPoseDataset(renderer.domElement, robotPoseRef.current);
+    renderer.domElement.dataset.robotLayerVisible = 'true';
+    renderer.domElement.dataset.robotLayerRenderIsolation = 'independent';
+    renderer.domElement.dataset.robotControlEnabled = robotControlEnabledRef.current
+      ? 'true'
+      : 'false';
+    renderer.domElement.dataset.keyboardControlOwner = robotControlEnabledRef.current
+      ? 'robot'
+      : 'camera';
+    renderer.domElement.dataset.robotDriveModel = 'mecanum-local-frame';
+    renderer.domElement.dataset.robotForwardAxis = '+x';
+    renderer.domElement.dataset.robotLeftAxis = '+y';
+    renderer.domElement.dataset.robotLinearSpeed = `${ROBOT_LINEAR_SPEED}m/s`;
+    renderer.domElement.dataset.robotRotationSpeed = '72deg/s';
     sceneRef.current = scene;
+
+    const publishRobotPose = (force = false) => {
+      const now = performance.now();
+      if (
+        !force
+        && now - lastRobotPoseReportRef.current < ROBOT_POSE_REPORT_INTERVAL
+      ) {
+        return;
+      }
+      lastRobotPoseReportRef.current = now;
+      onRobotPoseChangeRef.current?.(normalizeRobotPose(robotPoseRef.current));
+    };
+    const robotPoseActions = { publish: publishRobotPose };
+    robotPoseActionsRef.current = robotPoseActions;
 
     const raycaster = new THREE.Raycaster();
     const normalizedPointer = new THREE.Vector2();
@@ -948,6 +1186,7 @@ export default function PointCloudViewer({
         || pointerStart.button !== 0
         || pointerStart.panGesture
         || interactionModeRef.current !== 'rotate'
+        || robotControlEnabledRef.current
       ) {
         return false;
       }
@@ -986,6 +1225,7 @@ export default function PointCloudViewer({
       const shiftPanOverride =
         event.button === 0
         && interactionModeRef.current === 'rotate'
+        && !robotControlEnabledRef.current
         && shiftPressed;
       const panGesture =
         event.button === 2
@@ -1037,6 +1277,7 @@ export default function PointCloudViewer({
         if (
           liveShiftPressed
           && interactionModeRef.current === 'rotate'
+          && !robotControlEnabledRef.current
           && promotePointerToShiftPan()
         ) {
           event.preventDefault();
@@ -1134,6 +1375,8 @@ export default function PointCloudViewer({
       const deltaSeconds = Math.min(frameClock.getDelta(), 0.05);
       const pressedKeys = pressedKeysRef.current;
       const keyboardImpulses = keyboardImpulseRef.current;
+      const robotControlActive =
+        robotControlEnabledRef.current && robotLayer.children.length > 0;
       let keyboardMoved = false;
       if (pressedKeys.size || keyboardImpulses.size) {
         const keyActive = (code) => pressedKeys.has(code) || keyboardImpulses.has(code);
@@ -1142,8 +1385,12 @@ export default function PointCloudViewer({
         if (forward.lengthSq() < 1e-12) forward.set(0, 1, 0);
         else forward.normalize();
         right.crossVectors(forward, worldUp).normalize();
-        const forwardInput = Number(keyActive('KeyW')) - Number(keyActive('KeyS'));
-        const strafeInput = Number(keyActive('KeyD')) - Number(keyActive('KeyA'));
+        const forwardInput = robotControlActive
+          ? 0
+          : Number(keyActive('KeyW')) - Number(keyActive('KeyS'));
+        const strafeInput = robotControlActive
+          ? 0
+          : Number(keyActive('KeyD')) - Number(keyActive('KeyA'));
         const verticalInput = Number(keyActive('ArrowUp')) - Number(keyActive('ArrowDown'));
         movement.copy(forward).multiplyScalar(forwardInput);
         movement.addScaledVector(right, strafeInput);
@@ -1240,7 +1487,9 @@ export default function PointCloudViewer({
 
         const yawInput = Number(keyActive('KeyJ')) - Number(keyActive('KeyL'));
         const pitchInput = Number(keyActive('KeyI')) - Number(keyActive('KeyK'));
-        const rollInput = Number(keyActive('ArrowLeft')) - Number(keyActive('ArrowRight'));
+        const rollInput = robotControlActive
+          ? 0
+          : Number(keyActive('ArrowLeft')) - Number(keyActive('ArrowRight'));
         if (yawInput || pitchInput || rollInput) {
           const hasRotationTapImpulse =
             keyboardImpulses.has('KeyI')
@@ -1282,6 +1531,70 @@ export default function PointCloudViewer({
           camera.up.normalize();
           camera.position.copy(controls.target).add(cameraOffset);
           keyboardMoved = true;
+        }
+
+        if (robotControlActive) {
+          const robotForwardInput =
+            Number(keyActive('KeyW')) - Number(keyActive('KeyS'));
+          const robotStrafeLeftInput =
+            Number(keyActive('KeyA')) - Number(keyActive('KeyD'));
+          const robotYawInput =
+            Number(keyActive('ArrowLeft')) - Number(keyActive('ArrowRight'));
+          if (robotForwardInput || robotStrafeLeftInput || robotYawInput) {
+            const robotTapImpulse = [...ROBOT_CONTROL_CODES].some(
+              (code) => keyboardImpulses.has(code),
+            );
+            const movementDuration = robotTapImpulse
+              ? Math.max(deltaSeconds, KEYBOARD_TAP_DURATION)
+              : deltaSeconds;
+            const speedMultiplier =
+              keyActive('ShiftLeft') || keyActive('ShiftRight') ? 2.5 : 1;
+            const currentPose = normalizeRobotPose(robotPoseRef.current);
+            const nextPose = normalizeRobotPose(currentPose);
+            const yawRadians = THREE.MathUtils.degToRad(currentPose.rpy.yaw);
+            const inputMagnitude = Math.hypot(robotForwardInput, robotStrafeLeftInput);
+
+            if (inputMagnitude > 0) {
+              const inputScale = 1 / Math.max(1, inputMagnitude);
+              const distance =
+                ROBOT_LINEAR_SPEED * speedMultiplier * movementDuration * inputScale;
+              // ROS base-frame convention: +X forward, +Y left. Rotate that
+              // local mecanum command into the map's world XY plane.
+              nextPose.position.x += (
+                Math.cos(yawRadians) * robotForwardInput
+                - Math.sin(yawRadians) * robotStrafeLeftInput
+              ) * distance;
+              nextPose.position.y += (
+                Math.sin(yawRadians) * robotForwardInput
+                + Math.cos(yawRadians) * robotStrafeLeftInput
+              ) * distance;
+            }
+            if (robotYawInput) {
+              nextPose.rpy.yaw = normalizeDegrees(
+                currentPose.rpy.yaw
+                + THREE.MathUtils.radToDeg(
+                  robotYawInput
+                    * ROBOT_ROTATION_SPEED
+                    * speedMultiplier
+                    * movementDuration,
+                ),
+              );
+            }
+
+            robotPoseRef.current = applyRobotPose(robotLayer, nextPose);
+            writeRobotPoseDataset(renderer.domElement, robotPoseRef.current);
+            renderer.domElement.dataset.lastRobotAction = [...ROBOT_CONTROL_CODES]
+              .filter((code) => keyActive(code))
+              .map((code) => ROBOT_CONTROL_ACTIONS[code])
+              .join('+');
+            renderer.domElement.dataset.robotSpeedMode = speedMultiplier > 1
+              ? 'boost'
+              : 'normal';
+            renderer.domElement.dataset.robotInputCount = String(
+              Number(renderer.domElement.dataset.robotInputCount || 0) + 1,
+            );
+            publishRobotPose(robotTapImpulse);
+          }
         }
       }
       keyboardImpulses.clear();
@@ -1367,8 +1680,18 @@ export default function PointCloudViewer({
       renderer.domElement.removeEventListener('pointerleave', onPickPointerLeave);
       controls.removeEventListener('change', onControlsChange);
       controls.dispose();
+      if (surfaceBuildRef.current.mapKey === (mapData?.sourceHash || mapData?.mapId || geometry.uuid)) {
+        surfaceBuildRef.current.controller?.abort();
+        surfaceBuildRef.current = {
+          mapKey: null,
+          status: 'idle',
+          controller: null,
+          token: null,
+        };
+      }
       displayGeometry.dispose();
       material.dispose();
+      disposeObject(surfaceLayer);
       grid.geometry.dispose();
       grid.material.dispose();
       disposeObject(originGroup);
@@ -1381,6 +1704,10 @@ export default function PointCloudViewer({
       sliceGroupRef.current = null;
       routeGroupRef.current = null;
       waypointGroupRef.current = null;
+      robotLayerRef.current = null;
+      if (robotPoseActionsRef.current === robotPoseActions) {
+        robotPoseActionsRef.current = null;
+      }
       selectedWaypointPulseRef.current = null;
       if (precisionPanRef.current?.clear === clearProjectionPan) {
         precisionPanRef.current = null;
@@ -1394,9 +1721,233 @@ export default function PointCloudViewer({
       controlsRef.current = null;
       cameraRef.current = null;
       displayGeometryRef.current = null;
+      if (mapPointCloudRef.current === cloud) mapPointCloudRef.current = null;
+      if (mapSurfaceRef.current === surfaceLayer) mapSurfaceRef.current = null;
       if (cloudMaterialRef.current === material) cloudMaterialRef.current = null;
+      surfaceMaterialRef.current = null;
     };
   }, [mapData?.geometry]);
+
+  useEffect(() => {
+    const geometry = mapData?.geometry;
+    const surfaceLayer = mapSurfaceRef.current;
+    const canvas = controlsRef.current?.domElement;
+    const mapKey = mapData?.sourceHash || mapData?.mapId || geometry?.uuid || null;
+    if (!isSurfaceMode || !geometry || !surfaceLayer || !canvas || !mapKey) return;
+
+    const currentBuild = surfaceBuildRef.current;
+    if (
+      currentBuild.mapKey === mapKey
+      && (currentBuild.status === 'loading' || currentBuild.status === 'ready')
+    ) {
+      return;
+    }
+
+    currentBuild.controller?.abort();
+    [...surfaceLayer.children].forEach((child) => {
+      surfaceLayer.remove(child);
+      disposeObject(child);
+    });
+    surfaceMaterialRef.current = null;
+
+    const controller = new AbortController();
+    const token = Symbol('surface-build');
+    surfaceBuildRef.current = {
+      mapKey,
+      status: 'loading',
+      controller,
+      token,
+    };
+    setSurfaceState({
+      mapKey,
+      status: 'hashing',
+      progress: 0.02,
+      phase: '核对地图 SHA-256',
+      cacheHit: false,
+      error: '',
+    });
+    canvas.dataset.mapSurfaceStatus = 'hashing';
+    canvas.dataset.mapSurfaceCacheHit = 'false';
+
+    loadOrBuildSurface(mapData, {
+      signal: controller.signal,
+      onProgress: (update) => {
+        if (surfaceBuildRef.current.token !== token) return;
+        const progress = THREE.MathUtils.clamp(Number(update.progress) || 0, 0, 1);
+        surfaceBuildRef.current.status = 'loading';
+        setSurfaceState({
+          mapKey,
+          status: update.status || 'building',
+          progress,
+          phase: update.phase || '生成结构面',
+          cacheHit: Boolean(update.cacheHit),
+          error: '',
+        });
+        canvas.dataset.mapSurfaceStatus = update.status || 'building';
+        canvas.dataset.mapSurfaceProgress = progress.toFixed(3);
+        canvas.dataset.mapSurfacePhase = update.phase || '';
+        if (update.sourceHash) canvas.dataset.mapSourceHash = update.sourceHash;
+      },
+    })
+      .then((surface) => {
+        if (surfaceBuildRef.current.token !== token || controller.signal.aborted) return;
+        const mesh = createVoxelSurfaceMesh(surface, geometry.boundingBox, colorModeRef.current);
+        if (surfaceBuildRef.current.token !== token || controller.signal.aborted) {
+          disposeObject(mesh);
+          return;
+        }
+        [...surfaceLayer.children].forEach((child) => {
+          surfaceLayer.remove(child);
+          disposeObject(child);
+        });
+        surfaceLayer.add(mesh);
+        surfaceMaterialRef.current = mesh.material;
+        surfaceBuildRef.current = {
+          mapKey,
+          status: 'ready',
+          controller: null,
+          token,
+        };
+        setSurfaceState({
+          mapKey,
+          status: 'ready',
+          progress: 1,
+          phase: surface.cacheHit ? '已读取哈希缓存' : '结构面已生成并缓存',
+          cacheHit: surface.cacheHit,
+          error: '',
+          sourceHash: surface.sourceHash,
+          cellCount: surface.metadata.cellCount,
+          triangleCount: surface.metadata.triangleCount,
+          voxelSize: surface.metadata.voxelSize,
+        });
+        canvas.dataset.mapSurfaceStatus = 'ready';
+        canvas.dataset.mapSurfaceProgress = '1.000';
+        canvas.dataset.mapSurfacePhase = surface.cacheHit
+          ? '已读取哈希缓存'
+          : '结构面已生成并缓存';
+        canvas.dataset.mapSurfaceCacheHit = surface.cacheHit ? 'true' : 'false';
+        canvas.dataset.mapSourceHash = surface.sourceHash;
+        canvas.dataset.mapSourceHashKind = surface.sourceHashKind;
+        canvas.dataset.mapSurfaceCellCount = String(surface.metadata.cellCount);
+        canvas.dataset.mapSurfaceTriangleCount = String(surface.metadata.triangleCount);
+        canvas.dataset.mapSurfaceVoxelSize = String(surface.metadata.voxelSize);
+      })
+      .catch((error) => {
+        if (error?.name === 'AbortError' || surfaceBuildRef.current.token !== token) return;
+        const message = error?.message || '结构面生成失败';
+        surfaceBuildRef.current = {
+          mapKey,
+          status: 'error',
+          controller: null,
+          token,
+        };
+        setSurfaceState({
+          mapKey,
+          status: 'error',
+          progress: 0,
+          phase: '结构面生成失败',
+          cacheHit: false,
+          error: message,
+        });
+        canvas.dataset.mapSurfaceStatus = 'error';
+        canvas.dataset.mapSurfaceError = message;
+      });
+  }, [isSurfaceMode, mapData?.geometry, mapData?.mapId, mapData?.sourceHash]);
+
+  useEffect(() => {
+    const layer = robotLayerRef.current;
+    const canvas = controlsRef.current?.domElement;
+    if (!layer || !canvas) return undefined;
+
+    [...layer.children].forEach((child) => disposeRobotModel(child));
+    robotPoseRef.current = applyRobotPose(layer, robotPoseRef.current);
+    writeRobotPoseDataset(canvas, robotPoseRef.current);
+    if (!robotDescriptor) {
+      canvas.dataset.robotModelState = 'idle';
+      canvas.dataset.robotModelName = '';
+      canvas.dataset.robotOrigin = '';
+      return undefined;
+    }
+
+    const controller = new AbortController();
+    let loadedRobot = null;
+    canvas.dataset.robotModelState = 'loading';
+    canvas.dataset.robotModelName = robotDescriptor.name;
+    canvas.dataset.robotModelFormat = robotDescriptor.format;
+    writeRobotPoseDataset(canvas, robotPoseRef.current);
+    onRobotLoadStateRef.current?.({
+      status: 'loading',
+      robotId: robotDescriptor.id,
+      name: robotDescriptor.name,
+      loaded: 0,
+      total: 0,
+      phase: '读取机器人描述',
+    });
+
+    loadRobotModel(robotDescriptor, {
+      signal: controller.signal,
+      onProgress: (progress) => {
+        if (controller.signal.aborted) return;
+        onRobotLoadStateRef.current?.({
+          status: 'loading',
+          robotId: robotDescriptor.id,
+          name: robotDescriptor.name,
+          ...progress,
+        });
+      },
+    })
+      .then((robot) => {
+        if (controller.signal.aborted || robotLayerRef.current !== layer) {
+          disposeRobotModel(robot);
+          return;
+        }
+        loadedRobot = robot;
+        layer.add(robot);
+        applyRobotPose(layer, robotPoseRef.current);
+        layer.updateMatrixWorld(true);
+        const metadata = robot.userData.robot || {};
+        const bounds = metadata.bounds || {};
+        canvas.dataset.robotModelState = 'loaded';
+        canvas.dataset.robotModelName = robotDescriptor.name;
+        canvas.dataset.robotModelFormat = metadata.format || robotDescriptor.format;
+        writeRobotPoseDataset(canvas, robotPoseRef.current);
+        canvas.dataset.robotLinkCount = String(metadata.linkCount || 0);
+        canvas.dataset.robotJointCount = String(metadata.jointCount || 0);
+        canvas.dataset.robotVisualCount = String(metadata.visualCount || 0);
+        canvas.dataset.robotZividCount = String(metadata.zividCount || 0);
+        canvas.dataset.robotOpticalFrameCount = String(metadata.opticalFrameCount || 0);
+        canvas.dataset.robotWebOverrideCount = String(metadata.webOverrideCount || 0);
+        canvas.dataset.robotBoundsMin = (bounds.min || []).join(',');
+        canvas.dataset.robotBoundsMax = (bounds.max || []).join(',');
+        canvas.dataset.robotLeftToolPosition = (metadata.framePositions?.tool_left || []).join(',');
+        canvas.dataset.robotRightToolPosition = (metadata.framePositions?.tool_right || []).join(',');
+        canvas.dataset.robotWaistPosition = (metadata.framePositions?.waist_yaw_L || []).join(',');
+        onRobotLoadStateRef.current?.({
+          status: 'loaded',
+          robotId: robotDescriptor.id,
+          name: robotDescriptor.name,
+          loaded: metadata.visualCount || 1,
+          total: metadata.visualCount || 1,
+          ...metadata,
+        });
+      })
+      .catch((error) => {
+        if (controller.signal.aborted || error.name === 'AbortError') return;
+        canvas.dataset.robotModelState = 'error';
+        canvas.dataset.robotModelError = error.message || '未知错误';
+        onRobotLoadStateRef.current?.({
+          status: 'error',
+          robotId: robotDescriptor.id,
+          name: robotDescriptor.name,
+          message: error.message || '未知错误',
+        });
+      });
+
+    return () => {
+      controller.abort();
+      if (loadedRobot) disposeRobotModel(loadedRobot);
+    };
+  }, [mapData?.geometry, robotDescriptor]);
 
   useEffect(() => {
     if (!initialView || appliedInitialViewRef.current === initialView) return;
@@ -1498,15 +2049,38 @@ export default function PointCloudViewer({
   }, [focusRequest, mapData?.geometry]);
 
   useEffect(() => {
-    const material = cloudMaterialRef.current;
+    const materials = [cloudMaterialRef.current, surfaceMaterialRef.current].filter(Boolean);
     const canvas = controlsRef.current?.domElement;
-    if (!material || !canvas) return;
+    if (!materials.length || !canvas) return;
 
-    material.userData.pointColorMode = colorMode;
-    const shader = material.userData.pointColorShader;
-    if (shader) shader.uniforms.atlasPointColorMode.value = colorModeValue(colorMode);
+    materials.forEach((material) => {
+      material.userData.pointColorMode = colorMode;
+      const shader = material.userData.pointColorShader;
+      if (shader) shader.uniforms.atlasPointColorMode.value = colorModeValue(colorMode);
+    });
     canvas.dataset.colorMode = colorMode;
-  }, [colorMode, mapData?.geometry]);
+  }, [colorMode, mapData?.geometry, activeSurfaceState.status]);
+
+  useEffect(() => {
+    const cloud = mapPointCloudRef.current;
+    const surface = mapSurfaceRef.current;
+    const robotLayer = robotLayerRef.current;
+    const canvas = controlsRef.current?.domElement;
+    if (!cloud || !surface || !canvas) return;
+
+    const nextMode = mapRenderMode === 'surface' ? 'surface' : 'points';
+    const surfaceReady = nextMode === 'surface'
+      && surfaceBuildRef.current.mapKey === surfaceMapKey
+      && surfaceBuildRef.current.status === 'ready'
+      && surface.children.length > 0;
+    cloud.visible = nextMode === 'points' || !surfaceReady;
+    surface.visible = surfaceReady;
+    canvas.dataset.mapRenderMode = nextMode;
+    canvas.dataset.mapPointCloudVisible = cloud.visible ? 'true' : 'false';
+    canvas.dataset.mapSurfaceVisible = surface.visible ? 'true' : 'false';
+    canvas.dataset.mapSurfaceStatus = activeSurfaceState.status;
+    canvas.dataset.robotLayerVisible = robotLayer?.visible === false ? 'false' : 'true';
+  }, [activeSurfaceState.status, mapData?.geometry, mapRenderMode, surfaceMapKey]);
 
   useEffect(() => {
     const displayGeometry = displayGeometryRef.current;
@@ -1537,10 +2111,36 @@ export default function PointCloudViewer({
   }, [interactionMode, mapData?.geometry, shiftPanArmed]);
 
   useEffect(() => {
+    const canvas = controlsRef.current?.domElement;
+    const enabled = Boolean(
+      robotControlEnabled
+      && robotDescriptor
+      && robotLoadState?.status === 'loaded',
+    );
+    robotControlEnabledRef.current = enabled;
+    pressedKeysRef.current.clear();
+    keyboardImpulseRef.current.clear();
+    setShiftPanArmed(false);
+    if (!canvas) return;
+    canvas.dataset.robotControlEnabled = enabled ? 'true' : 'false';
+    canvas.dataset.robotControlAvailable =
+      robotDescriptor && robotLoadState?.status === 'loaded' ? 'true' : 'false';
+    canvas.dataset.keyboardControlOwner = enabled ? 'robot' : 'camera';
+    canvas.dataset.shiftPanArmed = 'false';
+    canvas.dataset.effectiveInteractionMode = interactionModeRef.current;
+  }, [mapData?.geometry, robotControlEnabled, robotDescriptor, robotLoadState?.status]);
+
+  useEffect(() => {
     if (!mapData?.geometry) return undefined;
     const resetKeys = (updateUi = true) => {
+      const hadRobotInput = [...ROBOT_CONTROL_CODES].some(
+        (code) => pressedKeysRef.current.has(code),
+      );
       pressedKeysRef.current.clear();
       keyboardImpulseRef.current.clear();
+      if (hadRobotInput && robotControlEnabledRef.current) {
+        robotPoseActionsRef.current?.publish?.(true);
+      }
       if (updateUi) setShiftPanArmed(false);
       const canvas = controlsRef.current?.domElement;
       if (canvas) {
@@ -1570,7 +2170,8 @@ export default function PointCloudViewer({
       if (!event.repeat && isActionKey) keyboardImpulseRef.current.add(code);
       const canvas = controlsRef.current?.domElement;
       if (code === 'ShiftLeft' || code === 'ShiftRight') {
-        const temporaryShiftPan = interactionModeRef.current === 'rotate';
+        const temporaryShiftPan =
+          !robotControlEnabledRef.current && interactionModeRef.current === 'rotate';
         setShiftPanArmed(temporaryShiftPan);
         if (canvas) {
           canvas.dataset.shiftPanArmed = temporaryShiftPan ? 'true' : 'false';
@@ -1581,8 +2182,15 @@ export default function PointCloudViewer({
         if (temporaryShiftPan) pointerInteractionRef.current?.activateShiftPan?.();
       }
       if (canvas && isActionKey) {
+        const robotOwnsKey =
+          robotControlEnabledRef.current
+          && ROBOT_CONTROL_CODES.has(code)
+          && robotLayerRef.current?.children.length > 0;
         canvas.dataset.lastKeyboardKey = code.startsWith('Key') ? code.slice(3) : code;
-        if (KEYBOARD_ROTATION_ACTIONS[code]) {
+        canvas.dataset.keyboardControlOwner = robotOwnsKey ? 'robot' : 'camera';
+        if (robotOwnsKey) {
+          canvas.dataset.lastRobotAction = ROBOT_CONTROL_ACTIONS[code];
+        } else if (KEYBOARD_ROTATION_ACTIONS[code]) {
           canvas.dataset.lastKeyboardRotation = KEYBOARD_ROTATION_ACTIONS[code];
         }
         if (KEYBOARD_VERTICAL_ACTIONS[code]) {
@@ -1597,11 +2205,17 @@ export default function PointCloudViewer({
       const code = movementCodeForEvent(event);
       if (!code) return;
       pressedKeysRef.current.delete(code);
+      if (robotControlEnabledRef.current && ROBOT_CONTROL_CODES.has(code)) {
+        robotPoseActionsRef.current?.publish?.(true);
+      }
       if (code === 'ShiftLeft' || code === 'ShiftRight') {
         const shiftStillPressed =
           pressedKeysRef.current.has('ShiftLeft')
           || pressedKeysRef.current.has('ShiftRight');
-        const temporaryShiftPan = shiftStillPressed && interactionModeRef.current === 'rotate';
+        const temporaryShiftPan =
+          shiftStillPressed
+          && !robotControlEnabledRef.current
+          && interactionModeRef.current === 'rotate';
         setShiftPanArmed(temporaryShiftPan);
         const canvas = controlsRef.current?.domElement;
         if (canvas) {
@@ -1846,12 +2460,55 @@ export default function PointCloudViewer({
     controls.update();
   };
 
+  const focusRobot = () => {
+    const controls = controlsRef.current;
+    const camera = cameraRef.current;
+    const robot = robotLayerRef.current;
+    if (!controls || !camera || !robot?.children.length) return;
+    const sphere = new THREE.Box3().setFromObject(robot).getBoundingSphere(new THREE.Sphere());
+    if (!Number.isFinite(sphere.radius) || sphere.radius <= 0) return;
+    precisionPanRef.current?.clear?.();
+    const direction = camera.position.clone().sub(controls.target);
+    if (direction.lengthSq() < 1e-12) direction.set(-0.55, -0.8, 0.42);
+    direction.normalize();
+    controls.target.copy(sphere.center);
+    camera.position.copy(sphere.center).addScaledVector(direction, sphere.radius * 2.85);
+    camera.zoom = 1;
+    camera.updateProjectionMatrix();
+    controls.update();
+  };
+
+  const toggleRobotControl = () => {
+    if (robotLoadState?.status !== 'loaded' || !robotDescriptor) return;
+    const enabled = !robotControlEnabledRef.current;
+    robotControlEnabledRef.current = enabled;
+    pressedKeysRef.current.clear();
+    keyboardImpulseRef.current.clear();
+    setShiftPanArmed(false);
+    const canvas = controlsRef.current?.domElement;
+    if (canvas) {
+      canvas.dataset.robotControlEnabled = enabled ? 'true' : 'false';
+      canvas.dataset.keyboardControlOwner = enabled ? 'robot' : 'camera';
+      canvas.dataset.shiftPanArmed = 'false';
+      canvas.dataset.effectiveInteractionMode = interactionModeRef.current;
+      canvas.focus({ preventScroll: true });
+    }
+    onRobotControlChangeRef.current?.(enabled);
+  };
+
   const resetView = () => viewActionsRef.current?.reset?.();
-  const temporaryShiftPan = interactionMode === 'rotate' && shiftPanArmed;
+  const robotControlActive = Boolean(
+    robotControlEnabled
+    && robotDescriptor
+    && robotLoadState?.status === 'loaded',
+  );
+  const displayedRobotPose = normalizeRobotPose(robotPose);
+  const temporaryShiftPan =
+    !robotControlActive && interactionMode === 'rotate' && shiftPanArmed;
 
   return (
     <div
-      className={`point-cloud-view ${temporaryShiftPan ? 'is-shift-pan-armed' : ''}`}
+      className={`point-cloud-view ${temporaryShiftPan ? 'is-shift-pan-armed' : ''} ${robotControlActive ? 'is-robot-driving' : ''}`}
       ref={mountRef}
     >
       {!mapData?.geometry && (
@@ -1896,9 +2553,69 @@ export default function PointCloudViewer({
                 {showWaypoints ? <Eye size={13} /> : <EyeOff size={13} />}
                 {showWaypoints ? '路径点' : '点已隐藏'}
               </button>
+              <button
+                type="button"
+                className={`map-render-toggle is-active mode-${isSurfaceMode ? 'surface' : 'points'} ${surfaceBusy ? 'is-building' : ''} ${activeSurfaceState.status === 'error' ? 'is-error' : ''}`}
+                aria-label="切换地图显示模式"
+                aria-pressed={isSurfaceMode}
+                aria-busy={surfaceBusy}
+                data-map-render-mode={isSurfaceMode ? 'surface' : 'points'}
+                data-surface-status={activeSurfaceState.status}
+                title={
+                  activeSurfaceState.status === 'error'
+                    ? `结构面生成失败：${activeSurfaceState.error}；点击切回点云后可再次尝试`
+                    : surfaceBusy
+                      ? `${activeSurfaceState.phase || '准备结构面'} · ${Math.round(activeSurfaceState.progress * 100)}%；完成后自动切换，原始点云不会重复存储`
+                      : isSurfaceMode
+                        ? `当前显示实体三角结构面${activeSurfaceState.cacheHit ? '（SHA-256 缓存命中）' : ''}；点击切回点云，机器人模型保持独立渲染`
+                    : '当前以点云显示场景地图，点击切换为结构面；机器人模型保持独立渲染'
+                }
+                onClick={() => onMapRenderModeChange?.(isSurfaceMode ? 'points' : 'surface')}
+              >
+                {surfaceBusy ? (
+                  <LoaderCircle className="is-spinning" size={13} />
+                ) : isSurfaceMode ? (
+                  <Layers3 size={13} />
+                ) : (
+                  <CircleDot size={13} />
+                )}
+                {surfaceBusy
+                  ? `建面 ${Math.round(activeSurfaceState.progress * 100)}%`
+                  : activeSurfaceState.status === 'error' && isSurfaceMode
+                    ? '建面失败'
+                    : isSurfaceMode
+                      ? '结构面'
+                      : '点云'}
+              </button>
               <button type="button" onClick={focusOrigin} title="将三维视图中心定位到坐标原点">
                 <Crosshair size={13} /> 原点
               </button>
+              {robotLoadState?.status === 'loaded' && (
+                <>
+                  <button
+                    type="button"
+                    onClick={focusRobot}
+                    aria-label="定位机器人模型"
+                    title="推进视角并完整查看机器人当前所在位置"
+                  >
+                    <Bot size={13} /> 机器人
+                  </button>
+                  <button
+                    type="button"
+                    className={`robot-control-toggle ${robotControlActive ? 'is-active' : ''}`}
+                    aria-label="切换机器人键盘控制"
+                    aria-pressed={robotControlActive}
+                    title={
+                      robotControlActive
+                        ? '关闭机器人控制，并将 WASD 与左右方向键交还相机'
+                        : '启用麦轮底盘控制：W/S 前后、A/D 横移、左右方向键旋转'
+                    }
+                    onClick={toggleRobotControl}
+                  >
+                    <Gamepad2 size={13} /> {robotControlActive ? '控制中' : '底盘控制'}
+                  </button>
+                </>
+              )}
               <button
                 type="button"
                 onClick={resetView}
@@ -1993,13 +2710,43 @@ export default function PointCloudViewer({
               </div>
             </aside>
           )}
+          {robotDescriptor && (
+            <div
+              className={`robot-model-indicator is-${robotLoadState?.status || 'pending'} ${robotControlActive ? 'is-driving' : ''}`}
+              role="status"
+              aria-label="机器人模型状态"
+            >
+              <span><Bot size={14} /></span>
+              <div>
+                <small>{robotControlActive ? 'MECANUM DRIVE · ACTIVE' : 'ROBOT POSE · MAP FRAME'}</small>
+                <strong>{robotDescriptor.name}</strong>
+              </div>
+              <em>
+                {robotLoadState?.status === 'loaded'
+                  ? `${robotLoadState.zividCount || 0}× Zivid · X ${displayedRobotPose.position.x.toFixed(2)} · Y ${displayedRobotPose.position.y.toFixed(2)} · YAW ${displayedRobotPose.rpy.yaw.toFixed(1)}°`
+                  : robotLoadState?.status === 'error'
+                    ? '加载失败'
+                    : robotLoadState?.phase || '正在装配…'}
+              </em>
+            </div>
+          )}
           <div className="viewer-help">
             <span>
               {interactionMode === 'pan' ? <Move3D size={12} /> : <Rotate3D size={12} />}
               左键{interactionMode === 'pan' ? '平移' : '旋转'} · 点 / 路径可选
             </span>
-            <span><Keyboard size={12} /> WASD 平移 · ↑↓ Z升降 · ←→ 翻滚 · IJKL 视角</span>
-            <span><MousePointer2 size={12} /> Shift 加速 / 临时平移 · 右键平移</span>
+            <span>
+              <Keyboard size={12} />
+              {robotControlActive
+                ? 'W/S 前后 · A/D 麦轮横移 · ←→ 原地旋转'
+                : 'WASD 平移 · ↑↓ Z升降 · ←→ 翻滚 · IJKL 视角'}
+            </span>
+            <span>
+              <MousePointer2 size={12} />
+              {robotControlActive
+                ? 'Shift 底盘加速 · IJKL / ↑↓ 仍控制视角'
+                : 'Shift 加速 / 临时平移 · 右键平移'}
+            </span>
             <span>
               <Gauge size={12} />
               {resolutionSelection === 'auto' ? '点数超限 · 已自动降采样' : '分辨率仅影响 3D 显示'}

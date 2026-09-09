@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import {
   ArrowLeft,
   ArrowRight,
+  Bot,
   CheckCircle2,
   ChevronRight,
   CircleGauge,
@@ -65,6 +66,10 @@ export default function Inspector({
   selectedWaypointId,
   selectedEdgeId,
   validation,
+  robot,
+  robotLoadState,
+  robotPose,
+  robotControlEnabled,
   onRunConnectivity,
   onSelectWaypoint,
   onSearchWaypoint,
@@ -407,6 +412,37 @@ export default function Inspector({
               <dl className="config-list">
                 <div><dt>地图文件</dt><dd title={mapData?.name}>{mapData?.name || '尚未加载'}</dd></div>
                 <div><dt>点云数量</dt><dd>{mapData?.pointCount ? mapData.pointCount.toLocaleString('zh-CN') : '—'}</dd></div>
+                <div className={robot ? `robot-config-row is-${robotLoadState?.status || 'pending'}` : ''}>
+                  <dt><Bot size={11} />机器人模型</dt>
+                  <dd title={robot?.relativePath}>
+                    {robot
+                      ? `${robot.name} · ${robotLoadState?.status === 'loaded' ? '已加载' : robotLoadState?.status === 'error' ? '异常' : robotLoadState?.status === 'pending' ? '等待地图' : '装配中'}`
+                      : '尚未加载'}
+                  </dd>
+                </div>
+                {robot && (
+                  <div
+                    className="robot-pose-row"
+                    data-robot-x={robotPose?.position?.x ?? 0}
+                    data-robot-y={robotPose?.position?.y ?? 0}
+                    data-robot-z={robotPose?.position?.z ?? 0}
+                    data-robot-yaw={robotPose?.rpy?.yaw ?? 0}
+                  >
+                    <dt>当前位姿</dt>
+                    <dd>
+                      X {(robotPose?.position?.x ?? 0).toFixed(2)} / Y {(robotPose?.position?.y ?? 0).toFixed(2)} / Z {(robotPose?.position?.z ?? 0).toFixed(2)} · YAW {(robotPose?.rpy?.yaw ?? 0).toFixed(1)}°
+                    </dd>
+                  </div>
+                )}
+                {robot && (
+                  <div className={`robot-drive-row ${robotControlEnabled ? 'is-active' : ''}`}>
+                    <dt>麦轮控制</dt>
+                    <dd>{robotControlEnabled ? '键盘已接管 · WASD / ←→' : '待机 · 点击 3D 底盘控制'}</dd>
+                  </div>
+                )}
+                {robotLoadState?.status === 'loaded' && robotLoadState.zividCount > 0 && (
+                  <div><dt>末端相机</dt><dd>{robotLoadState.zividCount} × Zivid · {robotLoadState.opticalFrameCount || 0} optical frames</dd></div>
+                )}
                 <div><dt>投影平面</dt><dd>XY / Z 轴切片</dd></div>
                 <div><dt>截面下限</dt><dd>{heightRange[0].toFixed(2)} m</dd></div>
                 <div><dt>截面上限</dt><dd>{heightRange[1].toFixed(2)} m</dd></div>

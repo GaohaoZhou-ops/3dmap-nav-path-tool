@@ -103,7 +103,63 @@ def run():
         assert number_attr(canvas, "end-effector-solve-count") >= 2
         assert canvas.get_attribute("data-end-effector-ik-status") in ("tracking", "limited")
         final_ik_status = canvas.get_attribute("data-end-effector-ik-status")
-        page.screenshot(path="/tmp/atlas-end-effector-space-ball.png", full_page=True)
+
+        with page.expect_download() as download_info:
+            page.get_by_role("button", name="导出 JSON").click()
+        locked_export = json.loads(Path(download_info.value.path()).read_text())
+        locked_joint_values = locked_export["robot"]["joints"]
+        locked_joint_names = [
+            name
+            for name in locked_joint_values
+            if name.startswith("left_J") or name.startswith("waist_")
+        ]
+        assert locked_joint_names
+
+        page.get_by_role("button", name="锁定左机械臂末端", exact=True).click()
+        assert panel.get_attribute("data-end-effector-locked") == "true"
+        assert panel.get_attribute("data-left-end-effector-locked") == "true"
+        assert canvas.get_attribute("data-end-effector-left-locked") == "true"
+        assert canvas.get_attribute("data-end-effector-active-locked") == "true"
+        assert canvas.get_attribute("data-end-effector-space-ball-visible") == "false"
+        assert canvas.get_attribute("data-end-effector-transform-attached") == "false"
+        assert x_field.is_disabled()
+        locked_left_pose = {
+            axis: number_attr(canvas, f"robot-left-tool-world-{axis}")
+            for axis in ("x", "y", "z")
+        }
+
+        initial_right = {
+            axis: number_attr(canvas, f"robot-right-tool-world-{axis}")
+            for axis in ("x", "y", "z")
+        }
+        double_click_tool(page, canvas, "right")
+        page.wait_for_function(
+            "document.querySelector('[aria-label=\"机械臂末端空间球\"]')?.dataset.endEffectorSide === 'right'"
+        )
+        assert panel.get_attribute("data-end-effector-locked") == "false"
+        assert panel.get_attribute("data-left-end-effector-locked") == "true"
+        assert canvas.get_attribute("data-end-effector-active-locked") == "false"
+        assert canvas.get_attribute("data-end-effector-transform-attached") == "true"
+
+        right_target_x = number_attr(canvas, "end-effector-target-x") + 0.018
+        right_x_field = page.get_by_role("spinbutton", name="末端 X (m)")
+        right_x_field.fill(f"{right_target_x:.6f}")
+        right_x_field.press("Enter")
+        page.wait_for_function(
+            "([expected]) => Math.abs(Number(document.querySelector('.three-canvas')?.dataset.endEffectorTargetX) - expected) < 1e-5",
+            arg=[right_target_x],
+        )
+        assert number_attr(canvas, "end-effector-actual-x") > initial_right["x"] + 0.004
+        assert number_attr(canvas, "end-effector-frozen-joint-count") > 0
+        held_left_pose = {
+            axis: number_attr(canvas, f"robot-left-tool-world-{axis}")
+            for axis in ("x", "y", "z")
+        }
+        assert all(
+            abs(held_left_pose[axis] - locked_left_pose[axis]) < 1e-6
+            for axis in ("x", "y", "z")
+        )
+        page.screenshot(path="/tmp/atlas-end-effector-lock.png", full_page=True)
 
         with page.expect_download() as download_info:
             page.get_by_role("button", name="导出 JSON").click()
@@ -111,7 +167,25 @@ def run():
         joints = exported["robot"]["joints"]
         assert all(f"left_J{index}" in joints for index in range(1, 8))
         assert any(abs(joints[f"left_J{index}"]) > 0.001 for index in range(1, 8))
-        assert all(abs(joints[f"right_J{index}"]) < 1e-8 for index in range(1, 8))
+        assert any(abs(joints[f"right_J{index}"]) > 0.001 for index in range(1, 8))
+        assert all(
+            abs(joints[name] - locked_joint_values[name]) < 1e-7
+            for name in locked_joint_names
+        )
+
+        double_click_tool(page, canvas, "left")
+        page.wait_for_function(
+            "document.querySelector('[aria-label=\"机械臂末端空间球\"]')?.dataset.endEffectorSide === 'left'"
+        )
+        assert panel.get_attribute("data-end-effector-locked") == "true"
+        page.screenshot(path="/tmp/atlas-end-effector-locked-panel.png", full_page=True)
+        page.get_by_role("button", name="解除锁定左机械臂末端", exact=True).click()
+        assert panel.get_attribute("data-end-effector-locked") == "false"
+        assert canvas.get_attribute("data-end-effector-left-locked") == "false"
+        assert canvas.get_attribute("data-end-effector-space-ball-visible") == "true"
+        assert canvas.get_attribute("data-end-effector-transform-attached") == "true"
+        assert page.get_by_role("spinbutton", name="末端 X (m)").is_enabled()
+
         persisted_left = {
             axis: number_attr(canvas, f"robot-left-tool-world-{axis}")
             for axis in ("x", "y", "z")
@@ -128,6 +202,8 @@ def run():
             timeout=180_000,
         )
         assert canvas.get_attribute("data-end-effector-control-state") == "idle"
+        assert canvas.get_attribute("data-end-effector-left-locked") == "false"
+        assert canvas.get_attribute("data-end-effector-right-locked") == "false"
         restored_left = {
             axis: number_attr(canvas, f"robot-left-tool-world-{axis}")
             for axis in ("x", "y", "z")

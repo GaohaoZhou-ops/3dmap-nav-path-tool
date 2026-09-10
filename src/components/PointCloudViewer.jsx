@@ -274,6 +274,29 @@ const writeRobotPoseDataset = (canvas, value) => {
   ].join(',');
 };
 
+const createEndEffectorLocks = () => ({ left: null, right: null });
+
+const endEffectorLockFlags = (locks) => ({
+  left: Boolean(locks?.left),
+  right: Boolean(locks?.right),
+});
+
+const writeEndEffectorLockDataset = (canvas, locks, activeSide = null) => {
+  if (!canvas) return;
+  const flags = endEffectorLockFlags(locks);
+  canvas.dataset.endEffectorLeftLocked = flags.left ? 'true' : 'false';
+  canvas.dataset.endEffectorRightLocked = flags.right ? 'true' : 'false';
+  canvas.dataset.endEffectorLockCount = String(Number(flags.left) + Number(flags.right));
+  canvas.dataset.endEffectorActiveLocked =
+    activeSide && flags[activeSide] ? 'true' : 'false';
+  canvas.dataset.endEffectorLockedJointCount = String(
+    Object.values(locks || {}).reduce(
+      (count, lock) => count + (lock?.jointValues?.size || 0),
+      0,
+    ),
+  );
+};
+
 const poseFromWorldObject = (object) => {
   const position = object.getWorldPosition(new THREE.Vector3());
   const quaternion = object.getWorldQuaternion(new THREE.Quaternion());
@@ -358,9 +381,15 @@ const solveDenseSystem = (matrix, vector) => {
   return rows.map((row) => row[size]);
 };
 
-const solveEndEffectorIk = (controller, targetPosition, targetQuaternion) => {
+const solveEndEffectorIk = (
+  controller,
+  targetPosition,
+  targetQuaternion,
+  excludedJoints = new Set(),
+) => {
   if (!controller?.frame || !controller.joints?.length) return null;
-  const { robot, frame, joints } = controller;
+  const { robot, frame } = controller;
+  const joints = controller.joints.filter((joint) => !excludedJoints.has(joint));
   const currentPosition = new THREE.Vector3();
   const currentQuaternion = new THREE.Quaternion();
   const jointPosition = new THREE.Vector3();
@@ -370,6 +399,21 @@ const solveEndEffectorIk = (controller, targetPosition, targetQuaternion) => {
   const positionDerivative = new THREE.Vector3();
   let positionError = Number.POSITIVE_INFINITY;
   let rotationError = Number.POSITIVE_INFINITY;
+
+  if (!joints.length) {
+    robot.updateMatrixWorld(true);
+    frame.getWorldPosition(currentPosition);
+    frame.getWorldQuaternion(currentQuaternion);
+    positionError = currentPosition.distanceTo(targetPosition);
+    rotationError = rotationErrorVector(targetQuaternion, currentQuaternion).length();
+    return {
+      actualPose: poseFromWorldObject(frame),
+      positionError,
+      rotationError: THREE.MathUtils.radToDeg(rotationError),
+      status: 'limited',
+      frozenJointCount: controller.joints.length,
+    };
+  }
 
   for (let iteration = 0; iteration < IK_MAX_ITERATIONS; iteration += 1) {
     robot.updateMatrixWorld(true);
@@ -450,6 +494,7 @@ const solveEndEffectorIk = (controller, targetPosition, targetQuaternion) => {
       positionError < 0.006 && rotationError < THREE.MathUtils.degToRad(2)
         ? 'tracking'
         : 'limited',
+    frozenJointCount: controller.joints.length - joints.length,
   };
 };
 
@@ -700,6 +745,7 @@ export default function PointCloudViewer({
   const endEffectorTargetRef = useRef(null);
   const endEffectorSpaceBallRef = useRef(null);
   const endEffectorControlRef = useRef(null);
+  const lockedEndEffectorsRef = useRef(createEndEffectorLocks());
   const endEffectorInteractionRef = useRef(null);
   const endEffectorObjectChangeRef = useRef(null);
   const selectedWaypointPulseRef = useRef(null);
@@ -738,6 +784,10 @@ export default function PointCloudViewer({
   const [interactionMode, setInteractionMode] = useState('rotate');
   const [shiftPanArmed, setShiftPanArmed] = useState(false);
   const [endEffectorControl, setEndEffectorControl] = useState(null);
+  const [lockedEndEffectors, setLockedEndEffectors] = useState({
+    left: false,
+    right: false,
+  });
   const interactionModeRef = useRef(interactionMode);
   colorModeRef.current = colorMode;
   onSelectWaypointRef.current = onSelectWaypoint;
@@ -859,50 +909,118 @@ export default function PointCloudViewer({
     onZividCameraPoseChangeRef.current?.(poses);
   };
 
+  const currentEndEffectorLockFlags = () =>
+    endEffectorLockFlags(lockedEndEffectorsRef.current);
+
+  const syncEndEffectorLockState = (activeSide = endEffectorControlRef.current?.side) => {
+    const flags = currentEndEffectorLockFlags();
+    setLockedEndEffectors(flags);
+    writeEndEffectorLockDataset(
+      controlsRef.current?.domElement,
+      lockedEndEffectorsRef.current,
+      activeSide,
+    );
+    return flags;
+  };
+
+  const restoreLockedEndEffectorJoints = (activeSide) => {
+    const frozenJoints = new Set();
+    Object.entries(lockedEndEffectorsRef.current).forEach(([side, lock]) => {
+      if (!lock || side === activeSide) return;
+      lock.jointValues.forEach((value, joint) => {
+        setRobotJointValue(joint, value);
+        frozenJoints.add(joint);
+      });
+    });
+    endEffectorControllersRef.current[activeSide]?.robot?.updateMatrixWorld(true);
+    return frozenJoints;
+  };
+
+  const endEffectorPanelState = (active, overrides = {}) => {
+    const lockedSides = currentEndEffectorLockFlags();
+    return {
+      side: active.side,
+      mode: active.mode,
+      pose: active.pose,
+      status: active.status,
+      positionError: active.positionError,
+      rotationError: active.rotationError,
+      dragging: Boolean(transformControlsRef.current?.dragging),
+      ...overrides,
+      locked: lockedSides[active.side],
+      lockedSides,
+    };
+  };
+
+  const writeActiveEndEffectorDataset = (canvas, active, result, pose) => {
+    if (!canvas) return;
+    canvas.dataset.endEffectorControlState = 'active';
+    canvas.dataset.endEffectorSide = active.side;
+    canvas.dataset.endEffectorMode = active.mode;
+    canvas.dataset.endEffectorIkStatus = result.status;
+    canvas.dataset.endEffectorPositionError = result.positionError.toExponential(5);
+    canvas.dataset.endEffectorRotationError = result.rotationError.toFixed(4);
+    canvas.dataset.endEffectorFrozenJointCount = String(result.frozenJointCount || 0);
+    canvas.dataset.endEffectorTargetX = pose.position.x.toFixed(6);
+    canvas.dataset.endEffectorTargetY = pose.position.y.toFixed(6);
+    canvas.dataset.endEffectorTargetZ = pose.position.z.toFixed(6);
+    canvas.dataset.endEffectorTargetRoll = pose.rpy.roll.toFixed(6);
+    canvas.dataset.endEffectorTargetPitch = pose.rpy.pitch.toFixed(6);
+    canvas.dataset.endEffectorTargetYaw = pose.rpy.yaw.toFixed(6);
+    canvas.dataset.endEffectorActualX = result.actualPose.position.x.toFixed(6);
+    canvas.dataset.endEffectorActualY = result.actualPose.position.y.toFixed(6);
+    canvas.dataset.endEffectorActualZ = result.actualPose.position.z.toFixed(6);
+    canvas.dataset.endEffectorSolveCount = String(
+      Number(canvas.dataset.endEffectorSolveCount || 0) + 1,
+    );
+    writeEndEffectorLockDataset(canvas, lockedEndEffectorsRef.current, active.side);
+  };
+
   const updateEndEffectorTarget = (forceReport = false) => {
     const active = endEffectorControlRef.current;
     const target = endEffectorTargetRef.current;
     const canvas = controlsRef.current?.domElement;
     if (!active || !target) return null;
+
+    if (lockedEndEffectorsRef.current[active.side]) {
+      active.controller.robot.updateMatrixWorld(true);
+      const pose = poseFromWorldObject(active.controller.frame);
+      applyPoseToWorldTarget(target, pose);
+      const result = {
+        actualPose: pose,
+        positionError: 0,
+        rotationError: 0,
+        status: 'locked',
+        frozenJointCount: active.controller.joints.length,
+      };
+      active.pose = pose;
+      active.status = 'locked';
+      active.positionError = 0;
+      active.rotationError = 0;
+      setEndEffectorControl(endEffectorPanelState(active));
+      writeActiveEndEffectorDataset(canvas, active, result, pose);
+      reportRobotJointValues(forceReport);
+      return result;
+    }
+
+    const frozenJoints = restoreLockedEndEffectorJoints(active.side);
     target.updateMatrixWorld(true);
     const targetPosition = target.getWorldPosition(new THREE.Vector3());
     const targetQuaternion = target.getWorldQuaternion(new THREE.Quaternion());
-    const result = solveEndEffectorIk(active.controller, targetPosition, targetQuaternion);
+    const result = solveEndEffectorIk(
+      active.controller,
+      targetPosition,
+      targetQuaternion,
+      frozenJoints,
+    );
     if (!result) return null;
     const pose = poseFromWorldObject(target);
     active.pose = pose;
     active.status = result.status;
     active.positionError = result.positionError;
     active.rotationError = result.rotationError;
-    setEndEffectorControl({
-      side: active.side,
-      mode: active.mode,
-      pose,
-      status: result.status,
-      positionError: result.positionError,
-      rotationError: result.rotationError,
-      dragging: Boolean(transformControlsRef.current?.dragging),
-    });
-    if (canvas) {
-      canvas.dataset.endEffectorControlState = 'active';
-      canvas.dataset.endEffectorSide = active.side;
-      canvas.dataset.endEffectorMode = active.mode;
-      canvas.dataset.endEffectorIkStatus = result.status;
-      canvas.dataset.endEffectorPositionError = result.positionError.toExponential(5);
-      canvas.dataset.endEffectorRotationError = result.rotationError.toFixed(4);
-      canvas.dataset.endEffectorTargetX = pose.position.x.toFixed(6);
-      canvas.dataset.endEffectorTargetY = pose.position.y.toFixed(6);
-      canvas.dataset.endEffectorTargetZ = pose.position.z.toFixed(6);
-      canvas.dataset.endEffectorTargetRoll = pose.rpy.roll.toFixed(6);
-      canvas.dataset.endEffectorTargetPitch = pose.rpy.pitch.toFixed(6);
-      canvas.dataset.endEffectorTargetYaw = pose.rpy.yaw.toFixed(6);
-      canvas.dataset.endEffectorActualX = result.actualPose.position.x.toFixed(6);
-      canvas.dataset.endEffectorActualY = result.actualPose.position.y.toFixed(6);
-      canvas.dataset.endEffectorActualZ = result.actualPose.position.z.toFixed(6);
-      canvas.dataset.endEffectorSolveCount = String(
-        Number(canvas.dataset.endEffectorSolveCount || 0) + 1,
-      );
-    }
+    setEndEffectorControl(endEffectorPanelState(active));
+    writeActiveEndEffectorDataset(canvas, active, result, pose);
     reportRobotJointValues(forceReport);
     return result;
   };
@@ -913,32 +1031,27 @@ export default function PointCloudViewer({
     const target = endEffectorTargetRef.current;
     const canvas = controlsRef.current?.domElement;
     if (!controller || !transform || !target) return false;
+    restoreLockedEndEffectorJoints(side);
     controller.robot.updateMatrixWorld(true);
     const pose = poseFromWorldObject(controller.frame);
     applyPoseToWorldTarget(target, pose);
-    target.visible = true;
-    transform.enabled = true;
+    const locked = Boolean(lockedEndEffectorsRef.current[side]);
+    transform.detach();
+    target.visible = !locked;
+    transform.enabled = !locked;
     transform.setSpace('world');
     transform.setMode('translate');
-    transform.attach(target);
+    if (!locked) transform.attach(target);
     endEffectorControlRef.current = {
       side,
       mode: 'translate',
       controller,
       pose,
-      status: 'tracking',
+      status: locked ? 'locked' : 'tracking',
       positionError: 0,
       rotationError: 0,
     };
-    setEndEffectorControl({
-      side,
-      mode: 'translate',
-      pose,
-      status: 'tracking',
-      positionError: 0,
-      rotationError: 0,
-      dragging: false,
-    });
+    setEndEffectorControl(endEffectorPanelState(endEffectorControlRef.current));
     if (robotControlEnabledRef.current) {
       robotControlEnabledRef.current = false;
       onRobotControlChangeRef.current?.(false);
@@ -950,12 +1063,13 @@ export default function PointCloudViewer({
       canvas.dataset.endEffectorControlState = 'active';
       canvas.dataset.endEffectorSide = side;
       canvas.dataset.endEffectorMode = 'translate';
-      canvas.dataset.endEffectorIkStatus = 'tracking';
-      canvas.dataset.endEffectorSpaceBallVisible = 'true';
-      canvas.dataset.endEffectorTransformAttached = 'true';
+      canvas.dataset.endEffectorIkStatus = locked ? 'locked' : 'tracking';
+      canvas.dataset.endEffectorSpaceBallVisible = locked ? 'false' : 'true';
+      canvas.dataset.endEffectorTransformAttached = locked ? 'false' : 'true';
       canvas.dataset.endEffectorDoubleClickCount = String(
         Number(canvas.dataset.endEffectorDoubleClickCount || 0) + 1,
       );
+      writeEndEffectorLockDataset(canvas, lockedEndEffectorsRef.current, side);
       canvas.focus({ preventScroll: true });
     }
     updateEndEffectorTarget(true);
@@ -978,6 +1092,8 @@ export default function PointCloudViewer({
       canvas.dataset.endEffectorDragging = 'false';
       canvas.dataset.endEffectorSpaceBallVisible = 'false';
       canvas.dataset.endEffectorTransformAttached = 'false';
+      canvas.dataset.endEffectorFrozenJointCount = '0';
+      writeEndEffectorLockDataset(canvas, lockedEndEffectorsRef.current);
     }
     reportRobotJointValues(true);
   };
@@ -985,7 +1101,7 @@ export default function PointCloudViewer({
   const setEndEffectorMode = (mode) => {
     const nextMode = mode === 'rotate' ? 'rotate' : 'translate';
     const active = endEffectorControlRef.current;
-    if (!active) return;
+    if (!active || lockedEndEffectorsRef.current[active.side]) return;
     active.mode = nextMode;
     transformControlsRef.current?.setMode(nextMode);
     const canvas = controlsRef.current?.domElement;
@@ -995,16 +1111,20 @@ export default function PointCloudViewer({
 
   const setEndEffectorPose = (pose) => {
     const target = endEffectorTargetRef.current;
-    if (!target || !endEffectorControlRef.current) return;
+    const active = endEffectorControlRef.current;
+    if (!target || !active || lockedEndEffectorsRef.current[active.side]) return;
     applyPoseToWorldTarget(target, pose);
     updateEndEffectorTarget(true);
   };
 
   const resetEndEffectorJoints = () => {
     const active = endEffectorControlRef.current;
-    if (!active) return;
+    if (!active || lockedEndEffectorsRef.current[active.side]) return;
+    const frozenJoints = restoreLockedEndEffectorJoints(active.side);
     const values = readRobotJointValues(active.controller.robot);
-    active.controller.joints.forEach((joint) => { values[joint.name] = 0; });
+    active.controller.joints.forEach((joint) => {
+      if (!frozenJoints.has(joint)) values[joint.name] = 0;
+    });
     applyRobotJointValues(active.controller.robot, values);
     robotJointValuesRef.current = readRobotJointValues(active.controller.robot);
     const pose = poseFromWorldObject(active.controller.frame);
@@ -1014,6 +1134,88 @@ export default function PointCloudViewer({
     active.positionError = 0;
     active.rotationError = 0;
     updateEndEffectorTarget(true);
+  };
+
+  const toggleEndEffectorLock = () => {
+    const active = endEffectorControlRef.current;
+    const transform = transformControlsRef.current;
+    const target = endEffectorTargetRef.current;
+    const canvas = controlsRef.current?.domElement;
+    if (!active || !transform || !target || transform.dragging) return;
+
+    const existingLock = lockedEndEffectorsRef.current[active.side];
+    if (existingLock) {
+      lockedEndEffectorsRef.current = {
+        ...lockedEndEffectorsRef.current,
+        [active.side]: null,
+      };
+      const frozenJoints = restoreLockedEndEffectorJoints(active.side);
+      active.controller.robot.updateMatrixWorld(true);
+      const pose = poseFromWorldObject(active.controller.frame);
+      applyPoseToWorldTarget(target, pose);
+      target.visible = true;
+      transform.enabled = true;
+      transform.setSpace('world');
+      transform.setMode(active.mode);
+      transform.attach(target);
+      active.pose = pose;
+      active.status = 'tracking';
+      active.positionError = 0;
+      active.rotationError = 0;
+      setEndEffectorControl(endEffectorPanelState(active));
+      syncEndEffectorLockState(active.side);
+      if (canvas) {
+        canvas.dataset.endEffectorIkStatus = 'tracking';
+        canvas.dataset.endEffectorSpaceBallVisible = 'true';
+        canvas.dataset.endEffectorTransformAttached = 'true';
+        canvas.dataset.endEffectorFrozenJointCount = String(
+          active.controller.joints.filter((joint) => frozenJoints.has(joint)).length,
+        );
+      }
+      reportRobotJointValues(true);
+      canvas?.focus({ preventScroll: true });
+      return;
+    }
+
+    updateEndEffectorTarget(true);
+    active.controller.robot.updateMatrixWorld(true);
+    const pose = poseFromWorldObject(active.controller.frame);
+    const jointValues = new Map(
+      active.controller.joints.map((joint) => [
+        joint,
+        Number(joint.userData.jointValue) || 0,
+      ]),
+    );
+    lockedEndEffectorsRef.current = {
+      ...lockedEndEffectorsRef.current,
+      [active.side]: { side: active.side, jointValues },
+    };
+    applyPoseToWorldTarget(target, pose);
+    transform.detach();
+    transform.enabled = false;
+    target.visible = false;
+    if (controlsRef.current) controlsRef.current.enabled = true;
+    active.pose = pose;
+    active.status = 'locked';
+    active.positionError = 0;
+    active.rotationError = 0;
+    setEndEffectorControl(endEffectorPanelState(active));
+    syncEndEffectorLockState(active.side);
+    if (canvas) {
+      canvas.dataset.endEffectorIkStatus = 'locked';
+      canvas.dataset.endEffectorPositionError = '0.00000e+0';
+      canvas.dataset.endEffectorRotationError = '0.0000';
+      canvas.dataset.endEffectorSpaceBallVisible = 'false';
+      canvas.dataset.endEffectorTransformAttached = 'false';
+      canvas.dataset.endEffectorFrozenJointCount = String(jointValues.size);
+    }
+    reportRobotJointValues(true);
+  };
+
+  const clearEndEffectorLocks = () => {
+    lockedEndEffectorsRef.current = createEndEffectorLocks();
+    setLockedEndEffectors({ left: false, right: false });
+    writeEndEffectorLockDataset(controlsRef.current?.domElement, lockedEndEffectorsRef.current);
   };
 
   endEffectorInteractionRef.current = {
@@ -1396,6 +1598,7 @@ export default function PointCloudViewer({
     renderer.domElement.dataset.endEffectorIkMethod = 'damped-least-squares';
     renderer.domElement.dataset.endEffectorCenterMesh = 'none';
     renderer.domElement.dataset.endEffectorGuideStyle = 'rgb-rings-only';
+    writeEndEffectorLockDataset(renderer.domElement, lockedEndEffectorsRef.current);
 
     const onTransformDraggingChanged = (event) => {
       controls.enabled = !event.value;
@@ -2293,6 +2496,7 @@ export default function PointCloudViewer({
       robotLayerRef.current = null;
       endEffectorControllersRef.current = { left: null, right: null };
       endEffectorControlRef.current = null;
+      lockedEndEffectorsRef.current = createEndEffectorLocks();
       if (transformControlsRef.current === transformControls) transformControlsRef.current = null;
       if (endEffectorTargetRef.current === endEffectorTarget) endEffectorTargetRef.current = null;
       if (endEffectorSpaceBallRef.current === endEffectorSpaceBall) {
@@ -2324,6 +2528,7 @@ export default function PointCloudViewer({
     if (!layer || !canvas) return undefined;
 
     endEffectorInteractionRef.current?.exit?.();
+    clearEndEffectorLocks();
     endEffectorControllersRef.current = { left: null, right: null };
     zividCameraFramesRef.current = { left: null, right: null };
     lastZividCameraPoseSignatureRef.current = '';
@@ -3166,9 +3371,11 @@ export default function PointCloudViewer({
           )}
           <EndEffectorControlPanel
             control={endEffectorControl}
+            lockedSides={lockedEndEffectors}
             onModeChange={setEndEffectorMode}
             onPoseChange={setEndEffectorPose}
             onReset={resetEndEffectorJoints}
+            onToggleLock={toggleEndEffectorLock}
             onClose={exitEndEffectorControl}
           />
           {robotDescriptor && (
@@ -3181,7 +3388,9 @@ export default function PointCloudViewer({
               <div>
                 <small>
                   {endEffectorControlActive
-                    ? `${endEffectorControl.side.toUpperCase()} ARM · 6D CONTROL`
+                    ? endEffectorControl.locked
+                      ? `${endEffectorControl.side.toUpperCase()} ARM · POSE LOCKED`
+                      : `${endEffectorControl.side.toUpperCase()} ARM · 6D CONTROL`
                     : robotControlActive
                       ? 'MECANUM DRIVE · ACTIVE'
                       : 'ROBOT POSE · MAP FRAME'}
@@ -3211,7 +3420,9 @@ export default function PointCloudViewer({
             <span>
               <MousePointer2 size={12} />
               {endEffectorControlActive
-                ? '空间球拖拽 XYZ / RPY · 面板支持精确输入'
+                ? endEffectorControl.locked
+                  ? '当前末端已锁定 · 双击另一末端继续调整'
+                  : '空间球拖拽 XYZ / RPY · 面板支持精确输入'
                 : robotControlActive
                 ? 'Shift 底盘加速 · Q/E 升降 · ↑↓ 相机 Pitch'
                 : 'Shift 加速 / 临时平移 · 右键平移'}

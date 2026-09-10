@@ -57,6 +57,8 @@ const ROS_AXIS_SCREEN_LENGTH = 68;
 const MIN_ROS_AXIS_LOD_SCALE = 1e-30;
 const PICK_DRAG_THRESHOLD = 5;
 const KEYBOARD_TAP_DURATION = 0.065;
+const KEYBOARD_WORLD_SPEED_RATIO = 0.75;
+const KEYBOARD_MIN_PROJECTED_AXIS = 1e-4;
 const KEYBOARD_ROTATION_SPEED = THREE.MathUtils.degToRad(72);
 const ROBOT_LINEAR_SPEED = 0.9;
 const ROBOT_ROTATION_SPEED = THREE.MathUtils.degToRad(72);
@@ -1103,6 +1105,9 @@ export default function PointCloudViewer({
     renderer.domElement.dataset.keyboardYawOwnership = 'camera-unless-mecanum-control';
     renderer.domElement.dataset.keyboardPanMode = 'world-with-precision-offset';
     renderer.domElement.dataset.keyboardPanImplementation = 'world';
+    renderer.domElement.dataset.keyboardVerticalPanMode = 'world-with-precision-offset';
+    renderer.domElement.dataset.keyboardFocusPolicy = 'wheel-or-pointer-claims-canvas';
+    renderer.domElement.dataset.keyboardDetailSpeed = 'constant-screen-space';
     renderer.domElement.dataset.keyboardPrecisionMovementCount = '0';
     renderer.domElement.dataset.keyboardRotationSpeed = '72deg/s';
     renderer.domElement.dataset.minCameraDistance = detailDollyFloor.toPrecision(8);
@@ -1119,6 +1124,16 @@ export default function PointCloudViewer({
       projectionOffset: { x: 0, y: 0 },
     };
     const projectionPan = { x: 0, y: 0 };
+
+    const claimKeyboardFocus = (source) => {
+      if (document.activeElement !== renderer.domElement) {
+        renderer.domElement.focus({ preventScroll: true });
+      }
+      renderer.domElement.dataset.keyboardFocusSource = source;
+      renderer.domElement.dataset.keyboardFocusClaimCount = String(
+        Number(renderer.domElement.dataset.keyboardFocusClaimCount || 0) + 1,
+      );
+    };
 
     const displayGeometry = new THREE.BufferGeometry();
     Object.entries(geometry.attributes).forEach(([name, attribute]) => {
@@ -1209,6 +1224,7 @@ export default function PointCloudViewer({
 
       event.preventDefault();
       event.stopImmediatePropagation();
+      claimKeyboardFocus('wheel');
       const offset = camera.position.clone().sub(controls.target);
       const distance = offset.length();
       if (!distance) return;
@@ -1514,12 +1530,21 @@ export default function PointCloudViewer({
         Math.abs(controls.target.y),
         Math.abs(controls.target.z),
       );
-      const representableFloor = Number.EPSILON * largestCoordinate * 64;
+      // Three.js performs camera matrix arithmetic in JS doubles, but uploads
+      // the result as float32 uniforms. Use a conservative GPU-space floor so
+      // keyboard motion switches before several sub-pixel frames accumulate
+      // into a visible jump.
+      const representableFloor = Math.max(
+        Number.EPSILON * largestCoordinate * 64,
+        largestCoordinate * (2 ** -21),
+      );
+      renderer.domElement.dataset.keyboardGpuPrecisionFloor =
+        representableFloor.toExponential(6);
       return { effectiveDistance, height, representableFloor, unitsPerPixel };
     };
 
     const needsPrecisionPanForDistance = (intendedWorldDistance, metrics) =>
-      camera.zoom > 32
+      camera.zoom > 1.000001
       || intendedWorldDistance <= metrics.representableFloor
       || Math.abs(projectionPan.x) > 1e-9
       || Math.abs(projectionPan.y) > 1e-9;
@@ -1667,6 +1692,7 @@ export default function PointCloudViewer({
 
     const onPickPointerDown = (event) => {
       if (event.button !== 0 && event.button !== 2) return;
+      claimKeyboardFocus('pointer');
       if (transformControls.object && (transformControls.axis || transformControls.dragging)) {
         controls.enabled = false;
         pointerStart = null;
@@ -1862,6 +1888,37 @@ export default function PointCloudViewer({
     const endEffectorWorldPosition = new THREE.Vector3();
     const endEffectorCameraPosition = new THREE.Vector3();
     const endEffectorProjectedPosition = new THREE.Vector3();
+    const keyboardPixelsForWorldDirection = (
+      worldDirection,
+      fallbackX,
+      fallbackY,
+      duration,
+      speedMultiplier,
+      metrics,
+    ) => {
+      camera.updateMatrixWorld(true);
+      screenRight.setFromMatrixColumn(camera.matrixWorld, 0).normalize();
+      screenUp.setFromMatrixColumn(camera.matrixWorld, 1).normalize();
+      let projectedX = -worldDirection.dot(screenRight);
+      let projectedY = worldDirection.dot(screenUp);
+      const projectedLength = Math.hypot(projectedX, projectedY);
+      if (projectedLength > KEYBOARD_MIN_PROJECTED_AXIS) {
+        projectedX /= projectedLength;
+        projectedY /= projectedLength;
+      } else {
+        const fallbackLength = Math.hypot(fallbackX, fallbackY) || 1;
+        projectedX = fallbackX / fallbackLength;
+        projectedY = fallbackY / fallbackLength;
+      }
+      const pixelStep =
+        (KEYBOARD_WORLD_SPEED_RATIO * speedMultiplier * duration * metrics.height)
+        / (2 * Math.tan(THREE.MathUtils.degToRad(camera.fov / 2)));
+      return {
+        deltaX: projectedX * pixelStep,
+        deltaY: projectedY * pixelStep,
+        pixelStep,
+      };
+    };
     renderer.setAnimationLoop(() => {
       const deltaSeconds = Math.min(frameClock.getDelta(), 0.05);
       const pressedKeys = pressedKeysRef.current;
@@ -1889,7 +1946,7 @@ export default function PointCloudViewer({
         if (movement.lengthSq() > 0) {
           const metrics = getPanMetrics();
           const baseSpeed = THREE.MathUtils.clamp(
-            metrics.effectiveDistance * 0.75,
+            metrics.effectiveDistance * KEYBOARD_WORLD_SPEED_RATIO,
             radius * 1e-8,
             radius * 0.4,
           );
@@ -1911,29 +1968,14 @@ export default function PointCloudViewer({
             // disappear when Three.js uploads float32 view matrices. Express the
             // same projected motion as pixels instead; setViewOffset remains
             // responsive throughout the full optical zoom range.
-            camera.updateMatrixWorld(true);
-            screenRight.setFromMatrixColumn(camera.matrixWorld, 0).normalize();
-            screenUp.setFromMatrixColumn(camera.matrixWorld, 1).normalize();
-            const pixelStep =
-              (0.75 * speedMultiplier * movementDuration * metrics.height)
-              / (2 * Math.tan(THREE.MathUtils.degToRad(camera.fov / 2)));
-            let deltaX = -movement.dot(screenRight) * pixelStep;
-            let deltaY = movement.dot(screenUp) * pixelStep;
-            const projectedPixels = Math.hypot(deltaX, deltaY);
-            const minimumPerceptiblePixels = pixelStep * 0.28;
-
-            // A world-XY forward vector becomes almost parallel to the view at a
-            // level camera angle. Its true screen projection then approaches zero,
-            // so retain its direction and provide a small, reversible visual step.
-            if (projectedPixels < minimumPerceptiblePixels && forwardInput) {
-              if (projectedPixels > 1e-9) {
-                const boost = minimumPerceptiblePixels / projectedPixels;
-                deltaX *= boost;
-                deltaY *= boost;
-              } else {
-                deltaY = -Math.sign(forwardInput) * minimumPerceptiblePixels;
-              }
-            }
+            const { deltaX, deltaY } = keyboardPixelsForWorldDirection(
+              movement,
+              -Math.sign(strafeInput),
+              -Math.sign(forwardInput),
+              movementDuration,
+              speedMultiplier,
+              metrics,
+            );
 
             const implementation = panByPixels(deltaX, deltaY);
             renderer.domElement.dataset.keyboardPanImplementation = implementation;
@@ -1954,10 +1996,9 @@ export default function PointCloudViewer({
         }
 
         if (verticalInput) {
-          const distance = camera.position.distanceTo(controls.target);
-          const effectiveDistance = distance / Math.max(camera.zoom, 1);
+          const metrics = getPanMetrics();
           const baseSpeed = THREE.MathUtils.clamp(
-            effectiveDistance * 0.75,
+            metrics.effectiveDistance * KEYBOARD_WORLD_SPEED_RATIO,
             radius * 1e-8,
             radius * 0.4,
           );
@@ -1968,11 +2009,32 @@ export default function PointCloudViewer({
           const movementDuration = hasTapImpulse
             ? Math.max(deltaSeconds, KEYBOARD_TAP_DURATION)
             : deltaSeconds;
-          verticalMovement
-            .copy(worldUp)
-            .multiplyScalar(verticalInput * baseSpeed * speedMultiplier * movementDuration);
-          camera.position.add(verticalMovement);
-          controls.target.add(verticalMovement);
+          const worldStep = baseSpeed * speedMultiplier * movementDuration;
+          verticalMovement.copy(worldUp).multiplyScalar(verticalInput);
+          if (needsPrecisionPanForDistance(worldStep, metrics)) {
+            const { deltaX, deltaY } = keyboardPixelsForWorldDirection(
+              verticalMovement,
+              0,
+              -Math.sign(verticalInput),
+              movementDuration,
+              speedMultiplier,
+              metrics,
+            );
+            const implementation = panByPixels(deltaX, deltaY);
+            renderer.domElement.dataset.keyboardVerticalImplementation = implementation;
+            renderer.domElement.dataset.keyboardPrecisionPixels = Math.hypot(
+              deltaX,
+              deltaY,
+            ).toFixed(3);
+            renderer.domElement.dataset.keyboardPrecisionMovementCount = String(
+              Number(renderer.domElement.dataset.keyboardPrecisionMovementCount || 0) + 1,
+            );
+          } else {
+            verticalMovement.multiplyScalar(worldStep);
+            camera.position.add(verticalMovement);
+            controls.target.add(verticalMovement);
+            renderer.domElement.dataset.keyboardVerticalImplementation = 'world';
+          }
           keyboardMoved = true;
         }
 

@@ -643,6 +643,57 @@ def run():
             canvas.get_attribute("data-coordinate-axis-scale")
         )
 
+        # The first optical-zoom decade used to be a dead zone: movement was
+        # smaller than float32 GPU matrix precision, but the old fallback did
+        # not activate until 32x. Enter that exact transition range and verify
+        # that wheel interaction also takes keyboard focus back from an input.
+        height_input.focus()
+        assert page.evaluate(
+            "document.activeElement === document.querySelector('[aria-label=\"截面中心高度数值\"]')"
+        )
+        transition_zoom = 1.0
+        for _ in range(50):
+            page.mouse.move(
+                box["x"] + box["width"] * 0.5,
+                box["y"] + box["height"] * 0.5,
+            )
+            page.mouse.wheel(0, -500)
+            page.wait_for_timeout(10)
+            transition_zoom = float(canvas.get_attribute("data-optical-zoom"))
+            if 1.05 < transition_zoom < 30:
+                break
+        assert 1.05 < transition_zoom < 30
+        assert page.evaluate(
+            "document.activeElement === document.querySelector('.three-canvas')"
+        )
+        assert canvas.get_attribute("data-keyboard-focus-source") == "wheel"
+        assert canvas.get_attribute("data-keyboard-detail-speed") == (
+            "constant-screen-space"
+        )
+        for key in ("w", "a", "q", "e"):
+            transition_x_before = float(canvas.get_attribute("data-precision-pan-x"))
+            transition_y_before = float(canvas.get_attribute("data-precision-pan-y"))
+            page.keyboard.press(key)
+            page.wait_for_timeout(55)
+            transition_x_after = float(canvas.get_attribute("data-precision-pan-x"))
+            transition_y_after = float(canvas.get_attribute("data-precision-pan-y"))
+            assert math.hypot(
+                transition_x_after - transition_x_before,
+                transition_y_after - transition_y_before,
+            ) >= 4
+            if key in ("q", "e"):
+                assert canvas.get_attribute(
+                    "data-keyboard-vertical-implementation"
+                ) == "precision-offset"
+            else:
+                assert canvas.get_attribute(
+                    "data-keyboard-pan-implementation"
+                ) == "precision-offset"
+
+        page.get_by_role("button", name="重置3D视角").click()
+        page.get_by_role("button", name="原点", exact=True).click()
+        page.wait_for_timeout(80)
+
         # Deep zoom must continue beyond the former radius * 0.015 clamp. A
         # second wheel sequence must still decrease the camera distance.
         page.mouse.move(
@@ -685,16 +736,21 @@ def run():
         keyboard_precision_count = int(
             canvas.get_attribute("data-keyboard-precision-movement-count") or 0
         )
-        for key in ("w", "a", "s", "d"):
+        for key in ("w", "a", "s", "d", "q", "e"):
             keyboard_x_before = float(canvas.get_attribute("data-precision-pan-x"))
             keyboard_y_before = float(canvas.get_attribute("data-precision-pan-y"))
             page.keyboard.press(key)
             page.wait_for_timeout(70)
             keyboard_x_after = float(canvas.get_attribute("data-precision-pan-x"))
             keyboard_y_after = float(canvas.get_attribute("data-precision-pan-y"))
-            assert canvas.get_attribute("data-keyboard-pan-implementation") == (
-                "precision-offset"
-            )
+            if key in ("q", "e"):
+                assert canvas.get_attribute(
+                    "data-keyboard-vertical-implementation"
+                ) == "precision-offset"
+            else:
+                assert canvas.get_attribute("data-keyboard-pan-implementation") == (
+                    "precision-offset"
+                )
             assert math.hypot(
                 keyboard_x_after - keyboard_x_before,
                 keyboard_y_after - keyboard_y_before,
@@ -703,7 +759,22 @@ def run():
 
         assert int(
             canvas.get_attribute("data-keyboard-precision-movement-count")
-        ) >= keyboard_precision_count + 4
+        ) >= keyboard_precision_count + 6
+
+        # Holding a key should accumulate immediately at a stable screen-space
+        # rate instead of waiting seconds for world-coordinate rounding.
+        hold_x_before = float(canvas.get_attribute("data-precision-pan-x"))
+        hold_y_before = float(canvas.get_attribute("data-precision-pan-y"))
+        page.keyboard.down("d")
+        page.wait_for_timeout(320)
+        page.keyboard.up("d")
+        page.wait_for_timeout(35)
+        hold_x_after = float(canvas.get_attribute("data-precision-pan-x"))
+        hold_y_after = float(canvas.get_attribute("data-precision-pan-y"))
+        assert math.hypot(
+            hold_x_after - hold_x_before,
+            hold_y_after - hold_y_before,
+        ) >= 35
         page.screenshot(path="/tmp/atlas-keyboard-deep-zoom.png", full_page=True)
 
         # At microscopic optical zoom, panning switches to a pixel-based view

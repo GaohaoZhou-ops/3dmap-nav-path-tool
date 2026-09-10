@@ -4,7 +4,6 @@ import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
-import { createSurfaceService } from './scripts/surface_service.mjs';
 
 const ROBOT_FILE_PREFIX = '/__atlas/robot-files/';
 const DIRECT_ROBOT_EXTENSIONS = new Set(['.glb', '.gltf', '.stl']);
@@ -160,13 +159,11 @@ function parseByteRange(header, size) {
 function atlasWorkspacePlugin() {
   const sessionId = randomUUID();
   const startedAt = new Date().toISOString();
-  const surfaceService = createSurfaceService();
   let projectRoot = process.cwd();
 
   const installEndpoints = (middlewares) => {
     middlewares.use(async (request, response, next) => {
       const rawPathname = request.url?.split('?')[0] || '';
-      if (await surfaceService.handle(request, response)) return;
       if (rawPathname === '/__atlas/session') {
         sendJson(response, 200, { sessionId, startedAt });
         return;
@@ -246,15 +243,12 @@ function atlasWorkspacePlugin() {
     name: 'atlas-workspace-services',
     configResolved(config) {
       projectRoot = config.root;
-      surfaceService.setProjectRoot(projectRoot);
     },
     configureServer(server) {
       installEndpoints(server.middlewares);
-      server.httpServer?.once('close', () => surfaceService.dispose());
     },
     configurePreviewServer(server) {
       installEndpoints(server.middlewares);
-      server.httpServer?.once('close', () => surfaceService.dispose());
     },
   };
 }

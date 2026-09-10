@@ -18,6 +18,7 @@ import {
   TriangleAlert,
 } from 'lucide-react';
 import { calculatePathDistances } from '../lib/pathMetrics.js';
+import ZividCameraPanel from './ZividCameraPanel.jsx';
 
 function NumericField({ label, value, unit, step = '0.01', onCommit }) {
   const [draft, setDraft] = useState(String(Number(value).toFixed(2)));
@@ -70,6 +71,7 @@ export default function Inspector({
   robotLoadState,
   robotPose,
   robotControlEnabled,
+  zividCameraPoses,
   onRunConnectivity,
   onSelectWaypoint,
   onSearchWaypoint,
@@ -437,7 +439,7 @@ export default function Inspector({
                 {robot && (
                   <div className={`robot-drive-row ${robotControlEnabled ? 'is-active' : ''}`}>
                     <dt>麦轮控制</dt>
-                    <dd>{robotControlEnabled ? '键盘已接管 · WASD / ←→' : '待机 · 点击 3D 底盘控制'}</dd>
+                    <dd>{robotControlEnabled ? '键盘已接管 · WASD / ←→' : '待机 · 点击 3D“机器人”'}</dd>
                   </div>
                 )}
                 {robotLoadState?.status === 'loaded' && robotLoadState.zividCount > 0 && (
@@ -489,6 +491,13 @@ export default function Inspector({
             </section>
           </>
         )}
+
+        <ZividCameraPanel
+          mapData={mapData}
+          robot={robot}
+          robotLoadState={robotLoadState}
+          cameraPoses={zividCameraPoses}
+        />
       </div>
     </aside>
   );

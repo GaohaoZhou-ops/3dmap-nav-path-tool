@@ -36,26 +36,24 @@ def run():
         assert canvas.get_attribute("data-coordinate-origin-style") == "ros-rviz"
         assert canvas.get_attribute("data-coordinate-axis-colors") == "x:red,y:green,z:blue"
         assert canvas.get_attribute("data-interaction-mode") == "rotate"
-        assert canvas.get_attribute("data-keyboard-plane") == "xy-z-locked"
-        assert canvas.get_attribute("data-keyboard-vertical-axis") == (
-            "arrow-up:+z,arrow-down:-z"
-        )
+        assert canvas.get_attribute("data-keyboard-plane") == "xy-target-locked"
+        assert canvas.get_attribute("data-keyboard-vertical-axis") == "q:+z,e:-z"
         assert canvas.get_attribute("data-keyboard-enabled") == "true"
         assert canvas.get_attribute("data-keyboard-mode") == "always-on"
         assert canvas.get_attribute("data-keyboard-pan-mode") == (
             "world-with-precision-offset"
         )
-        assert canvas.get_attribute("data-keyboard-look-mode") == "ijkl-orbit-target"
+        assert canvas.get_attribute("data-keyboard-look-mode") == "arrow-orbit-target"
         assert canvas.get_attribute("data-keyboard-look-keys") == (
-            "i:up,j:left,k:down,l:right"
+            "arrowup:pitch-up,arrowdown:pitch-down,"
+            "arrowleft:yaw-left,arrowright:yaw-right"
         )
-        assert canvas.get_attribute("data-keyboard-roll-mode") == (
-            "arrow-left-right-view-axis"
+        assert canvas.get_attribute("data-keyboard-yaw-ownership") == (
+            "camera-unless-mecanum-control"
         )
-        assert canvas.get_attribute("data-keyboard-roll-keys") == (
-            "arrowleft:left,arrowright:right"
-        )
-        assert "I J K L" in canvas.get_attribute("aria-keyshortcuts")
+        assert canvas.get_attribute("data-keyboard-roll-mode") is None
+        assert "I J K L" not in canvas.get_attribute("aria-keyshortcuts")
+        assert "Q E" in canvas.get_attribute("aria-keyshortcuts")
         assert "ArrowUp ArrowDown" in canvas.get_attribute("aria-keyshortcuts")
         assert "ArrowLeft ArrowRight" in canvas.get_attribute("aria-keyshortcuts")
         assert canvas.get_attribute("data-resolution-percent") == "100"
@@ -124,12 +122,12 @@ def run():
         ) < 1e-6
         assert canvas.get_attribute("data-keyboard-pan-implementation") == "world"
 
-        # ArrowUp/ArrowDown translate camera and target together on world Z.
-        # They must not introduce XY drift, rotation, or a distance change.
+        # Q/E translate camera and target together on world Z. The XY position,
+        # orientation target and viewing distance must remain unchanged.
         vertical_camera_before = camera_after
         vertical_target_before = target_after
         vertical_distance_before = distance_after
-        page.keyboard.press("ArrowUp")
+        page.keyboard.press("q")
         page.wait_for_timeout(100)
         vertical_up_camera = {
             axis: float(canvas.get_attribute(f"data-camera-{axis}"))
@@ -139,7 +137,7 @@ def run():
             axis: float(canvas.get_attribute(f"data-target-{axis}"))
             for axis in ("x", "y", "z")
         }
-        assert canvas.get_attribute("data-last-keyboard-key") == "ArrowUp"
+        assert canvas.get_attribute("data-last-keyboard-key") == "Q"
         assert canvas.get_attribute("data-last-keyboard-vertical") == "z-up"
         assert vertical_up_camera["z"] > vertical_camera_before["z"] + 0.01
         assert vertical_up_target["z"] > vertical_target_before["z"] + 0.01
@@ -154,7 +152,7 @@ def run():
             float(canvas.get_attribute("data-camera-distance")) - vertical_distance_before
         ) < 1e-6
 
-        page.keyboard.press("ArrowDown")
+        page.keyboard.press("e")
         page.wait_for_timeout(100)
         camera_after = {
             axis: float(canvas.get_attribute(f"data-camera-{axis}"))
@@ -165,6 +163,7 @@ def run():
             for axis in ("x", "y", "z")
         }
         distance_after = float(canvas.get_attribute("data-camera-distance"))
+        assert canvas.get_attribute("data-last-keyboard-key") == "E"
         assert canvas.get_attribute("data-last-keyboard-vertical") == "z-down"
         assert camera_after["z"] < vertical_up_camera["z"] - 0.01
         assert target_after["z"] < vertical_up_target["z"] - 0.01
@@ -173,15 +172,15 @@ def run():
             assert abs(target_after[axis] - vertical_up_target[axis]) < 1e-9
         assert abs(distance_after - vertical_distance_before) < 1e-6
 
-        # I/J/K/L rotate around the current observation target. J/L yaw around
-        # world Z, while I/K pitch around the camera-local right axis. All four
-        # controls must preserve both the target and viewing distance.
+        # ArrowLeft/ArrowRight yaw around world Z, while ArrowUp/ArrowDown
+        # pitch around the camera-local right axis. All four controls orbit the
+        # current target without changing it or the viewing distance.
         look_camera = camera_after
         look_target = target_after
         look_distance = distance_after
         look_before = view_direction(look_camera, look_target)
 
-        page.keyboard.press("j")
+        page.keyboard.press("ArrowLeft")
         page.wait_for_timeout(100)
         yaw_left_camera = {
             axis: float(canvas.get_attribute(f"data-camera-{axis}"))
@@ -192,14 +191,14 @@ def run():
             for axis in ("x", "y", "z")
         }
         yaw_left = view_direction(yaw_left_camera, yaw_left_target)
-        assert canvas.get_attribute("data-last-keyboard-key") == "J"
+        assert canvas.get_attribute("data-last-keyboard-key") == "ArrowLeft"
         assert canvas.get_attribute("data-last-keyboard-rotation") == "yaw-left"
         assert look_before[0] * yaw_left[1] - look_before[1] * yaw_left[0] > 0.01
         assert abs(yaw_left[2] - look_before[2]) < 1e-6
         assert yaw_left_target == look_target
         assert abs(float(canvas.get_attribute("data-camera-distance")) - look_distance) < 1e-6
 
-        page.keyboard.press("l")
+        page.keyboard.press("ArrowRight")
         page.wait_for_timeout(100)
         yaw_right_camera = {
             axis: float(canvas.get_attribute(f"data-camera-{axis}"))
@@ -214,7 +213,7 @@ def run():
         assert yaw_left[0] * yaw_right[1] - yaw_left[1] * yaw_right[0] < -0.01
         assert yaw_right_target == look_target
 
-        page.keyboard.press("i")
+        page.keyboard.press("ArrowUp")
         page.wait_for_timeout(100)
         pitch_up_camera = {
             axis: float(canvas.get_attribute(f"data-camera-{axis}"))
@@ -229,7 +228,7 @@ def run():
         assert pitch_up[2] > yaw_right[2] + 0.01
         assert pitch_up_target == look_target
 
-        page.keyboard.press("k")
+        page.keyboard.press("ArrowDown")
         page.wait_for_timeout(100)
         pitch_down_camera = {
             axis: float(canvas.get_attribute(f"data-camera-{axis}"))
@@ -245,93 +244,33 @@ def run():
         assert pitch_down_target == look_target
         assert abs(float(canvas.get_attribute("data-camera-distance")) - look_distance) < 1e-6
 
-        # ArrowLeft/ArrowRight perform a pure camera roll around the current
-        # viewing axis. Position, target, direction and distance stay fixed;
-        # only the normalized camera-up vector changes.
-        roll_camera_before = pitch_down_camera
-        roll_target_before = pitch_down_target
-        roll_direction_before = view_direction(roll_camera_before, roll_target_before)
-        roll_up_before = tuple(
-            float(canvas.get_attribute(f"data-camera-up-{axis}"))
-            for axis in ("x", "y", "z")
-        )
-        roll_right_before = (
-            roll_direction_before[1] * roll_up_before[2]
-            - roll_direction_before[2] * roll_up_before[1],
-            roll_direction_before[2] * roll_up_before[0]
-            - roll_direction_before[0] * roll_up_before[2],
-            roll_direction_before[0] * roll_up_before[1]
-            - roll_direction_before[1] * roll_up_before[0],
-        )
-        roll_right_length = math.sqrt(sum(value * value for value in roll_right_before))
-        roll_right_before = tuple(value / roll_right_length for value in roll_right_before)
-
-        page.keyboard.press("ArrowLeft")
-        page.wait_for_timeout(100)
-        roll_left_camera = {
-            axis: float(canvas.get_attribute(f"data-camera-{axis}"))
-            for axis in ("x", "y", "z")
-        }
-        roll_left_target = {
-            axis: float(canvas.get_attribute(f"data-target-{axis}"))
-            for axis in ("x", "y", "z")
-        }
-        roll_left_up = tuple(
-            float(canvas.get_attribute(f"data-camera-up-{axis}"))
-            for axis in ("x", "y", "z")
-        )
-        assert canvas.get_attribute("data-last-keyboard-key") == "ArrowLeft"
-        assert canvas.get_attribute("data-last-keyboard-rotation") == "roll-left"
-        assert roll_left_camera == roll_camera_before
-        assert roll_left_target == roll_target_before
-        assert all(
-            abs(actual - expected) < 1e-8
-            for actual, expected in zip(
-                view_direction(roll_left_camera, roll_left_target),
-                roll_direction_before,
+        # I/J/K/L are no longer application shortcuts and must not affect the view.
+        removed_keys_view = {
+            key: float(canvas.get_attribute(f"data-{key}"))
+            for key in (
+                "camera-x",
+                "camera-y",
+                "camera-z",
+                "camera-up-x",
+                "camera-up-y",
+                "camera-up-z",
+                "target-x",
+                "target-y",
+                "target-z",
             )
+        }
+        removed_keys_input_count = int(
+            canvas.get_attribute("data-keyboard-input-count") or 0
         )
-        assert abs(math.sqrt(sum(value * value for value in roll_left_up)) - 1) < 1e-8
-        up_axis_component_before = sum(
-            a * b for a, b in zip(roll_up_before, roll_direction_before)
-        )
-        up_axis_component_after = sum(
-            a * b for a, b in zip(roll_left_up, roll_direction_before)
-        )
-        assert abs(up_axis_component_after - up_axis_component_before) < 1e-8
-        left_tilt = sum(
-            (actual - before) * right
-            for actual, before, right in zip(roll_left_up, roll_up_before, roll_right_before)
-        )
-        assert left_tilt < -0.01
-        assert abs(float(canvas.get_attribute("data-camera-distance")) - look_distance) < 1e-6
-        page.screenshot(path="/tmp/atlas-keyboard-roll-left.png", full_page=True)
-
-        page.keyboard.press("ArrowRight")
+        for key in ("i", "j", "k", "l"):
+            page.keyboard.press(key)
         page.wait_for_timeout(100)
-        roll_right_camera = {
-            axis: float(canvas.get_attribute(f"data-camera-{axis}"))
-            for axis in ("x", "y", "z")
-        }
-        roll_right_target = {
-            axis: float(canvas.get_attribute(f"data-target-{axis}"))
-            for axis in ("x", "y", "z")
-        }
-        roll_right_up = tuple(
-            float(canvas.get_attribute(f"data-camera-up-{axis}"))
-            for axis in ("x", "y", "z")
-        )
-        assert canvas.get_attribute("data-last-keyboard-rotation") == "roll-right"
-        assert roll_right_camera == roll_camera_before
-        assert roll_right_target == roll_target_before
-        right_tilt = sum(
-            (actual - before) * right
-            for actual, before, right in zip(roll_right_up, roll_left_up, roll_right_before)
-        )
-        assert right_tilt > 0.01
-        assert all(
-            abs(actual - expected) < 1e-7
-            for actual, expected in zip(roll_right_up, roll_up_before)
+        assert {
+            key: float(canvas.get_attribute(f"data-{key}"))
+            for key in removed_keys_view
+        } == removed_keys_view
+        assert int(canvas.get_attribute("data-keyboard-input-count") or 0) == (
+            removed_keys_input_count
         )
 
         # Numeric/text editing must retain normal keyboard ownership and must
@@ -367,6 +306,12 @@ def run():
             for key in edit_camera_before
         }
         assert edit_camera_after == edit_camera_before
+        page.keyboard.press("q")
+        page.wait_for_timeout(100)
+        assert {
+            key: float(canvas.get_attribute(f"data-{key}"))
+            for key in edit_camera_before
+        } == edit_camera_before
         page.keyboard.press("ArrowLeft")
         page.wait_for_timeout(100)
         edit_roll_after = {

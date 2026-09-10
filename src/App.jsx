@@ -40,8 +40,12 @@ import {
   normalizeProject,
   readFileWithProgress,
 } from './lib/io.js';
-import { normalizeRobotDescriptor, normalizeRobotPose } from './lib/robotLoader.js';
-import { sha256ArrayBuffer } from './lib/surfaceCache.js';
+import {
+  normalizeRobotDescriptor,
+  normalizeRobotJointValues,
+  normalizeRobotPose,
+} from './lib/robotLoader.js';
+import { sha256ArrayBuffer } from './lib/hash.js';
 import {
   fetchServiceSession,
   loadWorkspaceViews,
@@ -54,7 +58,6 @@ import {
 
 const initialValidation = { status: 'idle', unreachableCount: 0, checkedAt: null };
 const pointColorModes = new Set(['height', 'source', 'white']);
-const mapRenderModes = new Set(['points', 'surface']);
 
 const defaultLimits = {
   minSpeed: 0.2,
@@ -241,7 +244,6 @@ export default function App() {
   const [restoredView2d, setRestoredView2d] = useState(null);
   const [restoredView3d, setRestoredView3d] = useState(null);
   const [pointColorMode, setPointColorMode] = useState('height');
-  const [mapRenderMode, setMapRenderMode] = useState('points');
   const [showWaypoints3D, setShowWaypoints3D] = useState(true);
   const [collapsedPanel, setCollapsedPanel] = useState(null);
   const [synchronizedFocus, setSynchronizedFocus] = useState(null);
@@ -249,7 +251,9 @@ export default function App() {
   const [selectedRobot, setSelectedRobot] = useState(null);
   const [robotLoadState, setRobotLoadState] = useState({ status: 'idle' });
   const [robotPose, setRobotPose] = useState(() => normalizeRobotPose(null));
+  const [robotJointValues, setRobotJointValues] = useState({});
   const [robotControlEnabled, setRobotControlEnabled] = useState(false);
+  const [zividCameraPoses, setZividCameraPoses] = useState({});
   const [sessionState, setSessionState] = useState({ status: 'checking', restored: false });
   const [loadState, setLoadState] = useState({
     loading: true,
@@ -270,11 +274,11 @@ export default function App() {
     selectedEdgeId,
     validation,
     pointColorMode,
-    mapRenderMode,
     showWaypoints3D,
     collapsedPanel,
     selectedRobot,
     robotPose,
+    robotJointValues,
   };
 
   useEffect(() => {
@@ -330,6 +334,7 @@ export default function App() {
           view3d: view3dRef.current,
           robot: current.selectedRobot,
           robotPose: current.robotPose,
+          robotJointValues: current.robotJointValues,
         })
       : null;
     const snapshot = {
@@ -342,11 +347,14 @@ export default function App() {
         selectedEdgeId: current.selectedEdgeId,
         validation: current.validation,
         pointColorMode: current.pointColorMode,
-        mapRenderMode: current.mapRenderMode,
         showWaypoints3D: current.showWaypoints3D,
         collapsedPanel: current.collapsedPanel,
         selectedRobot: current.selectedRobot
-          ? { ...current.selectedRobot, origin: current.robotPose }
+          ? {
+              ...current.selectedRobot,
+              origin: current.robotPose,
+              joints: current.robotJointValues,
+            }
           : null,
       },
     };
@@ -427,6 +435,7 @@ export default function App() {
         setConnectionSourceId(null);
         setValidation(initialValidation);
         setRobotPose(normalizeRobotPose(null));
+        setRobotJointValues({});
         setRobotControlEnabled(false);
       }
 
@@ -559,17 +568,15 @@ export default function App() {
               ? snapshot.ui.collapsedPanel
               : null,
           );
-          setMapRenderMode(
-            mapRenderModes.has(snapshot?.ui?.mapRenderMode)
-              ? snapshot.ui.mapRenderMode
-              : 'points',
-          );
           setShowWaypoints3D(snapshot?.ui?.showWaypoints3D !== false);
           setSelectedRobot(restoredRobot);
           setRobotPose(
             restoredRobot
               ? normalizeRobotPose(project?.robot?.origin || restoredRobot.origin)
               : normalizeRobotPose(null),
+          );
+          setRobotJointValues(
+            restoredRobot ? normalizeRobotJointValues(project?.robot?.joints || restoredRobot.joints) : {},
           );
           setRobotControlEnabled(false);
           setRobotLoadState({ status: restoredRobot ? 'pending' : 'idle' });
@@ -719,11 +726,11 @@ export default function App() {
           setEdges([]);
           setHeightRange([0, 1]);
           setPointColorMode('height');
-          setMapRenderMode('points');
           setShowWaypoints3D(true);
           setCollapsedPanel(null);
           setSelectedRobot(null);
           setRobotPose(normalizeRobotPose(null));
+          setRobotJointValues({});
           setRobotControlEnabled(false);
           setRobotLoadState({ status: 'idle' });
           setRestoredView2d(null);
@@ -766,7 +773,6 @@ export default function App() {
     edges,
     heightRange,
     mapData?.mapId,
-    mapRenderMode,
     mode,
     pointColorMode,
     queueWorkspaceSave,
@@ -774,6 +780,7 @@ export default function App() {
     selectedWaypointId,
     selectedRobot,
     robotPose,
+    robotJointValues,
     sessionState.status,
     showWaypoints3D,
     validation,
@@ -860,6 +867,9 @@ export default function App() {
       setSelectedRobot(importedRobot);
       setRobotPose(
         importedRobot ? normalizeRobotPose(project.robot?.origin) : normalizeRobotPose(null),
+      );
+      setRobotJointValues(
+        importedRobot ? normalizeRobotJointValues(project.robot?.joints) : {},
       );
       setRobotControlEnabled(false);
       setRobotLoadState({ status: importedRobot ? 'pending' : 'idle' });
@@ -1162,6 +1172,7 @@ export default function App() {
       view3d: view3dRef.current,
       robot: selectedRobot,
       robotPose,
+      robotJointValues,
     });
     const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
     downloadJson(payload, `route-graph-${stamp}.json`);
@@ -1179,7 +1190,9 @@ export default function App() {
       robotNotificationRef.current = '';
       setSelectedRobot(robot);
       setRobotPose(normalizeRobotPose(null));
+      setRobotJointValues({});
       setRobotControlEnabled(false);
+      setZividCameraPoses({});
       setRobotLoadState({
         status: mapData?.geometry ? 'loading' : 'pending',
         robotId: robot.id,
@@ -1198,7 +1211,10 @@ export default function App() {
   );
   const handleRobotLoadState = useCallback((nextState) => {
     setRobotLoadState(nextState);
-    if (nextState.status !== 'loaded') setRobotControlEnabled(false);
+    if (nextState.status !== 'loaded') {
+      setRobotControlEnabled(false);
+      setZividCameraPoses({});
+    }
   }, []);
   const handleRobotPoseChange = useCallback((nextPose) => {
     const normalized = normalizeRobotPose(nextPose);
@@ -1212,6 +1228,23 @@ export default function App() {
         && current.rpy.yaw === normalized.rpy.yaw;
       return unchanged ? current : normalized;
     });
+  }, []);
+  const handleRobotJointValuesChange = useCallback((nextValues) => {
+    const normalized = normalizeRobotJointValues(nextValues);
+    setRobotJointValues((current) => {
+      const currentEntries = Object.entries(current);
+      const nextEntries = Object.entries(normalized);
+      if (
+        currentEntries.length === nextEntries.length
+        && nextEntries.every(([name, value]) => current[name] === value)
+      ) {
+        return current;
+      }
+      return normalized;
+    });
+  }, []);
+  const handleZividCameraPoseChange = useCallback((nextPoses) => {
+    setZividCameraPoses(nextPoses && typeof nextPoses === 'object' ? nextPoses : {});
   }, []);
   const handleRobotControlChange = useCallback(
     (enabled) => {
@@ -1382,8 +1415,6 @@ export default function App() {
                 selectedEdgeId={selectedEdgeId}
                 colorMode={pointColorMode}
                 onColorModeChange={setPointColorMode}
-                mapRenderMode={mapRenderMode}
-                onMapRenderModeChange={setMapRenderMode}
                 showWaypoints={showWaypoints3D}
                 onShowWaypointsChange={setShowWaypoints3D}
                 onSelectWaypoint={selectWaypoint}
@@ -1396,10 +1427,13 @@ export default function App() {
                 robotDescriptor={selectedRobot}
                 robotLoadState={robotLoadState}
                 robotPose={robotPose}
+                robotJointValues={robotJointValues}
                 robotControlEnabled={robotControlEnabled}
                 onRobotLoadState={handleRobotLoadState}
                 onRobotPoseChange={handleRobotPoseChange}
+                onRobotJointValuesChange={handleRobotJointValuesChange}
                 onRobotControlChange={handleRobotControlChange}
+                onZividCameraPoseChange={handleZividCameraPoseChange}
               />
               <HeightRange
                 bounds={mapData?.bounds}
@@ -1500,6 +1534,7 @@ export default function App() {
           robotLoadState={robotLoadState}
           robotPose={robotPose}
           robotControlEnabled={robotControlEnabled}
+          zividCameraPoses={zividCameraPoses}
           onRunConnectivity={runConnectivity}
           onSelectWaypoint={focusWaypointFromInspector}
           onSearchWaypoint={focusWaypointFromInspector}

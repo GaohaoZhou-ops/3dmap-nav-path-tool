@@ -153,6 +153,16 @@ export function normalizeProject(payload) {
         packageName: rawRobot.packageName ? String(rawRobot.packageName) : null,
         packagePath: rawRobot.packagePath ? String(rawRobot.packagePath) : null,
         manifestUrl: rawRobot.manifestUrl ? String(rawRobot.manifestUrl) : null,
+        joints: rawRobot.joints && typeof rawRobot.joints === 'object'
+          ? Object.fromEntries(
+              Object.entries(rawRobot.joints).flatMap(([name, value]) => {
+                const parsed = Number(
+                  value && typeof value === 'object' ? value.value : value,
+                );
+                return name && Number.isFinite(parsed) ? [[String(name), parsed]] : [];
+              }),
+            )
+          : {},
         origin: {
           position: {
             x: numberOr(rawRobot.origin?.position?.x ?? rawRobot.origin?.x),
@@ -191,6 +201,7 @@ export function buildExport({
   view3d,
   robot,
   robotPose,
+  robotJointValues,
 }) {
   const pointById = new Map(waypoints.map((point) => [point.id, point]));
   const exportedRobotPose = robotPose || robot?.origin || {};
@@ -232,6 +243,12 @@ export function buildExport({
           packageName: robot.packageName || null,
           packagePath: robot.packagePath || null,
           manifestUrl: robot.manifestUrl || null,
+          joints: Object.fromEntries(
+            Object.entries(robotJointValues || robot.joints || {}).flatMap(([name, value]) => {
+              const parsed = Number(value);
+              return name && Number.isFinite(parsed) ? [[name, parsed]] : [];
+            }),
+          ),
           origin: {
             position: {
               x: numberOr(exportedRobotPose.position?.x ?? exportedRobotPose.x),

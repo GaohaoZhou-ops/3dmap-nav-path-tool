@@ -103,12 +103,12 @@ def run():
         assert "2× Zivid" in page.get_by_label("机器人模型状态").inner_text()
         assert page.get_by_text("2 × Zivid · 2 optical frames", exact=True).is_visible()
 
-        control = page.get_by_role("button", name="切换机器人键盘控制")
+        control = page.get_by_role("button", name="定位机器人模型")
         assert control.is_visible()
+        assert page.get_by_role("button", name="切换机器人键盘控制").count() == 0
         assert control.get_attribute("aria-pressed") == "false"
         assert canvas.get_attribute("data-robot-control-enabled") == "false"
         assert canvas.get_attribute("data-robot-drive-model") == "mecanum-local-frame"
-        camera_before_control = read_camera(canvas)
 
         control.click()
         page.wait_for_function(
@@ -117,6 +117,7 @@ def run():
         assert control.get_attribute("aria-pressed") == "true"
         assert canvas.get_attribute("data-keyboard-control-owner") == "robot"
         assert "MECANUM DRIVE · ACTIVE" in page.get_by_label("机器人模型状态").inner_text()
+        camera_before_control = read_camera(canvas)
 
         page.keyboard.press("w")
         page.wait_for_function(
@@ -141,6 +142,25 @@ def run():
         pose_after_yaw = read_pose(canvas)
         assert pose_after_yaw["yaw"] > 4
         assert read_camera(canvas) == camera_before_control
+
+        robot_before_vertical_camera = read_pose(canvas)
+        camera_before_vertical = read_camera(canvas)
+        page.keyboard.press("q")
+        page.wait_for_timeout(120)
+        camera_after_vertical_up = read_camera(canvas)
+        assert read_pose(canvas) == robot_before_vertical_camera
+        assert camera_after_vertical_up[2] > camera_before_vertical[2] + 0.01
+        assert camera_after_vertical_up[5] > camera_before_vertical[5] + 0.01
+        assert all(
+            abs(camera_after_vertical_up[index] - camera_before_vertical[index]) < 1e-8
+            for index in (0, 1, 3, 4, 6, 7, 8)
+        )
+        page.keyboard.press("e")
+        page.wait_for_timeout(120)
+        camera_after_vertical_down = read_camera(canvas)
+        assert read_pose(canvas) == robot_before_vertical_camera
+        assert camera_after_vertical_down[2] < camera_after_vertical_up[2] - 0.01
+        assert camera_after_vertical_down[5] < camera_after_vertical_up[5] - 0.01
 
         page.keyboard.press("w")
         page.wait_for_timeout(120)
@@ -224,7 +244,7 @@ def run():
         assert page.locator(".session-guard").get_attribute("data-session-restored") == "true"
         assert page.locator(".robot-picker").get_attribute("data-robot-picker-state") == "loaded"
         assert canvas.get_attribute("data-robot-control-enabled") == "false"
-        assert page.get_by_role("button", name="切换机器人键盘控制").get_attribute(
+        assert page.get_by_role("button", name="定位机器人模型").get_attribute(
             "aria-pressed"
         ) == "false"
         restored_pose = read_pose(canvas)

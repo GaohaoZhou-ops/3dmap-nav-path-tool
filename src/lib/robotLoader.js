@@ -64,6 +64,18 @@ export function normalizeRobotPose(value) {
   };
 }
 
+export function normalizeRobotJointValues(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
+  return Object.fromEntries(
+    Object.entries(value).flatMap(([name, rawValue]) => {
+      const parsed = Number(
+        rawValue && typeof rawValue === 'object' ? rawValue.value : rawValue,
+      );
+      return name && Number.isFinite(parsed) ? [[String(name), parsed]] : [];
+    }),
+  );
+}
+
 export function normalizeRobotDescriptor(value) {
   if (!value || typeof value !== 'object') return null;
   const relativePath = sanitizeRelativePath(
@@ -93,6 +105,7 @@ export function normalizeRobotDescriptor(value) {
       ? `${packageBaseUrl}web-model.json`
       : null,
     origin: normalizeRobotPose(value.origin),
+    joints: normalizeRobotJointValues(value.joints),
   };
 }
 
@@ -364,6 +377,25 @@ async function loadUrdfRobot(descriptor, signal, onProgress) {
     joint.userData.urdfType = 'joint';
     joint.userData.jointType = jointElement.getAttribute('type') || 'fixed';
     applyOrigin(joint, readOrigin(childElement(jointElement, 'origin')));
+    const axis = parseNumbers(
+      childElement(jointElement, 'axis')?.getAttribute('xyz'),
+      3,
+      [0, 0, 1],
+    );
+    const axisLength = Math.hypot(...axis);
+    const limitElement = childElement(jointElement, 'limit');
+    const lower = Number(limitElement?.getAttribute('lower'));
+    const upper = Number(limitElement?.getAttribute('upper'));
+    joint.userData.jointAxis = axisLength > 1e-12
+      ? axis.map((value) => value / axisLength)
+      : [0, 0, 1];
+    joint.userData.jointLimit = {
+      lower: Number.isFinite(lower) ? lower : Number.NEGATIVE_INFINITY,
+      upper: Number.isFinite(upper) ? upper : Number.POSITIVE_INFINITY,
+    };
+    joint.userData.restPosition = joint.position.toArray();
+    joint.userData.restQuaternion = joint.quaternion.toArray();
+    joint.userData.jointValue = 0;
     joint.add(childLink);
     parentLink.add(joint);
     childLinkNames.add(childName);
@@ -457,7 +489,89 @@ export async function loadRobotModel(value, options = {}) {
     size: size.toArray(),
   };
   robot.userData.robot.framePositions = framePositions;
+  const endEffectorDefinitions = {
+    left: ['tool_left', 'left_L7', 'zivid_left_link'],
+    right: ['tool_right', 'right_L7', 'zivid_right_link'],
+  };
+  const availableEndEffectors = [];
+  Object.entries(endEffectorDefinitions).forEach(([side, names]) => {
+    const availableFrames = names
+      .map((name) => robot.getObjectByName(name))
+      .filter(Boolean);
+    if (!availableFrames.length) return;
+    availableEndEffectors.push(side);
+    availableFrames.forEach((frame) => {
+      frame.userData.endEffectorSide = side;
+    });
+  });
+  robot.userData.robot.endEffectorCount = availableEndEffectors.length;
+  robot.userData.robot.endEffectorSides = availableEndEffectors;
   return robot;
+}
+
+const movableJointTypes = new Set(['revolute', 'continuous', 'prismatic']);
+
+export const setRobotJointValue = (joint, rawValue) => {
+  if (!joint || !movableJointTypes.has(joint.userData?.jointType)) return 0;
+  const limit = joint.userData.jointLimit || {};
+  const value = THREE.MathUtils.clamp(
+    Number(rawValue) || 0,
+    Number.isFinite(limit.lower) ? limit.lower : Number.NEGATIVE_INFINITY,
+    Number.isFinite(limit.upper) ? limit.upper : Number.POSITIVE_INFINITY,
+  );
+  const axis = new THREE.Vector3(...(joint.userData.jointAxis || [0, 0, 1])).normalize();
+  const restPosition = joint.userData.restPosition || [0, 0, 0];
+  const restQuaternion = joint.userData.restQuaternion || [0, 0, 0, 1];
+  joint.position.fromArray(restPosition);
+  joint.quaternion.fromArray(restQuaternion);
+  if (joint.userData.jointType === 'prismatic') {
+    joint.position.addScaledVector(axis, value);
+  } else {
+    joint.quaternion.multiply(new THREE.Quaternion().setFromAxisAngle(axis, value));
+  }
+  joint.userData.jointValue = value;
+  return value;
+};
+
+export function applyRobotJointValues(robot, values) {
+  const normalized = normalizeRobotJointValues(values);
+  if (!robot) return normalized;
+  robot.traverse((object) => {
+    if (!movableJointTypes.has(object.userData?.jointType)) return;
+    if (!(object.name in normalized)) return;
+    const serializedValue = normalized[object.name];
+    const internalValue = object.userData.jointType === 'prismatic'
+      ? serializedValue
+      : THREE.MathUtils.degToRad(serializedValue);
+    setRobotJointValue(object, internalValue);
+  });
+  robot.updateMatrixWorld(true);
+  return readRobotJointValues(robot);
+}
+
+export function readRobotJointValues(robot) {
+  const values = {};
+  robot?.traverse((object) => {
+    if (!movableJointTypes.has(object.userData?.jointType)) return;
+    const internalValue = Number(object.userData.jointValue) || 0;
+    values[object.name] = object.userData.jointType === 'prismatic'
+      ? internalValue
+      : THREE.MathUtils.radToDeg(internalValue);
+  });
+  return values;
+}
+
+export function getRobotEndEffector(robot, side) {
+  if (!robot || !['left', 'right'].includes(side)) return null;
+  const frame = robot.getObjectByName(`tool_${side}`);
+  if (!frame) return null;
+  const joints = [];
+  let current = frame.parent;
+  while (current && current !== robot) {
+    if (movableJointTypes.has(current.userData?.jointType)) joints.push(current);
+    current = current.parent;
+  }
+  return joints.length ? { side, robot, frame, joints } : null;
 }
 
 export function disposeRobotModel(robot) {

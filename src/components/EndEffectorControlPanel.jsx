@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import {
   CheckCircle2,
   Crosshair,
+  Globe2,
   Lock,
   Move3D,
   Orbit,
@@ -58,17 +59,21 @@ const sideShortLabel = { left: '左端', right: '右端' };
 
 export default function EndEffectorControlPanel({
   control,
-  lockedSides,
+  lockModes,
   onModeChange,
   onPoseChange,
   onReset,
-  onToggleLock,
+  onToggleBodyLock,
+  onToggleMapLock,
   onClose,
 }) {
   if (!control) return null;
   const pose = control.pose;
-  const locked = Boolean(control.locked);
-  const locks = lockedSides || control.lockedSides || { left: false, right: false };
+  const activeLockMode = control.lockMode || null;
+  const bodyLocked = activeLockMode === 'body';
+  const mapLocked = activeLockMode === 'map';
+  const locked = bodyLocked || mapLocked;
+  const locks = lockModes || control.lockModes || { left: null, right: null };
   const updatePosition = (axis, value) => {
     onPoseChange({
       ...pose,
@@ -84,14 +89,17 @@ export default function EndEffectorControlPanel({
 
   return (
     <section
-      className={`end-effector-panel is-${control.status || 'tracking'} ${locked ? 'is-locked' : ''}`}
+      className={`end-effector-panel is-${control.status || 'tracking'} ${bodyLocked ? 'is-body-locked is-locked' : ''} ${mapLocked ? 'is-map-locked is-locked' : ''}`}
       aria-label="机械臂末端空间球"
       data-end-effector-side={control.side}
       data-transform-mode={control.mode}
       data-ik-status={control.status}
       data-end-effector-locked={locked}
+      data-end-effector-lock-mode={activeLockMode || 'free'}
       data-left-end-effector-locked={Boolean(locks.left)}
       data-right-end-effector-locked={Boolean(locks.right)}
+      data-left-end-effector-lock-mode={locks.left || 'free'}
+      data-right-end-effector-lock-mode={locks.right || 'free'}
       data-position-error={control.positionError || 0}
       data-rotation-error={control.rotationError || 0}
     >
@@ -111,11 +119,15 @@ export default function EndEffectorControlPanel({
 
       <div className="end-effector-panel__status">
         <span>
-          {locked ? <Lock size={12} /> : <CheckCircle2 size={12} />}
-          {locked ? '姿态已锁定' : `IK ${control.status === 'limited' ? '受限' : '跟踪'}`}
+          {bodyLocked ? <Lock size={12} /> : mapLocked ? <Globe2 size={12} /> : <CheckCircle2 size={12} />}
+          {bodyLocked
+            ? '本体姿态已锁定'
+            : mapLocked
+              ? `全局姿态 · IK ${control.status === 'limited' ? '受限' : '跟踪'}`
+              : `IK ${control.status === 'limited' ? '受限' : '跟踪'}`}
         </span>
-        {locked ? (
-          <em className="end-effector-panel__hold-copy">ARM HOLD · JOINTS FROZEN</em>
+        {bodyLocked ? (
+          <em className="end-effector-panel__hold-copy">BODY HOLD · JOINTS FROZEN</em>
         ) : (
           <>
             <em>ΔP {(control.positionError || 0).toFixed(4)} m</em>
@@ -128,12 +140,19 @@ export default function EndEffectorControlPanel({
         {['left', 'right'].map((side) => (
           <span
             key={side}
-            className={`${locks[side] ? 'is-locked' : ''} ${control.side === side ? 'is-current' : ''}`}
+            className={`${locks[side] ? `is-locked is-${locks[side]}-locked` : ''} ${control.side === side ? 'is-current' : ''}`}
             data-lock-side={side}
+            data-lock-mode={locks[side] || 'free'}
           >
             <i>{side === 'left' ? 'L' : 'R'}</i>
             {sideShortLabel[side]}
-            <b>{locks[side] ? <><Lock size={9} /> LOCKED</> : 'FREE'}</b>
+            <b>
+              {locks[side] === 'body'
+                ? <><Lock size={9} /> BODY</>
+                : locks[side] === 'map'
+                  ? <><Globe2 size={9} /> MAP</>
+                  : 'FREE'}
+            </b>
           </span>
         ))}
       </div>
@@ -179,9 +198,11 @@ export default function EndEffectorControlPanel({
 
       <footer className="end-effector-panel__footer">
         <span>
-          {locked
-            ? '当前臂已冻结；双击另一末端可继续调整'
-            : '拖拽空间球彩色轴环，完成后可锁定姿态'}
+          {bodyLocked
+            ? '本体锁定：关节角保持不变'
+            : mapLocked
+              ? '全局锁定：地图 XYZ / RPY 保持不变'
+              : '拖拽完成后可选择本体或全局锁定'}
         </span>
         <div className="end-effector-panel__actions">
           <button type="button" disabled={locked || control.dragging} onClick={onReset}>
@@ -189,19 +210,35 @@ export default function EndEffectorControlPanel({
           </button>
           <button
             type="button"
-            className={`end-effector-lock-button ${locked ? 'is-active' : ''}`}
-            aria-label={`${locked ? '解除锁定' : '锁定'}${sideLabel[control.side]}末端`}
-            aria-pressed={locked}
+            className={`end-effector-lock-button is-body ${bodyLocked ? 'is-active' : ''}`}
+            aria-label={`${bodyLocked ? '解除本体姿态锁定' : '锁定本体姿态'}${sideLabel[control.side]}末端`}
+            aria-pressed={bodyLocked}
             disabled={control.dragging}
             title={
-              locked
-                ? '解除当前末端姿态锁定并恢复空间球控制'
-                : '冻结当前臂与共享关节，再调整另一机械臂时保持本臂姿态'
+              bodyLocked
+                ? '解除机器人本体坐标系下的关节姿态锁定'
+                : '冻结当前臂与共享关节；机器人移动时末端跟随本体'
             }
-            onClick={onToggleLock}
+            onClick={onToggleBodyLock}
           >
-            {locked ? <Unlock size={11} /> : <Lock size={11} />}
-            {locked ? '解除锁定' : '锁定末端'}
+            {bodyLocked ? <Unlock size={11} /> : <Lock size={11} />}
+            {bodyLocked ? '解除本体' : '本体锁定'}
+          </button>
+          <button
+            type="button"
+            className={`end-effector-lock-button is-map ${mapLocked ? 'is-active' : ''}`}
+            aria-label={`${mapLocked ? '解除全局姿态锁定' : '锁定全局姿态'}${sideLabel[control.side]}末端`}
+            aria-pressed={mapLocked}
+            disabled={control.dragging}
+            title={
+              mapLocked
+                ? '解除地图坐标系下的绝对末端姿态锁定'
+                : '固定地图坐标系下的末端 XYZ/RPY；底盘移动时整条关节链持续补偿'
+            }
+            onClick={onToggleMapLock}
+          >
+            {mapLocked ? <Unlock size={11} /> : <Globe2 size={11} />}
+            {mapLocked ? '解除全局' : '全局锁定'}
           </button>
         </div>
       </footer>

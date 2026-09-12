@@ -412,6 +412,26 @@ async function loadUrdfRobot(descriptor, signal, onProgress) {
   }
   if (!robot.children.length) throw new Error('URDF 中没有可装配的根链接');
 
+  const movableJoints = jointElements.flatMap((jointElement) => {
+    const name = jointElement.getAttribute('name') || '';
+    const joint = name ? robot.getObjectByName(name) : null;
+    const type = joint?.userData?.jointType;
+    if (!joint || !['revolute', 'continuous', 'prismatic'].includes(type)) return [];
+    const rawLimit = joint.userData.jointLimit || {};
+    const convertLimit = (value) => {
+      if (!Number.isFinite(value)) return null;
+      return type === 'prismatic' ? value : THREE.MathUtils.radToDeg(value);
+    };
+    return [{
+      name,
+      type,
+      unit: type === 'prismatic' ? 'meter' : 'degree',
+      lower: convertLimit(rawLimit.lower),
+      upper: convertLimit(rawLimit.upper),
+      axis: [...(joint.userData.jointAxis || [0, 0, 1])],
+    }];
+  });
+
   robot.userData.robot = {
     format: 'urdf',
     linkCount: linkGroups.size,
@@ -429,6 +449,7 @@ async function loadUrdfRobot(descriptor, signal, onProgress) {
         ?.getAttribute('filename');
       return count + Number(Boolean(filename && meshOverrides[filename]));
     }, 0),
+    movableJoints,
   };
   return robot;
 }
@@ -447,6 +468,7 @@ async function loadDirectRobot(descriptor, signal, onProgress) {
     zividCount: 0,
     opticalFrameCount: 0,
     webOverrideCount: 0,
+    movableJoints: [],
   };
   onProgress?.({ loaded: 1, total: 1, phase: '机器人模型已装配' });
   return robot;

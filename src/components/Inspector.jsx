@@ -17,6 +17,7 @@ import {
   TriangleAlert,
 } from 'lucide-react';
 import { calculatePathDistances } from '../lib/pathMetrics.js';
+import RobotJointPanel from './RobotJointPanel.jsx';
 import VirtualTeachingPanel from './VirtualTeachingPanel.jsx';
 import ZividCameraPanel from './ZividCameraPanel.jsx';
 
@@ -74,7 +75,9 @@ export default function Inspector({
   robotControlEnabled,
   teachingTasks = [],
   activeTeachingTaskId,
+  jointPoses = [],
   zividCameraPoses,
+  cameraTeachingResult,
   onRunConnectivity,
   onSelectWaypoint,
   onSearchWaypoint,
@@ -92,13 +95,46 @@ export default function Inspector({
   onRenameTeachingPoint,
   onDeleteTeachingPoint,
   onApplyTeachingPoint,
+  onUpdateRobotJointValue,
+  onZeroRobotJoints,
+  onCaptureJointPose,
+  onRenameJointPose,
+  onDeleteJointPose,
+  onApplyJointPose,
+  onCameraTeachingMove,
   onExportTeachingProject,
 }) {
   const [activePage, setActivePage] = useState('project');
+  const [activeTeachingCameraSide, setActiveTeachingCameraSide] = useState('left');
+  const [teachingMode, setTeachingMode] = useState('pose');
   const scrollRef = useRef(null);
+  const cameraTeachingWorkspaceRef = useRef(null);
   const selectedWaypoint = waypoints.find((point) => point.id === selectedWaypointId);
   const selectedEdge = edges.find((edge) => edge.id === selectedEdgeId);
   const pointById = useMemo(() => new Map(waypoints.map((point) => [point.id, point])), [waypoints]);
+  const activeTeachingTask = teachingTasks.find((task) => task.id === activeTeachingTaskId)
+    || teachingTasks[0]
+    || null;
+  const taskRobotKey = activeTeachingTask?.robot?.id
+    || activeTeachingTask?.robot?.relativePath;
+  const currentRobotKey = robot?.id || robot?.relativePath;
+  const sameTeachingRobot = Boolean(
+    taskRobotKey && currentRobotKey && taskRobotKey === currentRobotKey,
+  );
+  const sameTeachingMap = activeTeachingTask?.map?.sourceHash && mapData?.sourceHash
+    ? activeTeachingTask.map.sourceHash === mapData.sourceHash
+    : Boolean(
+        activeTeachingTask?.map?.fileName
+        && activeTeachingTask.map.fileName === mapData?.name,
+      );
+  const cameraTeachingEnabled = Boolean(
+    activeTeachingTask
+    && sameTeachingRobot
+    && sameTeachingMap
+    && robotLoadState?.status === 'loaded'
+    && Number(robotLoadState?.zividCount) > 0
+    && zividCameraPoses?.[activeTeachingCameraSide],
+  );
   const selectedPathMetrics = useMemo(
     () =>
       selectedEdge
@@ -167,7 +203,7 @@ export default function Inspector({
       index: '03',
       label: '虚拟示教与相机',
       compactLabel: '示教 / 相机',
-      summary: `${teachingTasks.length}T · ${robotLoadState?.zividCount || 0}C`,
+      summary: `${teachingTasks.length}T · ${jointPoses.length}J · ${robotLoadState?.zividCount || 0}C`,
       icon: Bot,
     },
   ];
@@ -182,6 +218,23 @@ export default function Inspector({
   useEffect(() => {
     if (scrollRef.current) scrollRef.current.scrollTop = 0;
   }, [activePage]);
+
+  const handleTeachingModeChange = (nextMode) => {
+    const normalized = nextMode === 'camera' ? 'camera' : 'pose';
+    setTeachingMode(normalized);
+    if (
+      normalized === 'camera'
+      && robotLoadState?.status === 'loaded'
+      && Number(robotLoadState?.zividCount) > 0
+    ) {
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => cameraTeachingWorkspaceRef.current?.scrollIntoView({
+          behavior: 'smooth',
+          block: 'start',
+        }));
+      });
+    }
+  };
 
   const handleTabKeyDown = (event, pageIndex) => {
     if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
@@ -617,6 +670,7 @@ export default function Inspector({
               robot={robot}
               robotLoadState={robotLoadState}
               robotJointValues={robotJointValues}
+              teachingMode={teachingMode}
               onCreateTask={onCreateTeachingTask}
               onSelectTask={onSelectTeachingTask}
               onRenameTask={onRenameTeachingTask}
@@ -625,14 +679,40 @@ export default function Inspector({
               onRenamePoint={onRenameTeachingPoint}
               onDeletePoint={onDeleteTeachingPoint}
               onApplyPoint={onApplyTeachingPoint}
+              onTeachingModeChange={handleTeachingModeChange}
               onExportProject={onExportTeachingProject}
             />
 
-            <ZividCameraPanel
-              mapData={mapData}
+            <div
+              ref={cameraTeachingWorkspaceRef}
+              className={`camera-teaching-workspace ${teachingMode === 'camera' ? 'is-active' : ''}`}
+              data-camera-controls-location="adjacent-to-viewport"
+            >
+              <ZividCameraPanel
+                mapData={mapData}
+                robot={robot}
+                robotLoadState={robotLoadState}
+                cameraPoses={zividCameraPoses}
+                activeSide={activeTeachingCameraSide}
+                onActiveSideChange={setActiveTeachingCameraSide}
+                teachingMode={teachingMode}
+                cameraTeachingEnabled={cameraTeachingEnabled}
+                cameraTeachingResult={cameraTeachingResult}
+                onCameraTeachingMove={onCameraTeachingMove}
+              />
+            </div>
+
+            <RobotJointPanel
               robot={robot}
               robotLoadState={robotLoadState}
-              cameraPoses={zividCameraPoses}
+              jointValues={robotJointValues}
+              poses={jointPoses}
+              onChangeJoint={onUpdateRobotJointValue}
+              onZeroJoints={onZeroRobotJoints}
+              onCapturePose={onCaptureJointPose}
+              onRenamePose={onRenameJointPose}
+              onDeletePose={onDeleteJointPose}
+              onApplyPose={onApplyJointPose}
             />
           </div>
         )}

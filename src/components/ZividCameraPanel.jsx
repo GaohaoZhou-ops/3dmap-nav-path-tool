@@ -11,6 +11,7 @@ import {
   RotateCcw,
   X,
 } from 'lucide-react';
+import CameraTeachingControls from './CameraTeachingControls.jsx';
 
 export const ZIVID_M70_PROFILE = Object.freeze({
   model: 'Zivid 2 M70',
@@ -175,9 +176,18 @@ export default function ZividCameraPanel({
   robot,
   robotLoadState,
   cameraPoses = {},
+  activeSide: controlledActiveSide,
+  onActiveSideChange,
+  teachingMode = 'pose',
+  cameraTeachingEnabled = false,
+  cameraTeachingResult,
+  onCameraTeachingMove,
 }) {
   const enabled = isM70Robot(robot, robotLoadState);
-  const [activeSide, setActiveSide] = useState('left');
+  const [internalActiveSide, setInternalActiveSide] = useState('left');
+  const activeSide = ['left', 'right'].includes(controlledActiveSide)
+    ? controlledActiveSide
+    : internalActiveSide;
   const [renderMode, setRenderMode] = useState('rgb');
   const [zoom, setZoom] = useState(1);
   const [pan, setPan] = useState({ x: 0, y: 0 });
@@ -203,6 +213,11 @@ export default function ZividCameraPanel({
   useEffect(() => {
     if (!enabled && expanded) setExpanded(false);
   }, [enabled, expanded]);
+
+  useEffect(() => {
+    setZoom(1);
+    setPan({ x: 0, y: 0 });
+  }, [activeSide]);
 
   useEffect(() => {
     if (zoom <= 1.0001 && (pan.x !== 0 || pan.y !== 0)) setPan({ x: 0, y: 0 });
@@ -396,7 +411,7 @@ export default function ZividCameraPanel({
 
   const panel = (
     <section
-      className={`zivid-camera-panel ${expanded ? 'is-expanded' : ''}`}
+      className={`zivid-camera-panel ${expanded ? 'is-expanded' : ''} ${teachingMode === 'camera' ? 'has-teaching-controls' : ''}`}
       aria-label="Zivid 2 M70 相机视图"
       data-zivid-model="zivid-2-m70"
       data-camera-side={activeSide}
@@ -410,6 +425,7 @@ export default function ZividCameraPanel({
       data-optical-frame={activePose?.frameName || ''}
       data-visible-point-estimate={frustumStats.estimated}
       data-zoom={zoom.toFixed(2)}
+      data-camera-teaching-mode={teachingMode === 'camera' ? 'active' : 'hidden'}
     >
       <header className="zivid-camera-panel__header">
         <div className="zivid-camera-panel__identity">
@@ -440,7 +456,8 @@ export default function ZividCameraPanel({
               className={activeSide === side ? 'is-active' : ''}
               aria-pressed={activeSide === side}
               onClick={() => {
-                setActiveSide(side);
+                setInternalActiveSide(side);
+                onActiveSideChange?.(side);
                 resetView();
               }}
             >
@@ -575,6 +592,16 @@ export default function ZividCameraPanel({
           </button>
         </div>
       </div>
+
+      {teachingMode === 'camera' && (
+        <CameraTeachingControls
+          enabled={cameraTeachingEnabled}
+          activeSide={activeSide}
+          cameraPoses={cameraPoses}
+          result={cameraTeachingResult}
+          onMove={onCameraTeachingMove}
+        />
+      )}
 
       <div className="zivid-camera-specs">
         <span><small>NATIVE</small>{ZIVID_M70_PROFILE.nativeWidth} × {ZIVID_M70_PROFILE.nativeHeight}</span>

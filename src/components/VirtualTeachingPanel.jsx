@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import {
   Bot,
+  Camera,
   ChevronRight,
   CirclePlus,
   ClipboardCheck,
@@ -8,15 +9,11 @@ import {
   Download,
   FileJson,
   MapPin,
+  Move3D,
   Play,
   Save,
   Trash2,
 } from 'lucide-react';
-
-const formatValue = (value, digits = 3) => {
-  const parsed = Number(value);
-  return Number.isFinite(parsed) ? parsed.toFixed(digits) : '0.000';
-};
 
 const formatCapturedAt = (value) => {
   const date = new Date(value);
@@ -38,6 +35,7 @@ export default function VirtualTeachingPanel({
   robot,
   robotLoadState,
   robotJointValues,
+  teachingMode = 'pose',
   onCreateTask,
   onSelectTask,
   onRenameTask,
@@ -46,6 +44,7 @@ export default function VirtualTeachingPanel({
   onRenamePoint,
   onDeletePoint,
   onApplyPoint,
+  onTeachingModeChange,
   onExportProject,
 }) {
   const activeTask = tasks.find((task) => task.id === activeTaskId) || tasks[0] || null;
@@ -120,6 +119,7 @@ export default function VirtualTeachingPanel({
       data-active-teaching-task={activeTask?.id || ''}
       data-teaching-context-match={contextMatches ? 'true' : 'false'}
       data-current-joint-count={currentJointCount}
+      data-teaching-mode={teachingMode}
     >
       <div className="virtual-teaching__header">
         <div className="virtual-teaching__identity">
@@ -162,6 +162,27 @@ export default function VirtualTeachingPanel({
             : '请先加载地图或工程配置'}
         >
           <Download size={12} /> 导出工程
+        </button>
+      </div>
+
+      <div className="teaching-mode-switch" role="tablist" aria-label="选择虚拟示教模式">
+        <button
+          type="button"
+          role="tab"
+          className={teachingMode === 'pose' ? 'is-active' : ''}
+          aria-selected={teachingMode === 'pose'}
+          onClick={() => onTeachingModeChange?.('pose')}
+        >
+          <Move3D size={11} /> 姿态示教
+        </button>
+        <button
+          type="button"
+          role="tab"
+          className={teachingMode === 'camera' ? 'is-active' : ''}
+          aria-selected={teachingMode === 'camera'}
+          onClick={() => onTeachingModeChange?.('camera')}
+        >
+          <Camera size={11} /> 相机反算
         </button>
       </div>
 

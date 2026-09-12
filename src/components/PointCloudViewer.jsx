@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import * as THREE from 'three';
 import { TrackballControls } from 'three/examples/jsm/controls/TrackballControls.js';
 import { TransformControls } from 'three/examples/jsm/controls/TransformControls.js';
@@ -125,6 +125,21 @@ const ROBOT_CONTROL_ACTIONS = {
   ArrowLeft: 'yaw-left',
   ArrowRight: 'yaw-right',
 };
+
+const CAMERA_TEACH_ACTIONS = Object.freeze({
+  near: { kind: 'translate', axis: [0, 0, 1], direction: 1 },
+  far: { kind: 'translate', axis: [0, 0, 1], direction: -1 },
+  up: { kind: 'translate', axis: [0, -1, 0], direction: 1 },
+  down: { kind: 'translate', axis: [0, 1, 0], direction: 1 },
+  left: { kind: 'translate', axis: [-1, 0, 0], direction: 1 },
+  right: { kind: 'translate', axis: [1, 0, 0], direction: 1 },
+  'yaw-left': { kind: 'rotate', axis: [0, 1, 0], direction: -1 },
+  'yaw-right': { kind: 'rotate', axis: [0, 1, 0], direction: 1 },
+  'pitch-up': { kind: 'rotate', axis: [1, 0, 0], direction: 1 },
+  'pitch-down': { kind: 'rotate', axis: [1, 0, 0], direction: -1 },
+  'roll-left': { kind: 'rotate', axis: [0, 0, 1], direction: -1 },
+  'roll-right': { kind: 'rotate', axis: [0, 0, 1], direction: 1 },
+});
 
 const movementCodeForEvent = (event) =>
   KEYBOARD_CONTROL_CODES.has(event.code)
@@ -272,6 +287,39 @@ const writeRobotPoseDataset = (canvas, value) => {
     pose.position.y,
     pose.position.z,
   ].join(',');
+};
+
+const clearRobotJointDataset = (canvas) => {
+  if (!canvas) return;
+  delete canvas.dataset.robotJointValues;
+  delete canvas.dataset.robotJointTransforms;
+  delete canvas.dataset.robotJointApplySource;
+  canvas.dataset.robotJointAppliedCount = '0';
+};
+
+const writeRobotJointDataset = (canvas, robot, source = 'scene') => {
+  if (!robot) return {};
+  robot.updateMatrixWorld(true);
+  const values = readRobotJointValues(robot);
+  const transforms = Object.fromEntries(
+    Object.keys(values).flatMap((name) => {
+      const joint = robot.getObjectByName(name);
+      if (!joint) return [];
+      return [[name, {
+        position: joint.position.toArray(),
+        quaternion: joint.quaternion.toArray(),
+      }]];
+    }),
+  );
+  if (!canvas) return values;
+  canvas.dataset.robotJointValues = JSON.stringify(values);
+  canvas.dataset.robotJointTransforms = JSON.stringify(transforms);
+  canvas.dataset.robotJointApplySource = source;
+  canvas.dataset.robotJointAppliedCount = String(Object.keys(transforms).length);
+  canvas.dataset.robotJointApplyRevision = String(
+    Number(canvas.dataset.robotJointApplyRevision || 0) + 1,
+  );
+  return values;
 };
 
 const createEndEffectorLocks = () => ({ left: null, right: null });
@@ -875,11 +923,13 @@ export default function PointCloudViewer({
   robotPose,
   robotJointValues,
   robotControlEnabled = false,
+  cameraTeachingCommand,
   onRobotLoadState,
   onRobotPoseChange,
   onRobotJointValuesChange,
   onRobotControlChange,
   onZividCameraPoseChange,
+  onCameraTeachingResult,
 }) {
   const mountRef = useRef(null);
   const sceneRef = useRef(null);
@@ -887,6 +937,7 @@ export default function PointCloudViewer({
   const routeGroupRef = useRef(null);
   const waypointGroupRef = useRef(null);
   const robotLayerRef = useRef(null);
+  const loadedRobotRef = useRef(null);
   const robotChassisHandleRef = useRef(null);
   const chassisDragInteractionRef = useRef(null);
   const chassisDragModeRef = useRef(false);
@@ -921,6 +972,7 @@ export default function PointCloudViewer({
   const onRobotJointValuesChangeRef = useRef(onRobotJointValuesChange);
   const onRobotControlChangeRef = useRef(onRobotControlChange);
   const onZividCameraPoseChangeRef = useRef(onZividCameraPoseChange);
+  const onCameraTeachingResultRef = useRef(onCameraTeachingResult);
   const zividCameraFramesRef = useRef({ left: null, right: null });
   const lastZividCameraPoseReportRef = useRef(0);
   const lastZividCameraPoseSignatureRef = useRef('');
@@ -932,6 +984,7 @@ export default function PointCloudViewer({
   const lastRobotJointReportRef = useRef(0);
   const appliedInitialViewRef = useRef(null);
   const appliedResetRevisionRef = useRef(0);
+  const appliedCameraTeachingRevisionRef = useRef(0);
   const [shiftPanArmed, setShiftPanArmed] = useState(false);
   const [chassisDragMode, setChassisDragMode] = useState(false);
   const [chassisDragging, setChassisDragging] = useState(false);
@@ -951,6 +1004,7 @@ export default function PointCloudViewer({
   onRobotJointValuesChangeRef.current = onRobotJointValuesChange;
   onRobotControlChangeRef.current = onRobotControlChange;
   onZividCameraPoseChangeRef.current = onZividCameraPoseChange;
+  onCameraTeachingResultRef.current = onCameraTeachingResult;
   robotControlEnabledRef.current = Boolean(robotControlEnabled);
   const [manualResolution, setManualResolution] = useState({ mapKey: null, index: null });
 
@@ -991,10 +1045,24 @@ export default function PointCloudViewer({
     });
   };
 
+  const applyRobotJointStateToScene = (values, source = 'external') => {
+    const normalized = normalizeRobotJointValues(values);
+    robotJointValuesRef.current = normalized;
+    const robot = loadedRobotRef.current;
+    if (!robot) return normalized;
+    applyRobotJointValues(robot, normalized);
+    robotLayerRef.current?.updateMatrixWorld(true);
+    return writeRobotJointDataset(controlsRef.current?.domElement, robot, source);
+  };
+
   const reportRobotJointValues = (force = false) => {
-    const robot = robotLayerRef.current?.children[0];
+    const robot = loadedRobotRef.current;
     if (!robot) return;
-    const values = readRobotJointValues(robot);
+    const values = writeRobotJointDataset(
+      controlsRef.current?.domElement,
+      robot,
+      'scene-report',
+    );
     robotJointValuesRef.current = values;
     const now = performance.now();
     if (!force && now - lastRobotJointReportRef.current < ROBOT_JOINT_REPORT_INTERVAL) return;
@@ -1497,12 +1565,151 @@ export default function PointCloudViewer({
     writeRobotPoseDataset(controlsRef.current?.domElement, nextPose);
   }, [mapData?.geometry, robotPose]);
 
-  useEffect(() => {
-    const normalized = normalizeRobotJointValues(robotJointValues);
-    robotJointValuesRef.current = normalized;
-    const robot = robotLayerRef.current?.children[0];
-    if (robot) applyRobotJointValues(robot, normalized);
+  useLayoutEffect(() => {
+    const appliedValues = applyRobotJointStateToScene(robotJointValues, 'external-control');
+    if (loadedRobotRef.current) {
+      robotJointValuesRef.current = appliedValues;
+      reportZividCameraPoses(true);
+    }
   }, [mapData?.geometry, robotJointValues]);
+
+  useEffect(() => {
+    const revision = Number(cameraTeachingCommand?.revision) || 0;
+    if (!revision || revision === appliedCameraTeachingRevisionRef.current) return;
+    appliedCameraTeachingRevisionRef.current = revision;
+
+    const side = cameraTeachingCommand?.side === 'right' ? 'right' : 'left';
+    const actionId = String(cameraTeachingCommand?.action || '');
+    const action = CAMERA_TEACH_ACTIONS[actionId];
+    const canvas = controlsRef.current?.domElement;
+    const publishFailure = (message) => {
+      if (canvas) {
+        canvas.dataset.cameraTeachingState = 'error';
+        canvas.dataset.cameraTeachingRevision = String(revision);
+        canvas.dataset.cameraTeachingSide = side;
+        canvas.dataset.cameraTeachingAction = actionId;
+        canvas.dataset.cameraTeachingIkStatus = 'error';
+        canvas.dataset.cameraTeachingError = message;
+      }
+      onCameraTeachingResultRef.current?.({
+        revision,
+        side,
+        action: actionId,
+        status: 'error',
+        message,
+      });
+    };
+
+    const robot = loadedRobotRef.current;
+    const armController = endEffectorControllersRef.current[side];
+    const opticalFrame = zividCameraFramesRef.current[side];
+    if (!action) {
+      publishFailure('未知的相机示教动作');
+      return;
+    }
+    if (!robot || !armController || !opticalFrame) {
+      publishFailure(`${side === 'left' ? '左' : '右'}臂相机运动链尚未就绪`);
+      return;
+    }
+
+    if (endEffectorControlRef.current) endEffectorInteractionRef.current?.exit?.();
+    if (lockedEndEffectorsRef.current[side]) {
+      lockedEndEffectorsRef.current = {
+        ...lockedEndEffectorsRef.current,
+        [side]: null,
+      };
+      syncEndEffectorLockState(side);
+    }
+    pressedKeysRef.current.clear();
+    keyboardImpulseRef.current.clear();
+
+    robot.updateMatrixWorld(true);
+    const targetPosition = opticalFrame.getWorldPosition(new THREE.Vector3());
+    const targetQuaternion = opticalFrame
+      .getWorldQuaternion(new THREE.Quaternion())
+      .normalize();
+    const localAxis = new THREE.Vector3(...action.axis).normalize();
+    if (action.kind === 'translate') {
+      const linearStep = THREE.MathUtils.clamp(
+        Math.abs(Number(cameraTeachingCommand?.linearStep) || 0.025),
+        0.001,
+        0.1,
+      );
+      targetPosition.addScaledVector(
+        localAxis.applyQuaternion(targetQuaternion),
+        linearStep * action.direction,
+      );
+    } else {
+      const angularStep = THREE.MathUtils.clamp(
+        Math.abs(Number(cameraTeachingCommand?.angularStep) || 3),
+        0.2,
+        15,
+      );
+      targetQuaternion.multiply(
+        new THREE.Quaternion().setFromAxisAngle(
+          localAxis,
+          THREE.MathUtils.degToRad(angularStep * action.direction),
+        ),
+      ).normalize();
+    }
+
+    if (canvas) {
+      canvas.dataset.cameraTeachingState = 'solving';
+      canvas.dataset.cameraTeachingRevision = String(revision);
+      canvas.dataset.cameraTeachingSide = side;
+      canvas.dataset.cameraTeachingAction = actionId;
+      canvas.dataset.cameraTeachingTargetPosition = targetPosition
+        .toArray()
+        .map((value) => value.toFixed(7))
+        .join(',');
+      canvas.dataset.cameraTeachingTargetQuaternion = targetQuaternion
+        .toArray()
+        .map((value) => value.toFixed(9))
+        .join(',');
+      delete canvas.dataset.cameraTeachingError;
+    }
+
+    const frozenJoints = restoreLockedEndEffectorJoints(side);
+    const result = solveEndEffectorIk(
+      { ...armController, frame: opticalFrame },
+      targetPosition,
+      targetQuaternion,
+      frozenJoints,
+    );
+    if (!result) {
+      publishFailure('相机位姿逆解失败');
+      return;
+    }
+
+    robot.updateMatrixWorld(true);
+    const actualPose = zividOpticalPoseFromObject(opticalFrame, side);
+    reportRobotJointValues(true);
+    reportZividCameraPoses(true);
+    const output = {
+      revision,
+      side,
+      action: actionId,
+      status: result.status,
+      positionError: result.positionError,
+      rotationError: result.rotationError,
+      frozenJointCount: result.frozenJointCount,
+      chainJointCount: armController.joints.length,
+      pose: actualPose,
+    };
+    if (canvas) {
+      canvas.dataset.cameraTeachingState = 'settled';
+      canvas.dataset.cameraTeachingIkStatus = result.status;
+      canvas.dataset.cameraTeachingPositionError = result.positionError.toExponential(5);
+      canvas.dataset.cameraTeachingRotationError = result.rotationError.toFixed(5);
+      canvas.dataset.cameraTeachingChainJointCount = String(armController.joints.length);
+      canvas.dataset.cameraTeachingActualPosition = [
+        actualPose?.position.x || 0,
+        actualPose?.position.y || 0,
+        actualPose?.position.z || 0,
+      ].map((value) => value.toFixed(7)).join(',');
+    }
+    onCameraTeachingResultRef.current?.(output);
+  }, [cameraTeachingCommand, mapData?.geometry]);
 
   useEffect(() => {
     const mount = mountRef.current;
@@ -1582,6 +1789,8 @@ export default function PointCloudViewer({
     renderer.domElement.dataset.minEffectiveDistance = minimumEffectiveDistance.toExponential(6);
     renderer.domElement.dataset.maxOpticalZoom = MAX_OPTICAL_ZOOM.toExponential(0);
     renderer.domElement.dataset.cameraFov = String(camera.fov);
+    renderer.domElement.dataset.cameraTeachingState = 'idle';
+    renderer.domElement.dataset.cameraTeachingIkStatus = 'idle';
     controlsRef.current = controls;
     cameraRef.current = camera;
     const defaultCameraView = {
@@ -3002,6 +3211,7 @@ export default function PointCloudViewer({
       routeGroupRef.current = null;
       waypointGroupRef.current = null;
       robotLayerRef.current = null;
+      loadedRobotRef.current = null;
       robotChassisHandleRef.current = null;
       endEffectorControllersRef.current = { left: null, right: null };
       endEffectorControlRef.current = null;
@@ -3042,6 +3252,7 @@ export default function PointCloudViewer({
 
     chassisDragInteractionRef.current?.exit?.('robot-change');
     robotChassisHandleRef.current = null;
+    loadedRobotRef.current = null;
     canvas.dataset.chassisDragHandleReady = 'false';
     canvas.dataset.robotChassisScreenVisible = 'false';
     endEffectorInteractionRef.current?.exit?.();
@@ -3051,6 +3262,7 @@ export default function PointCloudViewer({
     lastZividCameraPoseSignatureRef.current = '';
     onZividCameraPoseChangeRef.current?.({});
     [...layer.children].forEach((child) => disposeRobotModel(child));
+    clearRobotJointDataset(canvas);
     robotPoseRef.current = applyRobotPose(layer, robotPoseRef.current);
     writeRobotPoseDataset(canvas, robotPoseRef.current);
     if (!robotDescriptor) {
@@ -3094,8 +3306,12 @@ export default function PointCloudViewer({
         }
         loadedRobot = robot;
         layer.add(robot);
+        loadedRobotRef.current = robot;
         applyRobotPose(layer, robotPoseRef.current);
-        applyRobotJointValues(robot, robotJointValuesRef.current);
+        robotJointValuesRef.current = applyRobotJointStateToScene(
+          robotJointValuesRef.current,
+          'robot-load',
+        );
         layer.updateMatrixWorld(true);
         const metadata = robot.userData.robot || {};
         const chassisHandle = createRobotChassisDragHandle(robot, metadata);
@@ -3192,6 +3408,8 @@ export default function PointCloudViewer({
       zividCameraFramesRef.current = { left: null, right: null };
       lastZividCameraPoseSignatureRef.current = '';
       onZividCameraPoseChangeRef.current?.({});
+      if (loadedRobotRef.current === loadedRobot) loadedRobotRef.current = null;
+      clearRobotJointDataset(canvas);
       if (loadedRobot) disposeRobotModel(loadedRobot);
     };
   }, [mapData?.geometry, robotDescriptor]);

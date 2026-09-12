@@ -161,6 +161,39 @@ export function normalizeTeachingTasks(payload) {
   });
 }
 
+export function normalizeJointPoses(payload) {
+  const rawPoses = Array.isArray(payload)
+    ? payload
+    : payload?.virtualTeaching?.jointPoses
+      || payload?.jointPoses
+      || payload?.robot?.jointPoses
+      || [];
+  if (!Array.isArray(rawPoses)) return [];
+  return rawPoses.map((pose, poseIndex) => {
+    const joints = normalizeTeachingJoints(
+      pose?.joints || pose?.fullBodyJoints || pose?.jointValues || pose?.values,
+    );
+    const robot = pose?.robot && typeof pose.robot === 'object' ? pose.robot : {};
+    return {
+      id: String(pose?.id || createId('joint-pose')),
+      name: String(
+        pose?.name
+        || pose?.label
+        || `关节姿态 ${String(poseIndex + 1).padStart(2, '0')}`,
+      ),
+      sequence: poseIndex + 1,
+      createdAt: String(pose?.createdAt || pose?.capturedAt || ''),
+      updatedAt: String(pose?.updatedAt || pose?.createdAt || pose?.capturedAt || ''),
+      robot: {
+        id: String(robot.id || robot.relativePath || ''),
+        name: String(robot.name || ''),
+        relativePath: String(robot.relativePath || robot.path || ''),
+      },
+      joints,
+    };
+  });
+}
+
 export function normalizeProject(payload) {
   if (!payload || typeof payload !== 'object') {
     throw new Error('JSON 根节点必须是对象');
@@ -277,6 +310,7 @@ export function normalizeProject(payload) {
       }
     : null;
   const teachingTasks = normalizeTeachingTasks(payload);
+  const jointPoses = normalizeJointPoses(payload);
 
   return {
     waypoints,
@@ -290,6 +324,7 @@ export function normalizeProject(payload) {
     view3d: payload.view3d || null,
     robot: robot?.relativePath ? robot : null,
     teachingTasks,
+    jointPoses,
   };
 }
 
@@ -304,6 +339,7 @@ export function buildExport({
   robotPose,
   robotJointValues,
   teachingTasks = [],
+  jointPoses = [],
 }) {
   const pointById = new Map(waypoints.map((point) => [point.id, point]));
   const exportedRobotPose = robotPose || robot?.origin || {};
@@ -369,6 +405,15 @@ export function buildExport({
       coordinateFrame: 'map',
       angularUnit: 'degree',
       distanceUnit: 'meter',
+      jointPoses: normalizeJointPoses(jointPoses).map((pose, index) => ({
+        ...pose,
+        sequence: index + 1,
+        joints: {
+          ...pose.joints,
+          count: Object.keys(pose.joints.values).length,
+          values: { ...pose.joints.values },
+        },
+      })),
       tasks: normalizeTeachingTasks(teachingTasks).map((task) => ({
         ...task,
         points: task.points.map((point, index) => ({

@@ -75,6 +75,21 @@ const waitForPaint = () =>
 
 const GEOMETRY_CACHE_VERSION = 1;
 
+const clampJointValue = (rawValue, definition) => {
+  const parsed = Number(rawValue);
+  if (!Number.isFinite(parsed)) return 0;
+  const lower = definition?.lower === null || definition?.lower === undefined
+    ? Number.NaN
+    : Number(definition.lower);
+  const upper = definition?.upper === null || definition?.upper === undefined
+    ? Number.NaN
+    : Number(definition.upper);
+  return Math.max(
+    Number.isFinite(lower) ? lower : Number.NEGATIVE_INFINITY,
+    Math.min(Number.isFinite(upper) ? upper : Number.POSITIVE_INFINITY, parsed),
+  );
+};
+
 function serializeBounds(box) {
   return {
     min: { x: box.min.x, y: box.min.y, z: box.min.z },
@@ -230,6 +245,7 @@ export default function App() {
   const focusRevisionRef = useRef(0);
   const viewResetRevisionRef = useRef(0);
   const robotNotificationRef = useRef('');
+  const cameraTeachingRevisionRef = useRef(0);
   const [mapData, setMapData] = useState(null);
   const [heightRange, setHeightRange] = useState([0, 1]);
   const [waypoints, setWaypoints] = useState([]);
@@ -254,7 +270,13 @@ export default function App() {
   const [robotControlEnabled, setRobotControlEnabled] = useState(false);
   const [teachingTasks, setTeachingTasks] = useState([]);
   const [activeTeachingTaskId, setActiveTeachingTaskId] = useState(null);
+  const [jointPoses, setJointPoses] = useState([]);
   const [zividCameraPoses, setZividCameraPoses] = useState({});
+  const [cameraTeachingCommand, setCameraTeachingCommand] = useState(null);
+  const [cameraTeachingResult, setCameraTeachingResult] = useState({
+    status: 'idle',
+    revision: 0,
+  });
   const [sessionState, setSessionState] = useState({ status: 'checking', restored: false });
   const [loadState, setLoadState] = useState({
     loading: true,
@@ -282,6 +304,7 @@ export default function App() {
     robotJointValues,
     teachingTasks,
     activeTeachingTaskId,
+    jointPoses,
   };
 
   useEffect(() => {
@@ -339,6 +362,7 @@ export default function App() {
           robotPose: current.robotPose,
           robotJointValues: current.robotJointValues,
           teachingTasks: current.teachingTasks,
+          jointPoses: current.jointPoses,
         })
       : null;
     const snapshot = {
@@ -444,6 +468,9 @@ export default function App() {
         setRobotControlEnabled(false);
         setTeachingTasks([]);
         setActiveTeachingTaskId(null);
+        setJointPoses([]);
+        setCameraTeachingCommand(null);
+        setCameraTeachingResult({ status: 'idle', revision: 0 });
       }
 
       if (persistSnapshot && sessionReadyRef.current && sessionIdRef.current) {
@@ -682,6 +709,7 @@ export default function App() {
             setWaypoints(project.waypoints);
             setEdges(project.edges);
             setTeachingTasks(project.teachingTasks);
+            setJointPoses(project.jointPoses);
             setActiveTeachingTaskId(
               teachingTaskIds.has(snapshot?.ui?.activeTeachingTaskId)
                 ? snapshot.ui.activeTeachingTaskId
@@ -732,6 +760,7 @@ export default function App() {
               || project.waypoints.length > 0
               || project.edges.length > 0
               || project.teachingTasks.length > 0
+              || project.jointPoses.length > 0
               || Boolean(restoredRobot);
           }
         } catch (error) {
@@ -751,6 +780,7 @@ export default function App() {
           setRobotControlEnabled(false);
           setTeachingTasks([]);
           setActiveTeachingTaskId(null);
+          setJointPoses([]);
           setRobotLoadState({ status: 'idle' });
           setRestoredView2d(null);
           view2dRef.current = null;
@@ -802,6 +832,7 @@ export default function App() {
     robotJointValues,
     teachingTasks,
     activeTeachingTaskId,
+    jointPoses,
     sessionState.status,
     showWaypoints3D,
     validation,
@@ -837,8 +868,8 @@ export default function App() {
     async (options = {}) => {
       if (
         !options.preserveGraph
-        && (waypoints.length || teachingTasks.length)
-        && !window.confirm('加载新地图会清空当前导航图与虚拟示教任务，继续吗？')
+        && (waypoints.length || teachingTasks.length || jointPoses.length)
+        && !window.confirm('加载新地图会清空当前导航图、虚拟示教任务与已记录关节姿态，继续吗？')
       ) return;
       setLoadState({ loading: true, progress: 0, phase: '读取示例地图' });
       try {
@@ -851,7 +882,7 @@ export default function App() {
         notify(error.message || '示例地图加载失败', 'error');
       }
     },
-    [notify, processMapBuffer, teachingTasks.length, waypoints.length],
+    [jointPoses.length, notify, processMapBuffer, teachingTasks.length, waypoints.length],
   );
 
   const handleMapFile = async (event) => {
@@ -859,8 +890,8 @@ export default function App() {
     event.target.value = '';
     if (!file) return;
     if (
-      (waypoints.length || teachingTasks.length)
-      && !window.confirm('加载新地图会清空当前导航图与虚拟示教任务，继续吗？')
+      (waypoints.length || teachingTasks.length || jointPoses.length)
+      && !window.confirm('加载新地图会清空当前导航图、虚拟示教任务与已记录关节姿态，继续吗？')
     ) return;
     if (!file.name.toLowerCase().endsWith('.ply')) {
       notify('请选择 .ply 点云地图文件', 'error');
@@ -888,6 +919,7 @@ export default function App() {
       setWaypoints(project.waypoints);
       setEdges(project.edges);
       setTeachingTasks(project.teachingTasks);
+      setJointPoses(project.jointPoses);
       setActiveTeachingTaskId(project.teachingTasks[0]?.id || null);
       setSelectedWaypointId(null);
       setSelectedEdgeId(null);
@@ -895,6 +927,9 @@ export default function App() {
       setMode('select');
       const importedRobot = normalizeRobotDescriptor(project.robot);
       setSelectedRobot(importedRobot);
+      setZividCameraPoses({});
+      setCameraTeachingCommand(null);
+      setCameraTeachingResult({ status: 'idle', revision: 0 });
       setRobotPose(
         importedRobot ? normalizeRobotPose(project.robot?.origin) : normalizeRobotPose(null),
       );
@@ -1354,6 +1389,120 @@ export default function App() {
     [notify, robotLoadState.status, teachingContextMatches, teachingTasks],
   );
 
+  const updateRobotJointValue = useCallback(
+    (name, rawValue) => {
+      if (robotLoadState.status !== 'loaded' || !name) return;
+      const definition = robotLoadState.movableJoints?.find((joint) => joint.name === name);
+      const value = clampJointValue(rawValue, definition);
+      setRobotControlEnabled(false);
+      setRobotJointValues((current) => ({ ...current, [name]: value }));
+    },
+    [robotLoadState.movableJoints, robotLoadState.status],
+  );
+
+  const zeroRobotJoints = useCallback(() => {
+    if (robotLoadState.status !== 'loaded') {
+      notify('机器人尚未完成装配，无法归零关节', 'warning');
+      return;
+    }
+    const definitions = robotLoadState.movableJoints || [];
+    const jointNames = definitions.length
+      ? definitions.map((joint) => joint.name)
+      : Object.keys(robotJointValues);
+    const definitionByName = new Map(definitions.map((joint) => [joint.name, joint]));
+    setRobotControlEnabled(false);
+    setRobotJointValues(Object.fromEntries(
+      jointNames.map((name) => [name, clampJointValue(0, definitionByName.get(name))]),
+    ));
+    notify(`${jointNames.length} 个可动关节已全部归零`, 'info');
+  }, [notify, robotJointValues, robotLoadState.movableJoints, robotLoadState.status]);
+
+  const captureJointPose = useCallback(
+    (requestedName) => {
+      if (!selectedRobot || robotLoadState.status !== 'loaded') {
+        notify('请先完成机器人模型加载，再记录关节姿态', 'warning');
+        return;
+      }
+      const values = normalizeRobotJointValues(robotJointValues);
+      const jointCount = Object.keys(values).length;
+      if (!jointCount) {
+        notify('当前机器人没有可记录的可动关节', 'warning');
+        return;
+      }
+      const timestamp = new Date().toISOString();
+      const name = String(requestedName || '').trim()
+        || `关节姿态 ${String(jointPoses.length + 1).padStart(2, '0')}`;
+      const pose = {
+        id: createId('joint-pose'),
+        name,
+        sequence: jointPoses.length + 1,
+        createdAt: timestamp,
+        updatedAt: timestamp,
+        robot: {
+          id: selectedRobot.id || selectedRobot.relativePath,
+          name: selectedRobot.name,
+          relativePath: selectedRobot.relativePath,
+        },
+        joints: {
+          angularUnit: 'degree',
+          linearUnit: 'meter',
+          source: 'joint-console',
+          count: jointCount,
+          values: { ...values },
+        },
+      };
+      setJointPoses((current) => [...current, pose]);
+      notify(`${name} 已记录 · ${jointCount} 个关节值`, 'success');
+    },
+    [jointPoses.length, notify, robotJointValues, robotLoadState.status, selectedRobot],
+  );
+
+  const renameJointPose = useCallback((id, requestedName) => {
+    const name = String(requestedName || '').trim();
+    if (!name) return;
+    const updatedAt = new Date().toISOString();
+    setJointPoses((current) => current.map((pose) => (
+      pose.id === id ? { ...pose, name, updatedAt } : pose
+    )));
+  }, []);
+
+  const deleteJointPose = useCallback((id) => {
+    const pose = jointPoses.find((item) => item.id === id);
+    setJointPoses((current) => current
+      .filter((item) => item.id !== id)
+      .map((item, index) => ({ ...item, sequence: index + 1 })));
+    notify(`${pose?.name || '关节姿态'} 已删除`, 'info');
+  }, [jointPoses, notify]);
+
+  const applyJointPose = useCallback(
+    (id) => {
+      const pose = jointPoses.find((item) => item.id === id);
+      if (!pose || !selectedRobot || robotLoadState.status !== 'loaded') {
+        notify('机器人尚未就绪，无法执行关节姿态', 'warning');
+        return;
+      }
+      const poseRobotKey = pose.robot?.id || pose.robot?.relativePath;
+      const currentRobotKey = selectedRobot.id || selectedRobot.relativePath;
+      if (!poseRobotKey || poseRobotKey !== currentRobotKey) {
+        notify('该关节姿态绑定了不同的机器人模型', 'warning');
+        return;
+      }
+      const definitionByName = new Map(
+        (robotLoadState.movableJoints || []).map((joint) => [joint.name, joint]),
+      );
+      const values = Object.fromEntries(
+        Object.entries(normalizeRobotJointValues(pose.joints?.values)).map(([name, value]) => [
+          name,
+          clampJointValue(value, definitionByName.get(name)),
+        ]),
+      );
+      setRobotControlEnabled(false);
+      setRobotJointValues(values);
+      notify(`${pose.name} 已应用到机器人`, 'success');
+    },
+    [jointPoses, notify, robotLoadState.movableJoints, robotLoadState.status, selectedRobot],
+  );
+
   const exportProject = () => {
     if (!mapData) {
       notify('请先加载地图或路径配置', 'error');
@@ -1380,6 +1529,7 @@ export default function App() {
       robotPose,
       robotJointValues,
       teachingTasks,
+      jointPoses,
     });
     const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
     downloadJson(payload, `virtual-teaching-${stamp}.json`);
@@ -1405,6 +1555,8 @@ export default function App() {
       setRobotJointValues({});
       setRobotControlEnabled(false);
       setZividCameraPoses({});
+      setCameraTeachingCommand(null);
+      setCameraTeachingResult({ status: 'idle', revision: 0 });
       setRobotLoadState({
         status: mapData?.geometry ? 'loading' : 'pending',
         robotId: robot.id,
@@ -1458,6 +1610,48 @@ export default function App() {
   const handleZividCameraPoseChange = useCallback((nextPoses) => {
     setZividCameraPoses(nextPoses && typeof nextPoses === 'object' ? nextPoses : {});
   }, []);
+  const requestCameraTeachingMove = useCallback(
+    (request) => {
+      const side = request?.side === 'right' ? 'right' : 'left';
+      if (robotLoadState.status !== 'loaded' || Number(robotLoadState.zividCount) < 1) {
+        notify('Zivid 末端相机运动链尚未就绪', 'warning');
+        return;
+      }
+      if (!zividCameraPoses[side]) {
+        notify(`${side === 'left' ? '左' : '右'}臂相机坐标系正在同步，请稍后重试`, 'warning');
+        return;
+      }
+      const revision = ++cameraTeachingRevisionRef.current;
+      const command = {
+        revision,
+        side,
+        action: String(request?.action || ''),
+        linearStep: Number(request?.linearStep) || 0.025,
+        angularStep: Number(request?.angularStep) || 3,
+      };
+      setRobotControlEnabled(false);
+      setCameraTeachingResult({
+        revision,
+        side,
+        action: command.action,
+        status: 'solving',
+      });
+      setCameraTeachingCommand(command);
+    },
+    [notify, robotLoadState.status, robotLoadState.zividCount, zividCameraPoses],
+  );
+  const handleCameraTeachingResult = useCallback(
+    (result) => {
+      const normalized = result && typeof result === 'object'
+        ? result
+        : { status: 'error', message: '相机示教逆解未返回结果' };
+      setCameraTeachingResult(normalized);
+      if (normalized.status === 'error') {
+        notify(normalized.message || '相机示教逆解失败', 'warning');
+      }
+    },
+    [notify],
+  );
   const handleRobotControlChange = useCallback(
     (enabled) => {
       const nextEnabled = Boolean(enabled) && robotLoadState.status === 'loaded';
@@ -1638,11 +1832,13 @@ export default function App() {
                 robotPose={robotPose}
                 robotJointValues={robotJointValues}
                 robotControlEnabled={robotControlEnabled}
+                cameraTeachingCommand={cameraTeachingCommand}
                 onRobotLoadState={handleRobotLoadState}
                 onRobotPoseChange={handleRobotPoseChange}
                 onRobotJointValuesChange={handleRobotJointValuesChange}
                 onRobotControlChange={handleRobotControlChange}
                 onZividCameraPoseChange={handleZividCameraPoseChange}
+                onCameraTeachingResult={handleCameraTeachingResult}
               />
               <HeightRange
                 bounds={mapData?.bounds}
@@ -1746,7 +1942,9 @@ export default function App() {
           robotControlEnabled={robotControlEnabled}
           teachingTasks={teachingTasks}
           activeTeachingTaskId={activeTeachingTaskId}
+          jointPoses={jointPoses}
           zividCameraPoses={zividCameraPoses}
+          cameraTeachingResult={cameraTeachingResult}
           onRunConnectivity={runConnectivity}
           onSelectWaypoint={focusWaypointFromInspector}
           onSearchWaypoint={focusWaypointFromInspector}
@@ -1764,6 +1962,13 @@ export default function App() {
           onRenameTeachingPoint={renameTeachingPoint}
           onDeleteTeachingPoint={deleteTeachingPoint}
           onApplyTeachingPoint={applyTeachingPoint}
+          onUpdateRobotJointValue={updateRobotJointValue}
+          onZeroRobotJoints={zeroRobotJoints}
+          onCaptureJointPose={captureJointPose}
+          onRenameJointPose={renameJointPose}
+          onDeleteJointPose={deleteJointPose}
+          onApplyJointPose={applyJointPose}
+          onCameraTeachingMove={requestCameraTeachingMove}
           onExportTeachingProject={exportProject}
         />
       </main>

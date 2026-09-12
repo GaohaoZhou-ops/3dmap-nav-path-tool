@@ -165,7 +165,7 @@ def run():
         pulse_after = float(canvas.get_attribute("data-selected-waypoint-pulse"))
         assert abs(pulse_after - pulse_before) > 0.005
         page.screenshot(path="/tmp/atlas-waypoint-search-pulse.png", full_page=True)
-        page.get_by_role("button", name="返回工程总览").click()
+        page.get_by_role("button", name="返回路径与导航").click()
         page.get_by_role("button", name="适配全图").click()
         page.wait_for_timeout(80)
 
@@ -178,7 +178,7 @@ def run():
         assert canvas.get_attribute("data-route-edge-count") == "1"
         assert canvas.get_attribute("data-rendered-waypoint-count") == "2"
 
-        page.get_by_role("button", name="返回工程总览").click()
+        page.get_by_role("button", name="返回路径与导航").click()
         page.locator(".route-index__item").first.click()
         page.wait_for_function(
             "([three, two]) => three.dataset.synchronizedFocusState === 'settled' && two.dataset.synchronizedFocusState === 'settled'",
@@ -195,7 +195,7 @@ def run():
         assert abs(float(vector_canvas.get_attribute("data-view-center-y")) - (
             poses[0][1] + poses[1][1]
         ) / 2) < 0.01
-        page.get_by_role("button", name="返回工程总览").click()
+        page.get_by_role("button", name="返回路径与导航").click()
         point_screen = project_to_canvas(canvas, poses[0])
         page.mouse.move(*point_screen)
         page.wait_for_timeout(80)
@@ -209,7 +209,7 @@ def run():
         z_input.press("Enter")
         poses[0] = (poses[0][0], poses[0][1], adjusted_z)
 
-        page.get_by_role("button", name="返回工程总览").click()
+        page.get_by_role("button", name="返回路径与导航").click()
         midpoint = tuple((poses[0][index] + poses[1][index]) / 2 for index in range(3))
         edge_screen = project_to_canvas(canvas, midpoint)
         page.mouse.move(*edge_screen)

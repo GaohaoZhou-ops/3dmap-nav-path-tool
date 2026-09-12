@@ -93,7 +93,11 @@ def run():
         reset_resolution.click()
         assert three_canvas.get_attribute("data-resolution-percent") == "100"
         assert three_canvas.get_attribute("data-render-point-count") == "2685018"
-        assert page.get_by_role("button", name="平移", exact=True).is_visible()
+        interaction_button = page.locator(".viewer-interaction-mode")
+        assert interaction_button.count() == 1
+        assert interaction_button.inner_text().strip() == "旋转"
+        assert interaction_button.get_attribute("data-mode") == "rotate"
+        assert page.get_by_role("button", name="平移", exact=True).count() == 0
         map_origin = page.get_by_role("button", name="二维坐标原点")
         assert map_origin.count() == 1
         assert "is-offscreen" in (map_origin.get_attribute("class") or "")
@@ -107,8 +111,13 @@ def run():
         page.mouse.down()
         page.mouse.move(drag_x, three_box["y"] + three_box["height"] * 0.32, steps=2)
         page.mouse.up()
-        page.get_by_role("button", name="平移", exact=True).click()
-        assert three_canvas.get_attribute("data-interaction-mode") == "pan"
+        page.keyboard.down("Shift")
+        page.wait_for_function(
+            "document.querySelector('.viewer-interaction-mode')?.dataset.mode === 'shift-pan'"
+        )
+        assert "Shift 平移" in interaction_button.inner_text()
+        assert "is-temporary" in (interaction_button.get_attribute("class") or "")
+        assert three_canvas.get_attribute("data-effective-interaction-mode") == "shift-pan"
         page.mouse.move(
             three_box["x"] + three_box["width"] * 0.42,
             three_box["y"] + three_box["height"] * 0.52,
@@ -120,7 +129,12 @@ def run():
             steps=2,
         )
         page.mouse.up()
-        page.get_by_role("button", name="旋转", exact=True).click()
+        page.keyboard.up("Shift")
+        page.wait_for_function(
+            "document.querySelector('.viewer-interaction-mode')?.dataset.mode === 'rotate'"
+        )
+        assert interaction_button.inner_text().strip() == "旋转"
+        assert three_canvas.get_attribute("data-interaction-mode") == "rotate"
 
         height_bar = page.get_by_role("slider", name="截面中心高度")
         span_bar = page.get_by_role("slider", name="截面高度跨度")
@@ -192,11 +206,12 @@ def run():
         perception_switch.click()
         assert perception_switch.get_attribute("aria-checked") == "false"
 
+        page.get_by_role("tab", name="虚拟示教与相机").click()
         with page.expect_download() as download_info:
-            page.get_by_role("button", name="导出 JSON").click()
+            page.get_by_role("button", name="导出示教工程 JSON").click()
         download = download_info.value
         download_path = Path(download.path())
-        assert download.suggested_filename.startswith("route-graph-")
+        assert download.suggested_filename.startswith("virtual-teaching-")
         assert download_path.stat().st_size > 500
         exported = json.loads(download_path.read_text())
         exported_slice = exported["projection"]
@@ -219,7 +234,7 @@ def run():
         assert exported_path["distance"]["verticalDelta"] >= 0
 
         page.locator('input[type="file"][accept*="json"]').set_input_files(str(download_path))
-        page.get_by_text("路径配置已加载", exact=False).wait_for()
+        page.get_by_text("工程配置已加载", exact=False).wait_for()
         assert page.locator(".waypoint-marker").count() == 2
         assert page.locator(".route-edge").count() == 2
         imported_route_button = page.get_by_role("button", name="配置路径 P01 到 P02")

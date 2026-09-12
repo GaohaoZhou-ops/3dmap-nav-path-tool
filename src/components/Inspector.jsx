@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   ArrowLeft,
   ArrowRight,
@@ -7,7 +7,6 @@ import {
   ChevronRight,
   CircleGauge,
   Compass,
-  GitBranch,
   MoveHorizontal,
   Route,
   Ruler,
@@ -18,6 +17,7 @@ import {
   TriangleAlert,
 } from 'lucide-react';
 import { calculatePathDistances } from '../lib/pathMetrics.js';
+import VirtualTeachingPanel from './VirtualTeachingPanel.jsx';
 import ZividCameraPanel from './ZividCameraPanel.jsx';
 
 function NumericField({ label, value, unit, step = '0.01', onCommit }) {
@@ -70,7 +70,10 @@ export default function Inspector({
   robot,
   robotLoadState,
   robotPose,
+  robotJointValues,
   robotControlEnabled,
+  teachingTasks = [],
+  activeTeachingTaskId,
   zividCameraPoses,
   onRunConnectivity,
   onSelectWaypoint,
@@ -81,7 +84,18 @@ export default function Inspector({
   onUpdateEdge,
   onDeleteWaypoint,
   onDeleteEdge,
+  onCreateTeachingTask,
+  onSelectTeachingTask,
+  onRenameTeachingTask,
+  onDeleteTeachingTask,
+  onCaptureTeachingPoint,
+  onRenameTeachingPoint,
+  onDeleteTeachingPoint,
+  onApplyTeachingPoint,
+  onExportTeachingProject,
 }) {
+  const [activePage, setActivePage] = useState('project');
+  const scrollRef = useRef(null);
   const selectedWaypoint = waypoints.find((point) => point.id === selectedWaypointId);
   const selectedEdge = edges.find((edge) => edge.id === selectedEdgeId);
   const pointById = useMemo(() => new Map(waypoints.map((point) => [point.id, point])), [waypoints]);
@@ -131,65 +145,151 @@ export default function Inspector({
       selectedEdge.limits.minAcceleration > selectedEdge.limits.maxAcceleration
     : false;
 
+  const inspectorPages = [
+    {
+      id: 'navigation',
+      index: '01',
+      label: '路径与导航',
+      compactLabel: '路径 / 导航',
+      summary: `${waypoints.length}P · ${edges.length}E`,
+      icon: Route,
+    },
+    {
+      id: 'project',
+      index: '02',
+      label: '工程配置',
+      compactLabel: '工程配置',
+      summary: mapData?.bounds ? 'MAP · ON' : 'NO MAP',
+      icon: Compass,
+    },
+    {
+      id: 'teaching',
+      index: '03',
+      label: '虚拟示教与相机',
+      compactLabel: '示教 / 相机',
+      summary: `${teachingTasks.length}T · ${robotLoadState?.zividCount || 0}C`,
+      icon: Bot,
+    },
+  ];
+  const activePageMeta = inspectorPages.find((page) => page.id === activePage)
+    || inspectorPages[0];
+  const ActivePageIcon = activePageMeta.icon;
+
+  useEffect(() => {
+    if (selectedWaypointId || selectedEdgeId) setActivePage('navigation');
+  }, [selectedEdgeId, selectedWaypointId]);
+
+  useEffect(() => {
+    if (scrollRef.current) scrollRef.current.scrollTop = 0;
+  }, [activePage]);
+
+  const handleTabKeyDown = (event, pageIndex) => {
+    if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+    event.preventDefault();
+    const nextIndex = event.key === 'Home'
+      ? 0
+      : event.key === 'End'
+        ? inspectorPages.length - 1
+        : (pageIndex + (event.key === 'ArrowRight' ? 1 : -1) + inspectorPages.length)
+          % inspectorPages.length;
+    const nextPage = inspectorPages[nextIndex];
+    setActivePage(nextPage.id);
+    requestAnimationFrame(() => document.getElementById(`inspector-tab-${nextPage.id}`)?.focus());
+  };
+
   return (
-    <aside className="inspector-panel">
+    <aside className="inspector-panel" data-active-page={activePage}>
       <div className="inspector-heading">
         <div>
-          <span className="eyebrow">ROUTE LOGIC</span>
+          <span className="eyebrow">CONTROL DECK / {activePageMeta.index}</span>
           <h2>图谱控制台</h2>
         </div>
-        <div className="graph-count"><GitBranch size={14} /> {waypoints.length} / {edges.length}</div>
+        <div className="graph-count"><ActivePageIcon size={14} /> {activePageMeta.summary}</div>
       </div>
 
-      <section className={`connectivity-card ${validation.status}`}>
-        <div className="connectivity-card__icon"><ValidationIcon size={18} /></div>
-        <div className="connectivity-card__copy">
-          <strong>{validationCopy.title}</strong>
-          <span>{validationCopy.detail}</span>
-        </div>
-        <button
-          type="button"
-          onClick={onRunConnectivity}
-          disabled={!edges.length}
-          title="运行有向图强连通检测"
-        >
-          检测
-        </button>
-      </section>
+      <nav className="inspector-pagination" role="tablist" aria-label="控制台子页">
+        {inspectorPages.map((page, pageIndex) => {
+          const PageIcon = page.icon;
+          const selected = activePage === page.id;
+          return (
+            <button
+              type="button"
+              role="tab"
+              id={`inspector-tab-${page.id}`}
+              key={page.id}
+              className={selected ? 'is-active' : ''}
+              aria-label={page.label}
+              aria-selected={selected}
+              aria-controls={`inspector-page-${page.id}`}
+              tabIndex={selected ? 0 : -1}
+              data-page={page.id}
+              onClick={() => setActivePage(page.id)}
+              onKeyDown={(event) => handleTabKeyDown(event, pageIndex)}
+            >
+              <i>{page.index}</i>
+              <span><PageIcon size={12} />{page.compactLabel}</span>
+              <small>{page.summary}</small>
+            </button>
+          );
+        })}
+      </nav>
 
-      <section className="waypoint-search" aria-label="导航点搜索">
-        <div className="waypoint-search__copy">
-          <Search size={14} />
-          <div>
-            <strong>定位导航点</strong>
-            <span>仅显示当前地图已配置点位</span>
-          </div>
-        </div>
-        <label>
-          <span className="visually-hidden">搜索导航点</span>
-          <select
-            aria-label="搜索导航点"
-            value={selectedWaypointId || ''}
-            disabled={!waypoints.length}
-            onChange={(event) => {
-              if (event.target.value) onSearchWaypoint(event.target.value);
-              else onClearSelection();
-            }}
+      <div className="inspector-scroll" data-page-scroll={activePage} ref={scrollRef}>
+        {activePage === 'navigation' && (
+          <div
+            className="inspector-page inspector-page--navigation"
+            role="tabpanel"
+            id="inspector-page-navigation"
+            aria-labelledby="inspector-tab-navigation"
           >
-            <option value="">{waypoints.length ? '选择导航点…' : '暂无导航点'}</option>
-            {waypoints.map((point) => (
-              <option key={point.id} value={point.id}>
-                {point.name} · X {point.pose.x.toFixed(2)} / Y {point.pose.y.toFixed(2)}
-              </option>
-            ))}
-          </select>
-        </label>
-      </section>
+            <section className={`connectivity-card ${validation.status}`}>
+              <div className="connectivity-card__icon"><ValidationIcon size={18} /></div>
+              <div className="connectivity-card__copy">
+                <strong>{validationCopy.title}</strong>
+                <span>{validationCopy.detail}</span>
+              </div>
+              <button
+                type="button"
+                onClick={onRunConnectivity}
+                disabled={!edges.length}
+                title="运行有向图强连通检测"
+              >
+                检测
+              </button>
+            </section>
 
-      <div className="inspector-scroll">
+            <section className="waypoint-search" aria-label="导航点搜索">
+              <div className="waypoint-search__copy">
+                <Search size={14} />
+                <div>
+                  <strong>定位导航点</strong>
+                  <span>仅显示当前地图已配置点位</span>
+                </div>
+              </div>
+              <label>
+                <span className="visually-hidden">搜索导航点</span>
+                <select
+                  aria-label="搜索导航点"
+                  value={selectedWaypointId || ''}
+                  disabled={!waypoints.length}
+                  onChange={(event) => {
+                    if (event.target.value) onSearchWaypoint(event.target.value);
+                    else onClearSelection();
+                  }}
+                >
+                  <option value="">{waypoints.length ? '选择导航点…' : '暂无导航点'}</option>
+                  {waypoints.map((point) => (
+                    <option key={point.id} value={point.id}>
+                      {point.name} · X {point.pose.x.toFixed(2)} / Y {point.pose.y.toFixed(2)}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            </section>
+
         {(selectedWaypoint || selectedEdge) && (
           <button type="button" className="back-link" onClick={onClearSelection}>
-            <ArrowLeft size={13} /> 返回工程总览
+            <ArrowLeft size={13} /> 返回路径与导航
           </button>
         )}
 
@@ -409,6 +509,55 @@ export default function Inspector({
 
         {!selectedWaypoint && !selectedEdge && (
           <>
+            <section className="route-index">
+              <div className="section-title">
+                <Route size={14} />
+                <span>有向路径</span>
+                <small>{edges.length}</small>
+              </div>
+              {!edges.length && (
+                <div className="empty-list">
+                  <CircleGauge size={24} strokeWidth={1.3} />
+                  <span>切换到“连接路径”，依次选择起点与终点</span>
+                </div>
+              )}
+              {edges.map((edge, index) => {
+                const meta = statusMeta[edge.status] || statusMeta.unchecked;
+                return (
+                  <button type="button" className="route-index__item" key={edge.id} onClick={() => onSelectEdge(edge.id)}>
+                    <span className={`status-dot ${meta.className}`} />
+                    <span className="route-index__number">E{String(index + 1).padStart(2, '0')}</span>
+                    <strong>{pointById.get(edge.from)?.name || '?'} <ArrowRight size={12} /> {pointById.get(edge.to)?.name || '?'}</strong>
+                    <small>{edge.limits.maxSpeed.toFixed(1)} m/s</small>
+                    <ChevronRight size={14} />
+                  </button>
+                );
+              })}
+            </section>
+
+            <section className="waypoint-index">
+              <div className="section-title"><span>导航点</span><small>{waypoints.length}</small></div>
+              <div className="waypoint-chips">
+                {waypoints.map((point, index) => (
+                  <button type="button" key={point.id} onClick={() => onSelectWaypoint(point.id)}>
+                    <i>{String(index + 1).padStart(2, '0')}</i>{point.name}
+                  </button>
+                ))}
+                {!waypoints.length && <span className="muted-copy">暂无导航点</span>}
+              </div>
+            </section>
+          </>
+        )}
+          </div>
+        )}
+
+        {activePage === 'project' && (
+          <div
+            className="inspector-page inspector-page--project"
+            role="tabpanel"
+            id="inspector-page-project"
+            aria-labelledby="inspector-tab-project"
+          >
             <section className="project-overview">
               <div className="section-title"><Compass size={14} /><span>工程配置</span></div>
               <dl className="config-list">
@@ -451,53 +600,42 @@ export default function Inspector({
                 <div><dt>截面跨度</dt><dd>{Math.max(0, heightRange[1] - heightRange[0]).toFixed(2)} m</dd></div>
               </dl>
             </section>
-
-            <section className="route-index">
-              <div className="section-title">
-                <Route size={14} />
-                <span>有向路径</span>
-                <small>{edges.length}</small>
-              </div>
-              {!edges.length && (
-                <div className="empty-list">
-                  <CircleGauge size={24} strokeWidth={1.3} />
-                  <span>切换到“连接路径”，依次选择起点与终点</span>
-                </div>
-              )}
-              {edges.map((edge, index) => {
-                const meta = statusMeta[edge.status] || statusMeta.unchecked;
-                return (
-                  <button type="button" className="route-index__item" key={edge.id} onClick={() => onSelectEdge(edge.id)}>
-                    <span className={`status-dot ${meta.className}`} />
-                    <span className="route-index__number">E{String(index + 1).padStart(2, '0')}</span>
-                    <strong>{pointById.get(edge.from)?.name || '?'} <ArrowRight size={12} /> {pointById.get(edge.to)?.name || '?'}</strong>
-                    <small>{edge.limits.maxSpeed.toFixed(1)} m/s</small>
-                    <ChevronRight size={14} />
-                  </button>
-                );
-              })}
-            </section>
-
-            <section className="waypoint-index">
-              <div className="section-title"><span>导航点</span><small>{waypoints.length}</small></div>
-              <div className="waypoint-chips">
-                {waypoints.map((point, index) => (
-                  <button type="button" key={point.id} onClick={() => onSelectWaypoint(point.id)}>
-                    <i>{String(index + 1).padStart(2, '0')}</i>{point.name}
-                  </button>
-                ))}
-                {!waypoints.length && <span className="muted-copy">暂无导航点</span>}
-              </div>
-            </section>
-          </>
+          </div>
         )}
 
-        <ZividCameraPanel
-          mapData={mapData}
-          robot={robot}
-          robotLoadState={robotLoadState}
-          cameraPoses={zividCameraPoses}
-        />
+        {activePage === 'teaching' && (
+          <div
+            className="inspector-page inspector-page--teaching"
+            role="tabpanel"
+            id="inspector-page-teaching"
+            aria-labelledby="inspector-tab-teaching"
+          >
+            <VirtualTeachingPanel
+              tasks={teachingTasks}
+              activeTaskId={activeTeachingTaskId}
+              mapData={mapData}
+              robot={robot}
+              robotLoadState={robotLoadState}
+              robotJointValues={robotJointValues}
+              onCreateTask={onCreateTeachingTask}
+              onSelectTask={onSelectTeachingTask}
+              onRenameTask={onRenameTeachingTask}
+              onDeleteTask={onDeleteTeachingTask}
+              onCapturePoint={onCaptureTeachingPoint}
+              onRenamePoint={onRenameTeachingPoint}
+              onDeletePoint={onDeleteTeachingPoint}
+              onApplyPoint={onApplyTeachingPoint}
+              onExportProject={onExportTeachingProject}
+            />
+
+            <ZividCameraPanel
+              mapData={mapData}
+              robot={robot}
+              robotLoadState={robotLoadState}
+              cameraPoses={zividCameraPoses}
+            />
+          </div>
+        )}
       </div>
     </aside>
   );

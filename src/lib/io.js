@@ -62,6 +62,105 @@ export async function fetchBufferWithProgress(url, onProgress) {
   return merged.buffer;
 }
 
+const normalizeTeachingPose = (value) => {
+  const pose = value && typeof value === 'object' ? value : {};
+  const position = pose.position && typeof pose.position === 'object'
+    ? pose.position
+    : pose;
+  const rpy = pose.rpy && typeof pose.rpy === 'object' ? pose.rpy : pose;
+  return {
+    frameId: String(pose.frameId || pose.frame || 'map'),
+    position: {
+      x: numberOr(position.x),
+      y: numberOr(position.y),
+      z: numberOr(position.z),
+    },
+    rpy: {
+      roll: numberOr(rpy.roll),
+      pitch: numberOr(rpy.pitch),
+      yaw: numberOr(rpy.yaw),
+    },
+  };
+};
+
+const normalizeTeachingJoints = (value) => {
+  const hasExplicitValues = value?.values && typeof value.values === 'object';
+  const source = hasExplicitValues
+    ? value.values
+    : value && typeof value === 'object' ? value : {};
+  const metadataKeys = new Set(['angularUnit', 'linearUnit', 'source', 'count', 'values']);
+  const values = Object.fromEntries(
+    Object.entries(source).flatMap(([name, rawValue]) => {
+      if (!hasExplicitValues && metadataKeys.has(name)) return [];
+      const parsed = Number(
+        rawValue && typeof rawValue === 'object' ? rawValue.value : rawValue,
+      );
+      return name && Number.isFinite(parsed) ? [[String(name), parsed]] : [];
+    }),
+  );
+  return {
+    angularUnit: String(value?.angularUnit || 'degree'),
+    linearUnit: String(value?.linearUnit || 'meter'),
+    source: String(value?.source || 'urdf-movable-joints'),
+    count: Object.keys(values).length,
+    values,
+  };
+};
+
+export function normalizeTeachingTasks(payload) {
+  const rawTasks = Array.isArray(payload)
+    ? payload
+    : payload?.virtualTeaching?.tasks
+      || payload?.teachingTasks
+      || payload?.teaching?.tasks
+      || [];
+  if (!Array.isArray(rawTasks)) return [];
+  return rawTasks.map((task, taskIndex) => {
+    const rawPoints = Array.isArray(task?.points)
+      ? task.points
+      : Array.isArray(task?.teachingPoints) ? task.teachingPoints : [];
+    const points = rawPoints.map((point, pointIndex) => {
+      const joints = normalizeTeachingJoints(
+        point?.fullBodyJoints || point?.joints || point?.jointValues,
+      );
+      return {
+        id: String(point?.id || createId('teach-point')),
+        name: String(
+          point?.name
+          || point?.label
+          || `T${String(pointIndex + 1).padStart(2, '0')}`,
+        ),
+        sequence: pointIndex + 1,
+        capturedAt: String(point?.capturedAt || point?.createdAt || ''),
+        mapPose: normalizeTeachingPose(
+          point?.mapPose || point?.robotPose || point?.pose,
+        ),
+        fullBodyJoints: joints,
+      };
+    });
+    const robot = task?.robot && typeof task.robot === 'object' ? task.robot : {};
+    const map = task?.map && typeof task.map === 'object' ? task.map : {};
+    return {
+      id: String(task?.id || createId('teach-task')),
+      name: String(task?.name || `示教任务 ${String(taskIndex + 1).padStart(2, '0')}`),
+      createdAt: String(task?.createdAt || ''),
+      updatedAt: String(task?.updatedAt || task?.createdAt || ''),
+      coordinateFrame: String(task?.coordinateFrame || 'map'),
+      robot: {
+        id: String(robot.id || robot.relativePath || ''),
+        name: String(robot.name || ''),
+        relativePath: String(robot.relativePath || robot.path || ''),
+      },
+      map: {
+        id: String(map.id || map.mapId || ''),
+        fileName: String(map.fileName || map.name || ''),
+        sourceHash: map.sourceHash ? String(map.sourceHash) : null,
+      },
+      points,
+    };
+  });
+}
+
 export function normalizeProject(payload) {
   if (!payload || typeof payload !== 'object') {
     throw new Error('JSON 根节点必须是对象');
@@ -177,6 +276,7 @@ export function normalizeProject(payload) {
         },
       }
     : null;
+  const teachingTasks = normalizeTeachingTasks(payload);
 
   return {
     waypoints,
@@ -189,6 +289,7 @@ export function normalizeProject(payload) {
     view2d: payload.view2d || null,
     view3d: payload.view3d || null,
     robot: robot?.relativePath ? robot : null,
+    teachingTasks,
   };
 }
 
@@ -202,6 +303,7 @@ export function buildExport({
   robot,
   robotPose,
   robotJointValues,
+  teachingTasks = [],
 }) {
   const pointById = new Map(waypoints.map((point) => [point.id, point]));
   const exportedRobotPose = robotPose || robot?.origin || {};
@@ -263,6 +365,28 @@ export function buildExport({
           },
         }
       : null,
+    virtualTeaching: {
+      coordinateFrame: 'map',
+      angularUnit: 'degree',
+      distanceUnit: 'meter',
+      tasks: normalizeTeachingTasks(teachingTasks).map((task) => ({
+        ...task,
+        points: task.points.map((point, index) => ({
+          ...point,
+          sequence: index + 1,
+          mapPose: {
+            frameId: 'map',
+            position: { ...point.mapPose.position },
+            rpy: { ...point.mapPose.rpy },
+          },
+          fullBodyJoints: {
+            ...point.fullBodyJoints,
+            count: Object.keys(point.fullBodyJoints.values).length,
+            values: { ...point.fullBodyJoints.values },
+          },
+        })),
+      })),
+    },
     waypoints: waypoints.map((point) => ({
       id: point.id,
       name: point.name,

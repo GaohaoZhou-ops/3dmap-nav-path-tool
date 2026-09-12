@@ -577,6 +577,115 @@ const endEffectorSideForObject = (object) => {
   return null;
 };
 
+const expandObjectBoundsInFrame = (bounds, object, frameInverse) => {
+  object.traverse((child) => {
+    const geometry = child.geometry;
+    if (!geometry?.getAttribute?.('position')) return;
+    if (!geometry.boundingBox) geometry.computeBoundingBox();
+    if (!geometry.boundingBox || geometry.boundingBox.isEmpty()) return;
+    const relativeMatrix = new THREE.Matrix4().multiplyMatrices(
+      frameInverse,
+      child.matrixWorld,
+    );
+    const { min, max } = geometry.boundingBox;
+    [min.x, max.x].forEach((x) => {
+      [min.y, max.y].forEach((y) => {
+        [min.z, max.z].forEach((z) => {
+          bounds.expandByPoint(new THREE.Vector3(x, y, z).applyMatrix4(relativeMatrix));
+        });
+      });
+    });
+  });
+};
+
+const createRobotChassisDragHandle = (robot, metadata = {}) => {
+  robot.updateMatrixWorld(true);
+  const frame = robot.getObjectByName('base_link') || robot;
+  frame.updateWorldMatrix(true, true);
+  const frameInverse = frame.matrixWorld.clone().invert();
+  const localBounds = new THREE.Box3();
+  const baseVisuals = frame.children.filter(
+    (child) => child.userData?.urdfType === 'visual',
+  );
+  baseVisuals.forEach((object) => {
+    expandObjectBoundsInFrame(localBounds, object, frameInverse);
+  });
+
+  if (localBounds.isEmpty()) {
+    const sourceMin = Array.isArray(metadata.bounds?.min)
+      ? new THREE.Vector3().fromArray(metadata.bounds.min)
+      : new THREE.Vector3(-0.25, -0.25, 0);
+    const sourceMax = Array.isArray(metadata.bounds?.max)
+      ? new THREE.Vector3().fromArray(metadata.bounds.max)
+      : new THREE.Vector3(0.25, 0.25, 0.2);
+    const height = Math.max((sourceMax.z - sourceMin.z) * 0.18, 0.12);
+    localBounds.min.set(sourceMin.x, sourceMin.y, sourceMin.z);
+    localBounds.max.set(sourceMax.x, sourceMax.y, sourceMin.z + height);
+  }
+
+  const size = localBounds.getSize(new THREE.Vector3());
+  const center = localBounds.getCenter(new THREE.Vector3());
+  const longestSide = Math.max(size.x, size.y, size.z, 0.25);
+  const padding = THREE.MathUtils.clamp(longestSide * 0.045, 0.015, 0.05);
+  size.x = Math.max(size.x + padding * 2, 0.22);
+  size.y = Math.max(size.y + padding * 2, 0.22);
+  size.z = Math.max(size.z + padding * 1.2, 0.12);
+
+  const target = new THREE.Mesh(
+    new THREE.BoxGeometry(size.x, size.y, size.z),
+    new THREE.MeshBasicMaterial({
+      transparent: true,
+      opacity: 0,
+      depthWrite: false,
+      colorWrite: false,
+      side: THREE.DoubleSide,
+    }),
+  );
+  target.name = 'robot-chassis-planar-drag-target';
+  target.position.copy(center);
+  target.userData.robotChassisDragTarget = true;
+  frame.add(target);
+
+  const guideRadius = Math.max(size.x, size.y) * 0.68;
+  const guide = new THREE.Group();
+  guide.name = 'robot-chassis-planar-drag-guide';
+  guide.visible = false;
+  guide.position.set(0, 0, 0.012);
+  const ring = new THREE.Mesh(
+    new THREE.RingGeometry(guideRadius * 0.985, guideRadius, 64),
+    new THREE.MeshBasicMaterial({
+      color: 0xf4c95d,
+      transparent: true,
+      opacity: 0.86,
+      depthTest: false,
+      depthWrite: false,
+      side: THREE.DoubleSide,
+      toneMapped: false,
+    }),
+  );
+  const guideLines = new THREE.LineSegments(
+    new THREE.BufferGeometry().setFromPoints([
+      new THREE.Vector3(-guideRadius, 0, 0),
+      new THREE.Vector3(guideRadius, 0, 0),
+      new THREE.Vector3(0, -guideRadius, 0),
+      new THREE.Vector3(0, guideRadius, 0),
+    ]),
+    new THREE.LineBasicMaterial({
+      color: 0xf4c95d,
+      transparent: true,
+      opacity: 0.56,
+      depthTest: false,
+      depthWrite: false,
+      toneMapped: false,
+    }),
+  );
+  guide.add(ring, guideLines);
+  guide.traverse((object) => { object.renderOrder = 34; });
+  frame.add(guide);
+
+  return { frame, target, guide, localBounds, size };
+};
+
 const colorModeValue = (mode) => (mode === 'height' ? 1 : mode === 'white' ? 2 : 0);
 const POINT_COLOR_MODES = [
   { id: 'height', label: '高程色' },
@@ -778,6 +887,9 @@ export default function PointCloudViewer({
   const routeGroupRef = useRef(null);
   const waypointGroupRef = useRef(null);
   const robotLayerRef = useRef(null);
+  const robotChassisHandleRef = useRef(null);
+  const chassisDragInteractionRef = useRef(null);
+  const chassisDragModeRef = useRef(false);
   const endEffectorControllersRef = useRef({ left: null, right: null });
   const transformControlsRef = useRef(null);
   const endEffectorTargetRef = useRef(null);
@@ -820,14 +932,14 @@ export default function PointCloudViewer({
   const lastRobotJointReportRef = useRef(0);
   const appliedInitialViewRef = useRef(null);
   const appliedResetRevisionRef = useRef(0);
-  const [interactionMode, setInteractionMode] = useState('rotate');
   const [shiftPanArmed, setShiftPanArmed] = useState(false);
+  const [chassisDragMode, setChassisDragMode] = useState(false);
+  const [chassisDragging, setChassisDragging] = useState(false);
   const [endEffectorControl, setEndEffectorControl] = useState(null);
   const [endEffectorLockModesState, setEndEffectorLockModesState] = useState({
     left: null,
     right: null,
   });
-  const interactionModeRef = useRef(interactionMode);
   colorModeRef.current = colorMode;
   onSelectWaypointRef.current = onSelectWaypoint;
   onSelectEdgeRef.current = onSelectEdge;
@@ -840,7 +952,6 @@ export default function PointCloudViewer({
   onRobotControlChangeRef.current = onRobotControlChange;
   onZividCameraPoseChangeRef.current = onZividCameraPoseChange;
   robotControlEnabledRef.current = Boolean(robotControlEnabled);
-  interactionModeRef.current = interactionMode;
   const [manualResolution, setManualResolution] = useState({ mapKey: null, index: null });
 
   const sourcePointCount = mapData?.geometry?.getAttribute('position')?.count || 0;
@@ -1416,7 +1527,7 @@ export default function PointCloudViewer({
     renderer.domElement.setAttribute('aria-label', '三维点云交互画布');
     renderer.domElement.setAttribute(
       'aria-keyshortcuts',
-      'W A S D Q E ArrowUp ArrowDown ArrowLeft ArrowRight Shift+W Shift+A Shift+S Shift+D Shift+Q Shift+E Shift+ArrowUp Shift+ArrowDown Shift+ArrowLeft Shift+ArrowRight',
+      'W A S D Q E ArrowUp ArrowDown ArrowLeft ArrowRight Escape Shift+W Shift+A Shift+S Shift+D Shift+Q Shift+E Shift+ArrowUp Shift+ArrowDown Shift+ArrowLeft Shift+ArrowRight',
     );
     renderer.domElement.dataset.geometrySource =
       mapData.geometrySource || geometry.userData.geometrySource || 'ply-parse';
@@ -1703,6 +1814,12 @@ export default function PointCloudViewer({
     renderer.domElement.dataset.robotLeftAxis = '+y';
     renderer.domElement.dataset.robotLinearSpeed = `${ROBOT_LINEAR_SPEED}m/s`;
     renderer.domElement.dataset.robotRotationSpeed = '72deg/s';
+    renderer.domElement.dataset.chassisDragMode = 'idle';
+    renderer.domElement.dataset.chassisDragging = 'false';
+    renderer.domElement.dataset.chassisDragPlane = 'map-xy';
+    renderer.domElement.dataset.chassisDragPreserves = 'z,roll,pitch,yaw';
+    renderer.domElement.dataset.chassisDragHandleReady = 'false';
+    renderer.domElement.dataset.robotChassisScreenVisible = 'false';
     sceneRef.current = scene;
 
     const publishRobotPose = (force = false) => {
@@ -1777,6 +1894,7 @@ export default function PointCloudViewer({
     const raycaster = new THREE.Raycaster();
     const normalizedPointer = new THREE.Vector2();
     let pointerStart = null;
+    let chassisPointerDrag = null;
 
     const applyProjectionPan = () => {
       const width = Math.max(renderer.domElement.clientWidth, 1);
@@ -1964,11 +2082,42 @@ export default function PointCloudViewer({
       return edgeHit ? selectionForObject(edgeHit.object) : null;
     };
 
+    const setRayFromPointer = (event) => {
+      const rect = renderer.domElement.getBoundingClientRect();
+      if (!rect.width || !rect.height) return false;
+      normalizedPointer.set(
+        ((event.clientX - rect.left) / rect.width) * 2 - 1,
+        -((event.clientY - rect.top) / rect.height) * 2 + 1,
+      );
+      scene.updateMatrixWorld(true);
+      camera.updateMatrixWorld(true);
+      raycaster.setFromCamera(normalizedPointer, camera);
+      return true;
+    };
+
+    const chassisAtPointer = (event) => {
+      const handle = robotChassisHandleRef.current;
+      if (!handle?.target || !setRayFromPointer(event)) return null;
+      return raycaster.intersectObject(handle.target, false).length ? handle : null;
+    };
+
     const updatePickHover = (event) => {
       if (transformControls.dragging || transformControls.axis) {
-        renderer.domElement.classList.remove('is-pick-hover', 'is-end-effector-hover');
+        renderer.domElement.classList.remove(
+          'is-pick-hover',
+          'is-end-effector-hover',
+          'is-chassis-drag-hover',
+        );
         return;
       }
+      if (chassisDragModeRef.current) {
+        const hoveredChassis = Boolean(chassisAtPointer(event));
+        renderer.domElement.classList.toggle('is-chassis-drag-hover', hoveredChassis);
+        renderer.domElement.classList.remove('is-pick-hover', 'is-end-effector-hover');
+        renderer.domElement.dataset.hoverRobotPart = hoveredChassis ? 'chassis' : 'none';
+        return;
+      }
+      renderer.domElement.classList.remove('is-chassis-drag-hover');
       const hoveredEndEffector = endEffectorAtPointer(event);
       renderer.domElement.classList.toggle(
         'is-end-effector-hover',
@@ -2018,12 +2167,159 @@ export default function PointCloudViewer({
       return hadActiveGesture;
     };
 
+    const finishChassisPointerDrag = (
+      event,
+      reason = 'ended',
+      forcePublish = true,
+      updateUi = true,
+    ) => {
+      if (!chassisPointerDrag) return false;
+      const pointerId = event?.pointerId ?? chassisPointerDrag.pointerId;
+      chassisPointerDrag = null;
+      controls.enabled = true;
+      if (Number.isFinite(pointerId) && renderer.domElement.hasPointerCapture?.(pointerId)) {
+        try {
+          renderer.domElement.releasePointerCapture(pointerId);
+        } catch {
+          // Pointer capture can already be gone after leaving the canvas.
+        }
+      }
+      renderer.domElement.classList.remove('is-chassis-dragging');
+      renderer.domElement.dataset.chassisDragging = 'false';
+      renderer.domElement.dataset.chassisDragGestureState = reason;
+      if (updateUi) setChassisDragging(false);
+      if (forcePublish) robotPoseActionsRef.current?.publish?.(true);
+      return true;
+    };
+
+    const updateChassisDragMode = (enabled, reason = 'user', updateUi = true) => {
+      const nextEnabled = Boolean(enabled && robotChassisHandleRef.current?.target);
+      if (!nextEnabled) {
+        finishChassisPointerDrag(null, reason, true, updateUi);
+      }
+      if (nextEnabled && endEffectorControlRef.current) {
+        endEffectorInteractionRef.current?.exit?.();
+      }
+      if (nextEnabled && robotControlEnabledRef.current) {
+        robotControlEnabledRef.current = false;
+        onRobotControlChangeRef.current?.(false);
+      }
+      if (nextEnabled) {
+        pressedKeysRef.current.clear();
+        keyboardImpulseRef.current.clear();
+        setShiftPanArmed(false);
+        cancelPointerGesture(null, 'chassis-drag-mode');
+      }
+      chassisDragModeRef.current = nextEnabled;
+      const handle = robotChassisHandleRef.current;
+      if (handle?.guide) handle.guide.visible = nextEnabled;
+      renderer.domElement.classList.toggle('is-chassis-drag-mode', nextEnabled);
+      renderer.domElement.classList.remove('is-chassis-drag-hover');
+      renderer.domElement.dataset.chassisDragMode = nextEnabled ? 'armed' : 'idle';
+      renderer.domElement.dataset.chassisDragExitReason = nextEnabled ? '' : reason;
+      renderer.domElement.dataset.keyboardControlOwner = nextEnabled
+        ? 'camera'
+        : robotControlEnabledRef.current ? 'robot' : 'camera';
+      if (updateUi) {
+        setChassisDragMode(nextEnabled);
+        if (!nextEnabled) setChassisDragging(false);
+      }
+      if (nextEnabled) renderer.domElement.focus({ preventScroll: true });
+      return nextEnabled;
+    };
+
+    const startChassisPointerDrag = (event) => {
+      if (
+        !chassisDragModeRef.current
+        || event.button !== 0
+        || transformControls.dragging
+        || transformControls.axis
+        || !chassisAtPointer(event)
+      ) {
+        return false;
+      }
+      const currentPose = normalizeRobotPose(robotPoseRef.current);
+      const plane = new THREE.Plane(new THREE.Vector3(0, 0, 1), -currentPose.position.z);
+      const point = raycaster.ray.intersectPlane(plane, new THREE.Vector3());
+      if (!point) return false;
+
+      cancelPointerGesture(event, 'chassis-drag-start');
+      chassisPointerDrag = {
+        pointerId: event.pointerId,
+        plane,
+        offsetX: currentPose.position.x - point.x,
+        offsetY: currentPose.position.y - point.y,
+        startX: currentPose.position.x,
+        startY: currentPose.position.y,
+      };
+      controls.enabled = false;
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      renderer.domElement.setPointerCapture?.(event.pointerId);
+      renderer.domElement.classList.add('is-chassis-dragging');
+      renderer.domElement.classList.remove('is-chassis-drag-hover');
+      renderer.domElement.dataset.chassisDragging = 'true';
+      renderer.domElement.dataset.chassisDragGestureState = 'active';
+      renderer.domElement.dataset.chassisDragPlaneZ = currentPose.position.z.toFixed(6);
+      renderer.domElement.dataset.chassisDragStartX = currentPose.position.x.toFixed(6);
+      renderer.domElement.dataset.chassisDragStartY = currentPose.position.y.toFixed(6);
+      setChassisDragging(true);
+      return true;
+    };
+
+    const moveChassisPointerDrag = (event) => {
+      if (!chassisPointerDrag || chassisPointerDrag.pointerId !== event.pointerId) return false;
+      const rect = renderer.domElement.getBoundingClientRect();
+      const outside =
+        event.clientX < rect.left
+        || event.clientX > rect.right
+        || event.clientY < rect.top
+        || event.clientY > rect.bottom;
+      if (outside) {
+        finishChassisPointerDrag(event, 'cancelled-on-leave');
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        return true;
+      }
+      if (!setRayFromPointer(event)) return false;
+      const point = raycaster.ray.intersectPlane(
+        chassisPointerDrag.plane,
+        new THREE.Vector3(),
+      );
+      if (!point) return false;
+
+      const nextPose = normalizeRobotPose(robotPoseRef.current);
+      nextPose.position.x = point.x + chassisPointerDrag.offsetX;
+      nextPose.position.y = point.y + chassisPointerDrag.offsetY;
+      robotPoseRef.current = applyRobotPose(robotLayer, nextPose);
+      writeRobotPoseDataset(renderer.domElement, robotPoseRef.current);
+      renderer.domElement.dataset.chassisDragDeltaX = (
+        nextPose.position.x - chassisPointerDrag.startX
+      ).toFixed(6);
+      renderer.domElement.dataset.chassisDragDeltaY = (
+        nextPose.position.y - chassisPointerDrag.startY
+      ).toFixed(6);
+      renderer.domElement.dataset.chassisDragCount = String(
+        Number(renderer.domElement.dataset.chassisDragCount || 0) + 1,
+      );
+      robotPoseActionsRef.current?.publish?.(false);
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      return true;
+    };
+
+    const chassisDragActions = {
+      enter: () => updateChassisDragMode(true, 'double-click'),
+      exit: (reason = 'user') => updateChassisDragMode(false, reason),
+      cancel: (reason = 'cancelled') => finishChassisPointerDrag(null, reason),
+    };
+    chassisDragInteractionRef.current = chassisDragActions;
+
     const promotePointerToShiftPan = () => {
       if (
         !pointerStart
         || pointerStart.button !== 0
         || pointerStart.panGesture
-        || interactionModeRef.current !== 'rotate'
         || robotControlEnabledRef.current
       ) {
         return false;
@@ -2052,6 +2348,7 @@ export default function PointCloudViewer({
     const onPickPointerDown = (event) => {
       if (event.button !== 0 && event.button !== 2) return;
       claimKeyboardFocus('pointer');
+      if (startChassisPointerDrag(event)) return;
       if (transformControls.object && (transformControls.axis || transformControls.dragging)) {
         controls.enabled = false;
         pointerStart = null;
@@ -2069,12 +2366,10 @@ export default function PointCloudViewer({
         || pressedKeysRef.current.has('ShiftRight');
       const shiftPanOverride =
         event.button === 0
-        && interactionModeRef.current === 'rotate'
         && !robotControlEnabledRef.current
         && shiftPressed;
       const panGesture =
         event.button === 2
-        || (event.button === 0 && interactionModeRef.current === 'pan')
         || shiftPanOverride;
       if (shiftPanOverride) {
         setShiftPanArmed(true);
@@ -2102,6 +2397,7 @@ export default function PointCloudViewer({
       renderer.domElement.classList.remove('is-pick-hover', 'is-end-effector-hover');
     };
     const onPickPointerMove = (event) => {
+      if (moveChassisPointerDrag(event)) return;
       if (pointerStart?.id === event.pointerId) {
         const rect = renderer.domElement.getBoundingClientRect();
         const outside =
@@ -2121,7 +2417,6 @@ export default function PointCloudViewer({
           || pressedKeysRef.current.has('ShiftRight');
         if (
           liveShiftPressed
-          && interactionModeRef.current === 'rotate'
           && !robotControlEnabledRef.current
           && promotePointerToShiftPan()
         ) {
@@ -2146,6 +2441,12 @@ export default function PointCloudViewer({
       updatePickHover(event);
     };
     const onPickPointerUp = (event) => {
+      if (chassisPointerDrag?.pointerId === event.pointerId) {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        finishChassisPointerDrag(event, 'ended');
+        return;
+      }
       if (!pointerStart || pointerStart.id !== event.pointerId) return;
       const start = pointerStart;
       pointerStart = null;
@@ -2171,14 +2472,25 @@ export default function PointCloudViewer({
       else onClearSelectionRef.current?.();
     };
     const resetPickPointer = (event) => {
+      if (chassisPointerDrag?.pointerId === event.pointerId) {
+        finishChassisPointerDrag(event, 'cancelled-by-browser');
+      }
       cancelPointerGesture(event, 'cancelled-by-browser');
     };
     const onPickPointerLeave = (event) => {
+      if (chassisPointerDrag?.pointerId === event.pointerId) {
+        finishChassisPointerDrag(event, 'cancelled-on-leave');
+        return;
+      }
       if (pointerStart?.id === event.pointerId) {
         cancelPointerGesture(event, 'cancelled-on-leave');
         return;
       }
-      renderer.domElement.classList.remove('is-pick-hover', 'is-end-effector-hover');
+      renderer.domElement.classList.remove(
+        'is-pick-hover',
+        'is-end-effector-hover',
+        'is-chassis-drag-hover',
+      );
     };
 
     const endEffectorAtPointer = (event) => {
@@ -2198,23 +2510,36 @@ export default function PointCloudViewer({
       }
       return null;
     };
-    const onEndEffectorDoubleClick = (event) => {
+    const onRobotDoubleClick = (event) => {
       if (transformControls.dragging || transformControls.axis) return;
       const side = endEffectorAtPointer(event);
       renderer.domElement.dataset.lastEndEffectorDoubleClick = side || 'none';
-      if (!side) return;
+      const chassis = side ? null : chassisAtPointer(event);
+      renderer.domElement.dataset.lastChassisDoubleClick = chassis ? 'chassis' : 'none';
+      if (!side && !chassis) return;
       event.preventDefault();
       event.stopImmediatePropagation();
-      cancelPointerGesture(event, 'end-effector-double-click');
-      endEffectorInteractionRef.current?.enter?.(side);
+      cancelPointerGesture(
+        event,
+        side ? 'end-effector-double-click' : 'chassis-double-click',
+      );
+      if (side) {
+        chassisDragInteractionRef.current?.exit?.('end-effector-control');
+        endEffectorInteractionRef.current?.enter?.(side);
+      } else {
+        updateChassisDragMode(!chassisDragModeRef.current, 'double-click');
+        renderer.domElement.dataset.chassisDoubleClickCount = String(
+          Number(renderer.domElement.dataset.chassisDoubleClickCount || 0) + 1,
+        );
+      }
     };
 
     renderer.domElement.addEventListener('pointerdown', onPickPointerDown, true);
     renderer.domElement.addEventListener('pointermove', onPickPointerMove, true);
-    renderer.domElement.addEventListener('pointerup', onPickPointerUp);
+    renderer.domElement.addEventListener('pointerup', onPickPointerUp, true);
     renderer.domElement.addEventListener('pointercancel', resetPickPointer);
     renderer.domElement.addEventListener('pointerleave', onPickPointerLeave);
-    renderer.domElement.addEventListener('dblclick', onEndEffectorDoubleClick, true);
+    renderer.domElement.addEventListener('dblclick', onRobotDoubleClick, true);
 
     const resize = () => {
       const width = mount.clientWidth || 1;
@@ -2247,6 +2572,8 @@ export default function PointCloudViewer({
     const endEffectorWorldPosition = new THREE.Vector3();
     const endEffectorCameraPosition = new THREE.Vector3();
     const endEffectorProjectedPosition = new THREE.Vector3();
+    const chassisWorldPosition = new THREE.Vector3();
+    const chassisProjectedPosition = new THREE.Vector3();
     const keyboardPixelsForWorldDirection = (
       worldDirection,
       fallbackX,
@@ -2513,6 +2840,30 @@ export default function PointCloudViewer({
         (Math.max(renderer.domElement.clientHeight, 1) / 2)
         / Math.tan(THREE.MathUtils.degToRad(camera.fov / 2));
 
+      const chassisHandle = robotChassisHandleRef.current;
+      if (chassisHandle?.target) {
+        chassisHandle.target.getWorldPosition(chassisWorldPosition);
+        chassisProjectedPosition.copy(chassisWorldPosition).project(camera);
+        renderer.domElement.dataset.robotChassisWorldX = chassisWorldPosition.x.toFixed(6);
+        renderer.domElement.dataset.robotChassisWorldY = chassisWorldPosition.y.toFixed(6);
+        renderer.domElement.dataset.robotChassisWorldZ = chassisWorldPosition.z.toFixed(6);
+        renderer.domElement.dataset.robotChassisScreenX = (
+          (chassisProjectedPosition.x + 1) * 0.5 * renderer.domElement.clientWidth
+        ).toFixed(2);
+        renderer.domElement.dataset.robotChassisScreenY = (
+          (1 - chassisProjectedPosition.y) * 0.5 * renderer.domElement.clientHeight
+        ).toFixed(2);
+        renderer.domElement.dataset.robotChassisScreenVisible =
+          Math.abs(chassisProjectedPosition.x) <= 1
+          && Math.abs(chassisProjectedPosition.y) <= 1
+          && chassisProjectedPosition.z >= -1
+          && chassisProjectedPosition.z <= 1
+            ? 'true'
+            : 'false';
+      } else {
+        renderer.domElement.dataset.robotChassisScreenVisible = 'false';
+      }
+
       Object.entries(endEffectorControllersRef.current).forEach(([side, controller]) => {
         if (!controller?.frame) return;
         controller.frame.getWorldPosition(endEffectorWorldPosition);
@@ -2619,14 +2970,15 @@ export default function PointCloudViewer({
 
     return () => {
       renderer.setAnimationLoop(null);
+      updateChassisDragMode(false, 'scene-dispose');
       observer.disconnect();
       renderer.domElement.removeEventListener('wheel', progressiveWheelZoom, true);
       renderer.domElement.removeEventListener('pointerdown', onPickPointerDown, true);
       renderer.domElement.removeEventListener('pointermove', onPickPointerMove, true);
-      renderer.domElement.removeEventListener('pointerup', onPickPointerUp);
+      renderer.domElement.removeEventListener('pointerup', onPickPointerUp, true);
       renderer.domElement.removeEventListener('pointercancel', resetPickPointer);
       renderer.domElement.removeEventListener('pointerleave', onPickPointerLeave);
-      renderer.domElement.removeEventListener('dblclick', onEndEffectorDoubleClick, true);
+      renderer.domElement.removeEventListener('dblclick', onRobotDoubleClick, true);
       transformControls.removeEventListener('dragging-changed', onTransformDraggingChanged);
       transformControls.removeEventListener('objectChange', onTransformObjectChange);
       transformControls.detach();
@@ -2650,6 +3002,7 @@ export default function PointCloudViewer({
       routeGroupRef.current = null;
       waypointGroupRef.current = null;
       robotLayerRef.current = null;
+      robotChassisHandleRef.current = null;
       endEffectorControllersRef.current = { left: null, right: null };
       endEffectorControlRef.current = null;
       lockedEndEffectorsRef.current = createEndEffectorLocks();
@@ -2671,6 +3024,10 @@ export default function PointCloudViewer({
       if (pointerInteractionRef.current?.activateShiftPan === promotePointerToShiftPan) {
         pointerInteractionRef.current = null;
       }
+      if (chassisDragInteractionRef.current === chassisDragActions) {
+        chassisDragInteractionRef.current = null;
+      }
+      chassisDragModeRef.current = false;
       controlsRef.current = null;
       cameraRef.current = null;
       displayGeometryRef.current = null;
@@ -2683,6 +3040,10 @@ export default function PointCloudViewer({
     const canvas = controlsRef.current?.domElement;
     if (!layer || !canvas) return undefined;
 
+    chassisDragInteractionRef.current?.exit?.('robot-change');
+    robotChassisHandleRef.current = null;
+    canvas.dataset.chassisDragHandleReady = 'false';
+    canvas.dataset.robotChassisScreenVisible = 'false';
     endEffectorInteractionRef.current?.exit?.();
     clearEndEffectorLocks();
     endEffectorControllersRef.current = { left: null, right: null };
@@ -2737,6 +3098,8 @@ export default function PointCloudViewer({
         applyRobotJointValues(robot, robotJointValuesRef.current);
         layer.updateMatrixWorld(true);
         const metadata = robot.userData.robot || {};
+        const chassisHandle = createRobotChassisDragHandle(robot, metadata);
+        robotChassisHandleRef.current = chassisHandle;
         const bounds = metadata.bounds || {};
         const modelSize = Array.isArray(bounds.size)
           ? Math.max(...bounds.size.map((value) => Math.abs(Number(value) || 0)))
@@ -2784,6 +3147,12 @@ export default function PointCloudViewer({
         canvas.dataset.robotEndEffectorCount = String(
           Object.values(endEffectors).filter(Boolean).length,
         );
+        canvas.dataset.chassisDragHandleReady = 'true';
+        canvas.dataset.chassisDragTargetFrame = chassisHandle.frame.name || 'robot-root';
+        canvas.dataset.chassisDragTargetSize = chassisHandle.size
+          .toArray()
+          .map((value) => value.toFixed(6))
+          .join(',');
         canvas.dataset.robotBoundsMin = (bounds.min || []).join(',');
         canvas.dataset.robotBoundsMax = (bounds.max || []).join(',');
         canvas.dataset.robotLeftToolPosition = leftPosition.join(',');
@@ -2797,6 +3166,7 @@ export default function PointCloudViewer({
           total: metadata.visualCount || 1,
           ...metadata,
         });
+        reportRobotJointValues(true);
         reportZividCameraPoses(true);
       })
       .catch((error) => {
@@ -2813,6 +3183,10 @@ export default function PointCloudViewer({
 
     return () => {
       controller.abort();
+      chassisDragInteractionRef.current?.exit?.('robot-change');
+      robotChassisHandleRef.current = null;
+      canvas.dataset.chassisDragHandleReady = 'false';
+      canvas.dataset.robotChassisScreenVisible = 'false';
       endEffectorInteractionRef.current?.exit?.();
       endEffectorControllersRef.current = { left: null, right: null };
       zividCameraFramesRef.current = { left: null, right: null };
@@ -2947,18 +3321,17 @@ export default function PointCloudViewer({
   useEffect(() => {
     const controls = controlsRef.current;
     if (!controls) return;
-    const temporaryShiftPan = interactionMode === 'rotate' && shiftPanArmed;
-    controls.mouseButtons.LEFT =
-      interactionMode === 'pan' ? THREE.MOUSE.PAN : THREE.MOUSE.ROTATE;
+    const temporaryShiftPan = shiftPanArmed;
+    controls.mouseButtons.LEFT = THREE.MOUSE.ROTATE;
     controls.mouseButtons.RIGHT = THREE.MOUSE.PAN;
-    controls.domElement.dataset.interactionMode = interactionMode;
+    controls.domElement.dataset.interactionMode = 'rotate';
     controls.domElement.dataset.shiftPanArmed = temporaryShiftPan ? 'true' : 'false';
     controls.domElement.dataset.effectiveInteractionMode = temporaryShiftPan
       ? 'shift-pan'
-      : interactionMode;
+      : 'rotate';
     controls.domElement.dataset.keyboardEnabled = 'true';
     controls.domElement.dataset.keyboardMode = 'always-on';
-  }, [interactionMode, mapData?.geometry, shiftPanArmed]);
+  }, [mapData?.geometry, shiftPanArmed]);
 
   useEffect(() => {
     const canvas = controlsRef.current?.domElement;
@@ -2967,6 +3340,9 @@ export default function PointCloudViewer({
       && robotDescriptor
       && robotLoadState?.status === 'loaded',
     );
+    if (enabled && chassisDragModeRef.current) {
+      chassisDragInteractionRef.current?.exit?.('robot-keyboard-control');
+    }
     robotControlEnabledRef.current = enabled;
     pressedKeysRef.current.clear();
     keyboardImpulseRef.current.clear();
@@ -2977,7 +3353,7 @@ export default function PointCloudViewer({
       robotDescriptor && robotLoadState?.status === 'loaded' ? 'true' : 'false';
     canvas.dataset.keyboardControlOwner = enabled ? 'robot' : 'camera';
     canvas.dataset.shiftPanArmed = 'false';
-    canvas.dataset.effectiveInteractionMode = interactionModeRef.current;
+    canvas.dataset.effectiveInteractionMode = 'rotate';
   }, [mapData?.geometry, robotControlEnabled, robotDescriptor, robotLoadState?.status]);
 
   useEffect(() => {
@@ -2995,12 +3371,10 @@ export default function PointCloudViewer({
       const canvas = controlsRef.current?.domElement;
       if (canvas) {
         canvas.dataset.shiftPanArmed = 'false';
-        canvas.dataset.effectiveInteractionMode = interactionModeRef.current;
+        canvas.dataset.effectiveInteractionMode = 'rotate';
       }
     };
     const onKeyDown = (event) => {
-      const code = movementCodeForEvent(event);
-      if (!code) return;
       const target = event.target;
       const tagName = target?.tagName?.toLowerCase();
       if (
@@ -3014,20 +3388,26 @@ export default function PointCloudViewer({
       ) {
         return;
       }
+      if (event.code === 'Escape' && chassisDragModeRef.current) {
+        event.preventDefault();
+        chassisDragInteractionRef.current?.exit?.('escape');
+        return;
+      }
+      const code = movementCodeForEvent(event);
+      if (!code) return;
       const isActionKey = code !== 'ShiftLeft' && code !== 'ShiftRight';
       if (isActionKey) event.preventDefault();
       pressedKeysRef.current.add(code);
       if (!event.repeat && isActionKey) keyboardImpulseRef.current.add(code);
       const canvas = controlsRef.current?.domElement;
       if (code === 'ShiftLeft' || code === 'ShiftRight') {
-        const temporaryShiftPan =
-          !robotControlEnabledRef.current && interactionModeRef.current === 'rotate';
+        const temporaryShiftPan = !robotControlEnabledRef.current;
         setShiftPanArmed(temporaryShiftPan);
         if (canvas) {
           canvas.dataset.shiftPanArmed = temporaryShiftPan ? 'true' : 'false';
           canvas.dataset.effectiveInteractionMode = temporaryShiftPan
             ? 'shift-pan'
-            : interactionModeRef.current;
+            : 'rotate';
         }
         if (temporaryShiftPan) pointerInteractionRef.current?.activateShiftPan?.();
       }
@@ -3064,15 +3444,14 @@ export default function PointCloudViewer({
           || pressedKeysRef.current.has('ShiftRight');
         const temporaryShiftPan =
           shiftStillPressed
-          && !robotControlEnabledRef.current
-          && interactionModeRef.current === 'rotate';
+          && !robotControlEnabledRef.current;
         setShiftPanArmed(temporaryShiftPan);
         const canvas = controlsRef.current?.domElement;
         if (canvas) {
           canvas.dataset.shiftPanArmed = temporaryShiftPan ? 'true' : 'false';
           canvas.dataset.effectiveInteractionMode = temporaryShiftPan
             ? 'shift-pan'
-            : interactionModeRef.current;
+            : 'rotate';
         }
       }
     };
@@ -3331,6 +3710,9 @@ export default function PointCloudViewer({
   const toggleRobotControl = () => {
     if (robotLoadState?.status !== 'loaded' || !robotDescriptor) return;
     const enabled = !robotControlEnabledRef.current;
+    if (enabled && chassisDragModeRef.current) {
+      chassisDragInteractionRef.current?.exit?.('robot-keyboard-control');
+    }
     if (enabled && endEffectorControlRef.current) {
       endEffectorInteractionRef.current?.exit?.();
     }
@@ -3343,7 +3725,7 @@ export default function PointCloudViewer({
       canvas.dataset.robotControlEnabled = enabled ? 'true' : 'false';
       canvas.dataset.keyboardControlOwner = enabled ? 'robot' : 'camera';
       canvas.dataset.shiftPanArmed = 'false';
-      canvas.dataset.effectiveInteractionMode = interactionModeRef.current;
+      canvas.dataset.effectiveInteractionMode = 'rotate';
       canvas.focus({ preventScroll: true });
     }
     onRobotControlChangeRef.current?.(enabled);
@@ -3363,12 +3745,11 @@ export default function PointCloudViewer({
   const mapLockSideLabel = mapLockedSides
     .map((side) => side === 'left' ? 'L' : 'R')
     .join('+');
-  const temporaryShiftPan =
-    !robotControlActive && interactionMode === 'rotate' && shiftPanArmed;
+  const temporaryShiftPan = !robotControlActive && shiftPanArmed;
 
   return (
     <div
-      className={`point-cloud-view ${temporaryShiftPan ? 'is-shift-pan-armed' : ''} ${robotControlActive ? 'is-robot-driving' : ''} ${endEffectorControlActive ? 'is-end-effector-control' : ''}`}
+      className={`point-cloud-view ${temporaryShiftPan ? 'is-shift-pan-armed' : ''} ${robotControlActive ? 'is-robot-driving' : ''} ${endEffectorControlActive ? 'is-end-effector-control' : ''} ${chassisDragMode ? 'is-chassis-drag-mode' : ''} ${chassisDragging ? 'is-chassis-dragging' : ''}`}
       ref={mountRef}
     >
       {!mapData?.geometry && (
@@ -3386,21 +3767,16 @@ export default function PointCloudViewer({
             <div className="viewer-tool-switch" role="toolbar" aria-label="三维视图工具">
               <button
                 type="button"
-                className={interactionMode === 'rotate' && !temporaryShiftPan ? 'is-active' : ''}
-                aria-pressed={interactionMode === 'rotate' && !temporaryShiftPan}
-                onClick={() => setInteractionMode('rotate')}
-                title="左键拖拽旋转"
+                className={`viewer-interaction-mode is-active ${temporaryShiftPan ? 'is-temporary' : ''}`}
+                aria-label={temporaryShiftPan ? 'Shift 临时平移' : '旋转'}
+                aria-pressed="true"
+                aria-keyshortcuts="Shift"
+                data-mode={temporaryShiftPan ? 'shift-pan' : 'rotate'}
+                onClick={() => controlsRef.current?.domElement?.focus({ preventScroll: true })}
+                title={temporaryShiftPan ? 'Shift 已按下：左键拖拽平移' : '左键拖拽旋转；按住 Shift 临时平移'}
               >
-                <Rotate3D size={13} /> 旋转
-              </button>
-              <button
-                type="button"
-                className={`${interactionMode === 'pan' || temporaryShiftPan ? 'is-active' : ''} ${temporaryShiftPan ? 'is-temporary' : ''}`}
-                aria-pressed={interactionMode === 'pan' || temporaryShiftPan}
-                onClick={() => setInteractionMode('pan')}
-                title={temporaryShiftPan ? 'Shift 临时平移已启用' : '左键拖拽平移'}
-              >
-                <Move3D size={13} /> {temporaryShiftPan ? 'Shift 平移' : '平移'}
+                {temporaryShiftPan ? <Move3D size={13} /> : <Rotate3D size={13} />}
+                {temporaryShiftPan ? 'Shift 平移' : '旋转'}
               </button>
               <button
                 type="button"
@@ -3543,7 +3919,7 @@ export default function PointCloudViewer({
           />
           {robotDescriptor && (
             <div
-              className={`robot-model-indicator is-${robotLoadState?.status || 'pending'} ${robotControlActive ? 'is-driving' : ''}`}
+              className={`robot-model-indicator is-${robotLoadState?.status || 'pending'} ${robotControlActive ? 'is-driving' : ''} ${chassisDragMode ? 'is-planar-drag' : ''}`}
               role="status"
               aria-label="机器人模型状态"
             >
@@ -3556,6 +3932,10 @@ export default function PointCloudViewer({
                         ? `${endEffectorControl.side.toUpperCase()} ARM · MAP POSE HOLD`
                         : `${endEffectorControl.side.toUpperCase()} ARM · BODY POSE HOLD`
                       : `${endEffectorControl.side.toUpperCase()} ARM · 6D CONTROL`
+                    : chassisDragMode
+                      ? chassisDragging
+                        ? 'CHASSIS · MOVING ON XY'
+                        : 'CHASSIS · XY PLANE DRAG'
                     : robotControlActive
                       ? mapLockedSides.length
                         ? `MECANUM DRIVE · MAP HOLD ${mapLockSideLabel}`
@@ -3568,7 +3948,9 @@ export default function PointCloudViewer({
               </div>
               <em>
                 {robotLoadState?.status === 'loaded'
-                  ? `${robotLoadState.zividCount || 0}× Zivid · X ${displayedRobotPose.position.x.toFixed(2)} · Y ${displayedRobotPose.position.y.toFixed(2)} · YAW ${displayedRobotPose.rpy.yaw.toFixed(1)}°`
+                  ? chassisDragMode
+                    ? `按住底盘拖拽 · Z ${displayedRobotPose.position.z.toFixed(2)} 固定`
+                    : `${robotLoadState.zividCount || 0}× Zivid · X ${displayedRobotPose.position.x.toFixed(2)} · Y ${displayedRobotPose.position.y.toFixed(2)} · YAW ${displayedRobotPose.rpy.yaw.toFixed(1)}°`
                   : robotLoadState?.status === 'error'
                     ? '加载失败'
                     : robotLoadState?.phase || '正在装配…'}
@@ -3577,8 +3959,14 @@ export default function PointCloudViewer({
           )}
           <div className="viewer-help">
             <span>
-              {interactionMode === 'pan' ? <Move3D size={12} /> : <Rotate3D size={12} />}
-              左键{interactionMode === 'pan' ? '平移' : '旋转'} · 点 / 路径可选
+              {chassisDragMode || temporaryShiftPan
+                ? <Move3D size={12} />
+                : <Rotate3D size={12} />}
+              {chassisDragMode
+                ? '按住底盘拖拽 · 保持 Z / RPY'
+                : temporaryShiftPan
+                  ? 'Shift + 左键平移 · 松开恢复旋转'
+                  : '左键旋转 · 点 / 路径可选'}
             </span>
             <span>
               <Keyboard size={12} />
@@ -3594,14 +3982,16 @@ export default function PointCloudViewer({
                     ? '地图绝对姿态锁定 · 底盘移动时全链 IK 补偿'
                     : '本体关节姿态锁定 · 双击另一末端继续调整'
                   : '空间球拖拽 XYZ / RPY · 面板支持精确输入'
+                : chassisDragMode
+                  ? '黄色平面标记已启用 · 双击底盘 / Esc 退出'
                 : robotControlActive
                 ? mapLockedSides.length
                   ? `全局锁定 ${mapLockSideLabel} · 移动底盘观察全链关节补偿`
                   : 'Shift 底盘加速 · Q/E 升降 · ↑↓ 相机 Pitch'
                 : 'Shift 加速 / 临时平移 · 右键平移'}
             </span>
-            {robotLoadState?.status === 'loaded' && !endEffectorControlActive && (
-              <span><Bot size={12} /> 双击左 / 右机械臂末端进入 6D 控制</span>
+            {robotLoadState?.status === 'loaded' && !endEffectorControlActive && !chassisDragMode && (
+              <span><Bot size={12} /> 双击底盘平移 · 双击左 / 右末端进入 6D 控制</span>
             )}
             <span>
               <Gauge size={12} />

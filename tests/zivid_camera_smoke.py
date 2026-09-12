@@ -36,6 +36,9 @@ def run():
         )
 
         main_canvas = page.locator(".three-canvas")
+        teaching_tab = page.get_by_role("tab", name="虚拟示教与相机")
+        teaching_tab.click()
+        assert teaching_tab.get_attribute("aria-selected") == "true"
         panel = page.get_by_label("Zivid 2 M70 相机视图")
         panel.scroll_into_view_if_needed()
         panel.wait_for()

@@ -197,8 +197,9 @@ def run():
         assert any("zivid_2_m70_official.glb" in url for url in robot_requests)
         assert not any("/ZividTwo.stl" in url for url in robot_requests)
 
+        page.get_by_role("tab", name="虚拟示教与相机").click()
         with page.expect_download() as download_info:
-            page.get_by_role("button", name="导出 JSON").click()
+            page.get_by_role("button", name="导出示教工程 JSON").click()
         exported = json.loads(Path(download_info.value.path()).read_text())
         assert exported["robot"]["relativePath"].endswith("botx_abx_zivid_m70.urdf")
         exported_pose = exported["robot"]["origin"]

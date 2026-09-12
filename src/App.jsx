@@ -7,7 +7,6 @@ import {
   ChevronDown,
   ChevronUp,
   CircleDot,
-  Download,
   FileJson,
   FolderOpen,
   GitBranch,
@@ -253,6 +252,8 @@ export default function App() {
   const [robotPose, setRobotPose] = useState(() => normalizeRobotPose(null));
   const [robotJointValues, setRobotJointValues] = useState({});
   const [robotControlEnabled, setRobotControlEnabled] = useState(false);
+  const [teachingTasks, setTeachingTasks] = useState([]);
+  const [activeTeachingTaskId, setActiveTeachingTaskId] = useState(null);
   const [zividCameraPoses, setZividCameraPoses] = useState({});
   const [sessionState, setSessionState] = useState({ status: 'checking', restored: false });
   const [loadState, setLoadState] = useState({
@@ -279,6 +280,8 @@ export default function App() {
     selectedRobot,
     robotPose,
     robotJointValues,
+    teachingTasks,
+    activeTeachingTaskId,
   };
 
   useEffect(() => {
@@ -307,7 +310,7 @@ export default function App() {
       setSessionState({ status: 'error', restored: false });
       if (!sessionFailureNotifiedRef.current) {
         sessionFailureNotifiedRef.current = true;
-        notify('自动保护暂不可用，请及时导出 JSON 备份', 'warning');
+        notify('自动保护暂不可用，请到虚拟示教页导出工程备份', 'warning');
       }
     },
     [notify],
@@ -335,6 +338,7 @@ export default function App() {
           robot: current.selectedRobot,
           robotPose: current.robotPose,
           robotJointValues: current.robotJointValues,
+          teachingTasks: current.teachingTasks,
         })
       : null;
     const snapshot = {
@@ -345,6 +349,7 @@ export default function App() {
         connectionSourceId: current.connectionSourceId,
         selectedWaypointId: current.selectedWaypointId,
         selectedEdgeId: current.selectedEdgeId,
+        activeTeachingTaskId: current.activeTeachingTaskId,
         validation: current.validation,
         pointColorMode: current.pointColorMode,
         showWaypoints3D: current.showWaypoints3D,
@@ -437,6 +442,8 @@ export default function App() {
         setRobotPose(normalizeRobotPose(null));
         setRobotJointValues({});
         setRobotControlEnabled(false);
+        setTeachingTasks([]);
+        setActiveTeachingTaskId(null);
       }
 
       if (persistSnapshot && sessionReadyRef.current && sessionIdRef.current) {
@@ -664,6 +671,9 @@ export default function App() {
           if (project) {
             const pointIds = new Set(project.waypoints.map((point) => point.id));
             const edgeIds = new Set(project.edges.map((edge) => edge.id));
+            const teachingTaskIds = new Set(
+              project.teachingTasks.map((task) => task.id),
+            );
             const checked = project.edges.some((edge) => edge.status !== 'unchecked');
             const connected = project.edges.length > 0
               && project.edges.every((edge) => edge.status === 'connected');
@@ -671,6 +681,12 @@ export default function App() {
 
             setWaypoints(project.waypoints);
             setEdges(project.edges);
+            setTeachingTasks(project.teachingTasks);
+            setActiveTeachingTaskId(
+              teachingTaskIds.has(snapshot?.ui?.activeTeachingTaskId)
+                ? snapshot.ui.activeTeachingTaskId
+                : project.teachingTasks[0]?.id || null,
+            );
             if (!stored.map && project.slice) {
               setHeightRange(
                 project.map?.bounds
@@ -715,6 +731,7 @@ export default function App() {
             restored = restored
               || project.waypoints.length > 0
               || project.edges.length > 0
+              || project.teachingTasks.length > 0
               || Boolean(restoredRobot);
           }
         } catch (error) {
@@ -732,6 +749,8 @@ export default function App() {
           setRobotPose(normalizeRobotPose(null));
           setRobotJointValues({});
           setRobotControlEnabled(false);
+          setTeachingTasks([]);
+          setActiveTeachingTaskId(null);
           setRobotLoadState({ status: 'idle' });
           setRestoredView2d(null);
           view2dRef.current = null;
@@ -781,6 +800,8 @@ export default function App() {
     selectedRobot,
     robotPose,
     robotJointValues,
+    teachingTasks,
+    activeTeachingTaskId,
     sessionState.status,
     showWaypoints3D,
     validation,
@@ -814,7 +835,11 @@ export default function App() {
 
   const loadExample = useCallback(
     async (options = {}) => {
-      if (!options.preserveGraph && waypoints.length && !window.confirm('加载新地图会清空当前导航点和路径，继续吗？')) return;
+      if (
+        !options.preserveGraph
+        && (waypoints.length || teachingTasks.length)
+        && !window.confirm('加载新地图会清空当前导航图与虚拟示教任务，继续吗？')
+      ) return;
       setLoadState({ loading: true, progress: 0, phase: '读取示例地图' });
       try {
         const buffer = await fetchBufferWithProgress('/xian_map.ply', (progress) =>
@@ -826,14 +851,17 @@ export default function App() {
         notify(error.message || '示例地图加载失败', 'error');
       }
     },
-    [notify, processMapBuffer, waypoints.length],
+    [notify, processMapBuffer, teachingTasks.length, waypoints.length],
   );
 
   const handleMapFile = async (event) => {
     const file = event.target.files?.[0];
     event.target.value = '';
     if (!file) return;
-    if (waypoints.length && !window.confirm('加载新地图会清空当前导航点和路径，继续吗？')) return;
+    if (
+      (waypoints.length || teachingTasks.length)
+      && !window.confirm('加载新地图会清空当前导航图与虚拟示教任务，继续吗？')
+    ) return;
     if (!file.name.toLowerCase().endsWith('.ply')) {
       notify('请选择 .ply 点云地图文件', 'error');
       return;
@@ -859,6 +887,8 @@ export default function App() {
       const project = normalizeProject(payload);
       setWaypoints(project.waypoints);
       setEdges(project.edges);
+      setTeachingTasks(project.teachingTasks);
+      setActiveTeachingTaskId(project.teachingTasks[0]?.id || null);
       setSelectedWaypointId(null);
       setSelectedEdgeId(null);
       setConnectionSourceId(null);
@@ -908,7 +938,9 @@ export default function App() {
           metadataOnly: true,
         });
       }
-      notify(`路径配置已加载 · ${project.waypoints.length} 点 / ${project.edges.length} 边`);
+      notify(
+        `工程配置已加载 · ${project.waypoints.length} 导航点 / ${project.teachingTasks.length} 示教任务`,
+      );
 
       const referencedMap = project.map?.fileName;
       if ((!mapData || mapData.metadataOnly) && referencedMap === 'xian_map.ply') {
@@ -1148,6 +1180,180 @@ export default function App() {
     );
   }, [edges, notify, waypoints]);
 
+  const teachingContextMatches = useCallback(
+    (task) => {
+      if (!task || !selectedRobot || !mapData) return false;
+      const taskRobotKey = task.robot?.id || task.robot?.relativePath;
+      const currentRobotKey = selectedRobot.id || selectedRobot.relativePath;
+      const sameRobot = Boolean(taskRobotKey && currentRobotKey && taskRobotKey === currentRobotKey);
+      const sameMap = task.map?.sourceHash && mapData.sourceHash
+        ? task.map.sourceHash === mapData.sourceHash
+        : task.map?.fileName === mapData.name;
+      return sameRobot && sameMap;
+    },
+    [mapData, selectedRobot],
+  );
+
+  const createTeachingTask = useCallback(() => {
+    if (!mapData?.bounds) {
+      notify('请先加载地图，再创建虚拟示教任务', 'warning');
+      return;
+    }
+    if (!selectedRobot || robotLoadState.status !== 'loaded') {
+      notify('请先完成机器人模型加载，再创建虚拟示教任务', 'warning');
+      return;
+    }
+    const timestamp = new Date().toISOString();
+    const task = {
+      id: createId('teach-task'),
+      name: `示教任务 ${String(teachingTasks.length + 1).padStart(2, '0')}`,
+      createdAt: timestamp,
+      updatedAt: timestamp,
+      coordinateFrame: 'map',
+      robot: {
+        id: selectedRobot.id || selectedRobot.relativePath,
+        name: selectedRobot.name,
+        relativePath: selectedRobot.relativePath,
+      },
+      map: {
+        id: mapData.mapId || '',
+        fileName: mapData.name || '',
+        sourceHash: mapData.sourceHash || null,
+      },
+      points: [],
+    };
+    setTeachingTasks((current) => [...current, task]);
+    setActiveTeachingTaskId(task.id);
+    notify(`${task.name} 已创建 · 已绑定当前地图与机器人`, 'success');
+  }, [mapData, notify, robotLoadState.status, selectedRobot, teachingTasks.length]);
+
+  const selectTeachingTask = useCallback((id) => {
+    setActiveTeachingTaskId(id);
+  }, []);
+
+  const renameTeachingTask = useCallback((id, name) => {
+    const nextName = String(name || '').trim();
+    if (!nextName) return;
+    const updatedAt = new Date().toISOString();
+    setTeachingTasks((current) => current.map((task) => (
+      task.id === id ? { ...task, name: nextName, updatedAt } : task
+    )));
+  }, []);
+
+  const deleteTeachingTask = useCallback(
+    (id) => {
+      const task = teachingTasks.find((item) => item.id === id);
+      const remaining = teachingTasks.filter((item) => item.id !== id);
+      setTeachingTasks(remaining);
+      if (activeTeachingTaskId === id) {
+        setActiveTeachingTaskId(remaining[0]?.id || null);
+      }
+      notify(`${task?.name || '示教任务'} 已删除`, 'info');
+    },
+    [activeTeachingTaskId, notify, teachingTasks],
+  );
+
+  const captureTeachingPoint = useCallback(() => {
+    const task = teachingTasks.find((item) => item.id === activeTeachingTaskId);
+    if (!task) {
+      notify('请先新建或选择一个示教任务', 'warning');
+      return;
+    }
+    if (robotLoadState.status !== 'loaded' || !teachingContextMatches(task)) {
+      notify('当前地图或机器人与该示教任务不一致，无法记录', 'warning');
+      return;
+    }
+    const pose = normalizeRobotPose(robotPose);
+    const joints = normalizeRobotJointValues(robotJointValues);
+    const timestamp = new Date().toISOString();
+    const point = {
+      id: createId('teach-point'),
+      name: `T${String(task.points.length + 1).padStart(2, '0')}`,
+      sequence: task.points.length + 1,
+      capturedAt: timestamp,
+      mapPose: {
+        frameId: 'map',
+        position: { ...pose.position },
+        rpy: { ...pose.rpy },
+      },
+      fullBodyJoints: {
+        angularUnit: 'degree',
+        linearUnit: 'meter',
+        source: 'urdf-movable-joints',
+        count: Object.keys(joints).length,
+        values: { ...joints },
+      },
+    };
+    setTeachingTasks((current) => current.map((item) => (
+      item.id === task.id
+        ? { ...item, points: [...item.points, point], updatedAt: timestamp }
+        : item
+    )));
+    notify(
+      `${point.name} 已示教 · MAP 6DOF + ${point.fullBodyJoints.count} 个全身关节`,
+      'success',
+    );
+  }, [
+    activeTeachingTaskId,
+    notify,
+    robotJointValues,
+    robotLoadState.status,
+    robotPose,
+    teachingContextMatches,
+    teachingTasks,
+  ]);
+
+  const renameTeachingPoint = useCallback((taskId, pointId, name) => {
+    const nextName = String(name || '').trim();
+    if (!nextName) return;
+    const updatedAt = new Date().toISOString();
+    setTeachingTasks((current) => current.map((task) => (
+      task.id === taskId
+        ? {
+            ...task,
+            updatedAt,
+            points: task.points.map((point) => (
+              point.id === pointId ? { ...point, name: nextName } : point
+            )),
+          }
+        : task
+    )));
+  }, []);
+
+  const deleteTeachingPoint = useCallback((taskId, pointId) => {
+    const updatedAt = new Date().toISOString();
+    setTeachingTasks((current) => current.map((task) => {
+      if (task.id !== taskId) return task;
+      return {
+        ...task,
+        updatedAt,
+        points: task.points
+          .filter((point) => point.id !== pointId)
+          .map((point, index) => ({ ...point, sequence: index + 1 })),
+      };
+    }));
+    notify('示教点位已删除', 'info');
+  }, [notify]);
+
+  const applyTeachingPoint = useCallback(
+    (taskId, pointId) => {
+      const task = teachingTasks.find((item) => item.id === taskId);
+      const point = task?.points.find((item) => item.id === pointId);
+      if (!task || !point) return;
+      if (robotLoadState.status !== 'loaded' || !teachingContextMatches(task)) {
+        notify('当前地图或机器人与该示教点不一致，无法应用姿态', 'warning');
+        return;
+      }
+      setRobotControlEnabled(false);
+      setRobotPose(normalizeRobotPose(point.mapPose));
+      setRobotJointValues(
+        normalizeRobotJointValues(point.fullBodyJoints?.values),
+      );
+      notify(`${point.name} 已应用到机器人 · 地图定位与全身关节已恢复`, 'success');
+    },
+    [notify, robotLoadState.status, teachingContextMatches, teachingTasks],
+  );
+
   const exportProject = () => {
     if (!mapData) {
       notify('请先加载地图或路径配置', 'error');
@@ -1173,10 +1379,16 @@ export default function App() {
       robot: selectedRobot,
       robotPose,
       robotJointValues,
+      teachingTasks,
     });
     const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
-    downloadJson(payload, `route-graph-${stamp}.json`);
-    notify('JSON 路径工程已导出');
+    downloadJson(payload, `virtual-teaching-${stamp}.json`);
+    notify(
+      teachingTasks.length
+        ? '虚拟示教工程 JSON 已导出'
+        : '工程 JSON 已导出 · 当前未包含示教任务',
+      teachingTasks.length ? 'success' : 'info',
+    );
   };
 
   const handleProjectionStats = useCallback((stats) => setProjectionStats(stats), []);
@@ -1359,9 +1571,6 @@ export default function App() {
           >
             <RotateCcw size={15} /> 重置视角
           </button>
-          <button type="button" className="action-button primary" onClick={exportProject}>
-            <Download size={15} /> 导出 JSON
-          </button>
           <div className="service-pill" title="本地服务默认端口">
             <Server size={13} />
             <span>LOCAL</span>
@@ -1533,7 +1742,10 @@ export default function App() {
           robot={selectedRobot}
           robotLoadState={robotLoadState}
           robotPose={robotPose}
+          robotJointValues={robotJointValues}
           robotControlEnabled={robotControlEnabled}
+          teachingTasks={teachingTasks}
+          activeTeachingTaskId={activeTeachingTaskId}
           zividCameraPoses={zividCameraPoses}
           onRunConnectivity={runConnectivity}
           onSelectWaypoint={focusWaypointFromInspector}
@@ -1544,6 +1756,15 @@ export default function App() {
           onUpdateEdge={updateEdge}
           onDeleteWaypoint={deleteWaypoint}
           onDeleteEdge={deleteEdge}
+          onCreateTeachingTask={createTeachingTask}
+          onSelectTeachingTask={selectTeachingTask}
+          onRenameTeachingTask={renameTeachingTask}
+          onDeleteTeachingTask={deleteTeachingTask}
+          onCaptureTeachingPoint={captureTeachingPoint}
+          onRenameTeachingPoint={renameTeachingPoint}
+          onDeleteTeachingPoint={deleteTeachingPoint}
+          onApplyTeachingPoint={applyTeachingPoint}
+          onExportTeachingProject={exportProject}
         />
       </main>
 
@@ -1556,7 +1777,7 @@ export default function App() {
           data-session-restored={sessionState.restored ? 'true' : 'false'}
           title={
             sessionState.status === 'error'
-              ? '自动保护不可用，请手动导出 JSON'
+              ? '自动保护不可用，请到虚拟示教页导出工程备份'
               : '刷新页面可恢复当前工作现场，服务重启后重置'
           }
         >

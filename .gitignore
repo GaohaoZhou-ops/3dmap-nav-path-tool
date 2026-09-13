@@ -35,3 +35,7 @@ pnpm-debug.log*
 
 # robot
 robots/
+
+# resources
+*.ply
+!tests/fixtures/hybrid-map.ply

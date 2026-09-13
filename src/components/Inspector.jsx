@@ -616,6 +616,7 @@ export default function Inspector({
               <dl className="config-list">
                 <div><dt>地图文件</dt><dd title={mapData?.name}>{mapData?.name || '尚未加载'}</dd></div>
                 <div><dt>点云数量</dt><dd>{mapData?.pointCount ? mapData.pointCount.toLocaleString('zh-CN') : '—'}</dd></div>
+                <div><dt>网格三角面</dt><dd>{mapData?.faceCount ? mapData.faceCount.toLocaleString('zh-CN') : '—'}</dd></div>
                 <div className={robot ? `robot-config-row is-${robotLoadState?.status || 'pending'}` : ''}>
                   <dt><Bot size={11} />机器人模型</dt>
                   <dd title={robot?.relativePath}>

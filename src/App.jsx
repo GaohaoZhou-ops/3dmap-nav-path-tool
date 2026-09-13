@@ -29,6 +29,7 @@ import Inspector from './components/Inspector.jsx';
 import Map2DView from './components/Map2DView.jsx';
 import PointCloudViewer from './components/PointCloudViewer.jsx';
 import RobotPicker from './components/RobotPicker.jsx';
+import SpaceMouseControl from './components/SpaceMouseControl.jsx';
 import { inspectConnectivity } from './lib/graph.js';
 import {
   buildExport,
@@ -45,6 +46,8 @@ import {
   normalizeRobotPose,
 } from './lib/robotLoader.js';
 import { sha256ArrayBuffer } from './lib/hash.js';
+import { prepareMapGeometryTopology } from './lib/mapGeometry.js';
+import { createSpaceMouseInputState } from './lib/spaceMouse.js';
 import {
   fetchServiceSession,
   loadWorkspaceViews,
@@ -111,6 +114,13 @@ function exactArrayBuffer(array) {
 
 function packColorAttribute(attribute) {
   if (!attribute?.array?.length || attribute.itemSize < 3) return null;
+  if (
+    attribute.array instanceof Uint8Array
+    && attribute.itemSize === 3
+    && attribute.normalized
+  ) {
+    return attribute.array;
+  }
   const source = attribute.array;
   const packed = new Uint8Array(attribute.count * 3);
   let scale = source.BYTES_PER_ELEMENT === 1 ? 1 : 255;
@@ -151,6 +161,10 @@ function createGeometryCache(
     ? sourcePositions
     : Float32Array.from(sourcePositions);
   const colors = packColorAttribute(geometry.getAttribute('color'));
+  const sourceIndex = geometry.getIndex()?.array || null;
+  const meshIndices = sourceIndex instanceof Uint16Array || sourceIndex instanceof Uint32Array
+    ? sourceIndex
+    : sourceIndex?.length ? Uint32Array.from(sourceIndex) : null;
   const sphere = geometry.boundingSphere;
   return {
     geometryCacheVersion: GEOMETRY_CACHE_VERSION,
@@ -158,6 +172,9 @@ function createGeometryCache(
     pointCount: positionAttribute.count,
     positionBuffer: exactArrayBuffer(positions),
     colorBuffer: colors ? exactArrayBuffer(colors) : null,
+    indexBuffer: meshIndices ? exactArrayBuffer(meshIndices) : null,
+    indexComponentType: meshIndices instanceof Uint16Array ? 'uint16' : 'uint32',
+    faceCount: meshIndices ? Math.floor(meshIndices.length / 3) : 0,
     bounds,
     sphere: sphere ? serializeSphere(sphere) : null,
     sourceHash,
@@ -184,6 +201,14 @@ function restoreGeometryFromCache(record) {
     const colors = new Uint8Array(record.colorBuffer);
     if (colors.length === positions.length) {
       geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3, true));
+    }
+  }
+  if (record.indexBuffer instanceof ArrayBuffer) {
+    const indices = record.indexComponentType === 'uint16'
+      ? new Uint16Array(record.indexBuffer)
+      : new Uint32Array(record.indexBuffer);
+    if (indices.length >= 3) {
+      geometry.setIndex(new THREE.BufferAttribute(indices, 1));
     }
   }
 
@@ -246,6 +271,7 @@ export default function App() {
   const viewResetRevisionRef = useRef(0);
   const robotNotificationRef = useRef('');
   const cameraTeachingRevisionRef = useRef(0);
+  const spaceMouseInputRef = useRef(createSpaceMouseInputState());
   const [mapData, setMapData] = useState(null);
   const [heightRange, setHeightRange] = useState([0, 1]);
   const [waypoints, setWaypoints] = useState([]);
@@ -431,6 +457,11 @@ export default function App() {
         throw new Error('PLY 文件中没有可用的顶点坐标');
       }
 
+      const packedColors = packColorAttribute(geometry.getAttribute('color'));
+      if (packedColors) {
+        geometry.setAttribute('color', new THREE.BufferAttribute(packedColors, 3, true));
+      }
+      const meshInfo = prepareMapGeometryTopology(geometry);
       geometry.userData.geometrySource = geometrySource;
       const colors = geometry.getAttribute('color')?.array || null;
       const bounds = serializeBounds(geometry.boundingBox);
@@ -439,6 +470,8 @@ export default function App() {
         mapId,
         name,
         pointCount: positions.length / 3,
+        faceCount: meshInfo.faceCount,
+        meshInfo,
         bounds,
         positions,
         colors,
@@ -477,8 +510,10 @@ export default function App() {
         setLoadState({
           loading: true,
           progress: 1,
-          phase: '缓存已解析点云',
-          detail: '正在保存坐标缓存，后续刷新无需再次解析 PLY',
+          phase: '缓存已解析地图',
+          detail: meshInfo.hasMesh
+            ? '正在保存点云、颜色与面索引，后续刷新无需再次解析 PLY'
+            : '正在保存坐标缓存，后续刷新无需再次解析 PLY',
         });
         try {
           await saveWorkspaceMap(
@@ -500,7 +535,11 @@ export default function App() {
 
       if (!keepLoading) setLoadState({ loading: false, progress: 1, phase: '' });
       if (announce) {
-        notify(`${name} 已加载 · ${(positions.length / 3).toLocaleString('zh-CN')} 点`);
+        notify(
+          meshInfo.hasMesh
+            ? `${name} 已加载 · ${(positions.length / 3).toLocaleString('zh-CN')} 点 / ${meshInfo.faceCount.toLocaleString('zh-CN')} 面`
+            : `${name} 已加载 · ${(positions.length / 3).toLocaleString('zh-CN')} 点`,
+        );
       }
       return nextMap;
     },
@@ -512,8 +551,8 @@ export default function App() {
       setLoadState({
         loading: true,
         progress: 1,
-        phase: '解析点云结构',
-        detail: '首次载入正在构建三维几何与空间索引',
+        phase: '解析地图结构',
+        detail: '首次载入正在构建点云、网格与空间索引',
       });
       await waitForPaint();
       let geometry;
@@ -545,8 +584,10 @@ export default function App() {
       setLoadState({
         loading: true,
         progress: 1,
-        phase: '恢复点云缓存',
-        detail: '正在直接装载已解析坐标，跳过 PLY 解析',
+        phase: '恢复地图缓存',
+        detail: record.indexBuffer
+          ? '正在直接装载已解析坐标与面索引，跳过 PLY 解析'
+          : '正在直接装载已解析坐标，跳过 PLY 解析',
       });
       await waitForPaint();
       let geometry;
@@ -677,6 +718,7 @@ export default function App() {
               mapId: stored.config?.mapId || createId('map-meta'),
               name: project.map.fileName || '未绑定地图',
               pointCount: Number(project.map.pointCount) || 0,
+              faceCount: Number(project.map.faceCount) || 0,
               bounds,
               positions: null,
               colors: null,
@@ -966,6 +1008,7 @@ export default function App() {
           mapId: createId('map-meta'),
           name: project.map.fileName || '未绑定地图',
           pointCount: Number(project.map.pointCount) || 0,
+          faceCount: Number(project.map.faceCount) || 0,
           bounds: project.map.bounds,
           positions: null,
           colors: null,
@@ -1737,7 +1780,12 @@ export default function App() {
             <small>ACTIVE MAP</small>
             <strong>{mapData?.name || 'NO MAP LOADED'}</strong>
           </div>
-          {mapData?.pointCount > 0 && <em>{(mapData.pointCount / 1_000_000).toFixed(2)}M PTS</em>}
+          {mapData?.pointCount > 0 && (
+            <em>
+              {(mapData.pointCount / 1_000_000).toFixed(2)}M PTS
+              {mapData.faceCount > 0 ? ` · ${(mapData.faceCount / 1_000_000).toFixed(2)}M TRI` : ''}
+            </em>
+          )}
         </div>
 
         <div className="topbar-actions">
@@ -1755,6 +1803,7 @@ export default function App() {
             loadState={robotLoadState}
             onSelect={handleSelectRobot}
           />
+          <SpaceMouseControl inputRef={spaceMouseInputRef} onNotify={notify} />
           <button
             type="button"
             className="action-button view-reset-action"
@@ -1785,7 +1834,10 @@ export default function App() {
             <div className="panel-heading">
               <div className="panel-heading__title">
                 <span className="panel-index">01</span>
-                <div><small>SPATIAL SOURCE</small><strong>三维点云</strong></div>
+                <div>
+                  <small>SPATIAL SOURCE</small>
+                  <strong>{mapData?.faceCount > 0 ? '三维点云 / 网格' : '三维点云'}</strong>
+                </div>
               </div>
               <div className="panel-stats">
                 <span><i className="axis x">X</i>{mapData ? `${mapData.bounds.min.x.toFixed(1)} / ${mapData.bounds.max.x.toFixed(1)}` : '—'}</span>
@@ -1832,6 +1884,7 @@ export default function App() {
                 robotPose={robotPose}
                 robotJointValues={robotJointValues}
                 robotControlEnabled={robotControlEnabled}
+                spaceMouseInputRef={spaceMouseInputRef}
                 cameraTeachingCommand={cameraTeachingCommand}
                 onRobotLoadState={handleRobotLoadState}
                 onRobotPoseChange={handleRobotPoseChange}

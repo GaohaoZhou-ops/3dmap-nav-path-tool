@@ -19,6 +19,7 @@ import {
   RotateCcw,
 } from 'lucide-react';
 import EndEffectorControlPanel from './EndEffectorControlPanel.jsx';
+import { prepareMapGeometryTopology } from '../lib/mapGeometry.js';
 import {
   applyRobotJointValues,
   disposeRobotModel,
@@ -60,6 +61,18 @@ const KEYBOARD_TAP_DURATION = 0.065;
 const KEYBOARD_WORLD_SPEED_RATIO = 0.75;
 const KEYBOARD_MIN_PROJECTED_AXIS = 1e-4;
 const KEYBOARD_ROTATION_SPEED = THREE.MathUtils.degToRad(72);
+const SPACEMOUSE_INPUT_STALE_MS = 180;
+const SPACEMOUSE_WHEEL_GUARD_MS = 320;
+const SPACEMOUSE_FILTER_ATTACK_SECONDS = 0.038;
+const SPACEMOUSE_FILTER_RELEASE_SECONDS = 0.068;
+const SPACEMOUSE_FILTER_EPSILON = 0.0025;
+const SPACEMOUSE_FORWARD_SPEED_RATIO = 0.9;
+const SPACEMOUSE_PAN_PIXELS_PER_SECOND = 640;
+const SPACEMOUSE_ROTATION_SPEED = THREE.MathUtils.degToRad(125);
+const SPACEMOUSE_DOMINANT_AXIS_HYSTERESIS = 0.82;
+const SPACEMOUSE_VIEW_AXES = Object.freeze(['x', 'y', 'z', 'roll', 'pitch', 'yaw']);
+const SPACEMOUSE_TRANSLATION_AXES = Object.freeze(['x', 'y', 'z']);
+const SPACEMOUSE_ROTATION_AXES = Object.freeze(['roll', 'pitch', 'yaw']);
 const ROBOT_LINEAR_SPEED = 0.9;
 const ROBOT_ROTATION_SPEED = THREE.MathUtils.degToRad(72);
 const ROBOT_POSE_REPORT_INTERVAL = 70;
@@ -215,35 +228,6 @@ const adaptiveResolutionIndex = (pointCount) => {
     }
   }
   return 0;
-};
-
-const greatestCommonDivisor = (left, right) => {
-  let a = left;
-  let b = right;
-  while (b) {
-    const remainder = a % b;
-    a = b;
-    b = remainder;
-  }
-  return a;
-};
-
-// A modular permutation keeps every prefix spread across the full source cloud.
-// One shared index buffer lets resolution changes update only the GPU draw range.
-const createUniformPointOrder = (pointCount) => {
-  const order = new Uint32Array(pointCount);
-  if (!pointCount) return order;
-
-  let step = Math.max(1, Math.floor(pointCount * 0.61803398875));
-  while (greatestCommonDivisor(step, pointCount) !== 1) step += 1;
-
-  let sourceIndex = 0;
-  for (let index = 0; index < pointCount; index += 1) {
-    order[index] = sourceIndex;
-    sourceIndex += step;
-    if (sourceIndex >= pointCount) sourceIndex -= pointCount;
-  }
-  return order;
 };
 
 const formatPointCount = (count) => {
@@ -743,18 +727,23 @@ const POINT_COLOR_MODES = [
 
 // Keep the source buffer untouched and perform all three color modes in the GPU.
 // The five height stops match the on-screen scale from low (blue) to high (coral).
-const installPointColorShader = (material, bounds, colorMode) => {
-  material.userData.pointColorMode = colorMode;
+const installMapColorShader = (material, bounds, colorMode, { surface = false } = {}) => {
+  material.userData.mapColorMode = colorMode;
+  if (surface) {
+    material.extensions = { ...(material.extensions || {}), derivatives: true };
+  }
   material.onBeforeCompile = (shader) => {
     shader.uniforms.atlasPointColorMode = {
-      value: colorModeValue(material.userData.pointColorMode),
+      value: colorModeValue(material.userData.mapColorMode),
     };
     shader.uniforms.atlasHeightMin = { value: bounds.min.z };
     shader.uniforms.atlasHeightMax = { value: bounds.max.z };
     shader.vertexShader = shader.vertexShader
       .replace(
         '#include <common>',
-        '#include <common>\nvarying float vAtlasHeight;',
+        `#include <common>
+varying float vAtlasHeight;
+${surface ? 'varying vec3 vAtlasViewPosition;' : ''}`,
       )
       .replace(
         '#include <begin_vertex>',
@@ -765,11 +754,19 @@ const installPointColorShader = (material, bounds, colorMode) => {
   vAtlasHeight = (modelMatrix * vec4(transformed, 1.0)).z;
 #endif`,
       );
+    if (surface) {
+      shader.vertexShader = shader.vertexShader.replace(
+        '#include <project_vertex>',
+        `#include <project_vertex>
+vAtlasViewPosition = -mvPosition.xyz;`,
+      );
+    }
     shader.fragmentShader = shader.fragmentShader
       .replace(
         '#include <common>',
         `#include <common>
 varying float vAtlasHeight;
+${surface ? 'varying vec3 vAtlasViewPosition;' : ''}
 uniform float atlasPointColorMode;
 uniform float atlasHeightMin;
 uniform float atlasHeightMax;
@@ -798,11 +795,19 @@ if (atlasPointColorMode > 1.5) {
   diffuseColor.rgb = vec3(1.0);
 } else if (atlasPointColorMode > 0.5) {
   diffuseColor.rgb = atlasHeightPalette(vAtlasHeight);
-}`,
+}
+${surface ? `vec3 atlasDx = dFdx(vAtlasViewPosition);
+vec3 atlasDy = dFdy(vAtlasViewPosition);
+vec3 atlasFaceNormal = normalize(cross(atlasDx, atlasDy));
+vec3 atlasLightDirection = normalize(vec3(0.32, 0.46, 0.83));
+float atlasSurfaceLight = 0.68 + 0.32 * abs(dot(atlasFaceNormal, atlasLightDirection));
+diffuseColor.rgb *= atlasSurfaceLight;` : ''}`,
       );
-    material.userData.pointColorShader = shader;
+    material.userData.mapColorShader = shader;
   };
-  material.customProgramCacheKey = () => 'atlas-point-color-v4-points';
+  material.customProgramCacheKey = () => (
+    surface ? 'atlas-map-color-v5-surface' : 'atlas-map-color-v5-points'
+  );
 };
 
 const statusColor = (status, selected = false) => {
@@ -923,6 +928,7 @@ export default function PointCloudViewer({
   robotPose,
   robotJointValues,
   robotControlEnabled = false,
+  spaceMouseInputRef,
   cameraTeachingCommand,
   onRobotLoadState,
   onRobotPoseChange,
@@ -955,6 +961,7 @@ export default function PointCloudViewer({
   const cameraRef = useRef(null);
   const displayGeometryRef = useRef(null);
   const cloudMaterialRef = useRef(null);
+  const meshMaterialRef = useRef(null);
   const colorModeRef = useRef(colorMode);
   const onSelectWaypointRef = useRef(onSelectWaypoint);
   const onSelectEdgeRef = useRef(onSelectEdge);
@@ -1009,8 +1016,13 @@ export default function PointCloudViewer({
   const [manualResolution, setManualResolution] = useState({ mapKey: null, index: null });
 
   const sourcePointCount = mapData?.geometry?.getAttribute('position')?.count || 0;
+  const meshInfo = mapData?.meshInfo || mapData?.geometry?.userData?.mapTopology || null;
+  const hasEmbeddedMesh = Boolean(meshInfo?.hasMesh && meshInfo.faceCount > 0);
+  const renderablePointCount = hasEmbeddedMesh
+    ? Number(meshInfo.unreferencedPointCount) || 0
+    : sourcePointCount;
   const resolutionMapKey = mapData?.mapId || mapData?.geometry?.uuid || null;
-  const suggestedResolutionIndex = adaptiveResolutionIndex(sourcePointCount);
+  const suggestedResolutionIndex = adaptiveResolutionIndex(renderablePointCount);
   const hasManualResolution =
     manualResolution.mapKey === resolutionMapKey
     && Number.isInteger(manualResolution.index);
@@ -1023,8 +1035,8 @@ export default function PointCloudViewer({
       ? 'auto'
       : 'native';
   const resolution = RESOLUTION_LEVELS[resolutionIndex];
-  const renderedPointCount = sourcePointCount
-    ? Math.max(1, Math.round(sourcePointCount * resolution.ratio))
+  const renderedPointCount = renderablePointCount
+    ? Math.max(1, Math.round(renderablePointCount * resolution.ratio))
     : 0;
   const isHeightColor = colorMode === 'height';
   const colorModeIndex = Math.max(
@@ -1783,6 +1795,40 @@ export default function PointCloudViewer({
     renderer.domElement.dataset.keyboardVerticalPanMode = 'world-with-precision-offset';
     renderer.domElement.dataset.keyboardFocusPolicy = 'wheel-or-pointer-claims-canvas';
     renderer.domElement.dataset.keyboardDetailSpeed = 'constant-screen-space';
+    renderer.domElement.dataset.shiftPanScope = 'camera-and-robot';
+    renderer.domElement.dataset.shiftPanPriority = 'viewport-first';
+    renderer.domElement.dataset.spacemouseConnected = spaceMouseInputRef?.current?.connected
+      ? 'true'
+      : 'false';
+    renderer.domElement.dataset.spacemouseControlEnabled =
+      spaceMouseInputRef?.current?.controlEnabled === false ? 'false' : 'true';
+    renderer.domElement.dataset.spacemouseButtonGesture =
+      'single-enable,same-button-double-pause';
+    renderer.domElement.dataset.spacemouseControlTarget = 'viewport';
+    renderer.domElement.dataset.spacemouseCoexistence = 'parallel-input';
+    renderer.domElement.dataset.spacemouseZoomPolicy = 'mouse-only';
+    renderer.domElement.dataset.spacemouseXPolicy = 'camera-heading-translation-no-zoom';
+    renderer.domElement.dataset.spacemouseYPolarity = '+y:left,-y:right';
+    renderer.domElement.dataset.spacemouseZPolarity = '+z:up,-z:down';
+    renderer.domElement.dataset.spacemouseWheelGuardMs = String(SPACEMOUSE_WHEEL_GUARD_MS);
+    renderer.domElement.dataset.spacemouseWheelSuppressedCount = '0';
+    renderer.domElement.dataset.spacemouseCalibrationIsolation = 'enabled';
+    renderer.domElement.dataset.spacemouseMotionFilter = 'adaptive-frame-low-pass';
+    renderer.domElement.dataset.spacemouseAxisPolicy = 'dominant-only';
+    renderer.domElement.dataset.spacemouseAxisHysteresis = String(
+      SPACEMOUSE_DOMINANT_AXIS_HYSTERESIS,
+    );
+    renderer.domElement.dataset.spacemouseDominantAxis = '';
+    renderer.domElement.dataset.spacemouseAppliedAxisCount = '0';
+    renderer.domElement.dataset.spacemouseFilterAttackMs = String(
+      SPACEMOUSE_FILTER_ATTACK_SECONDS * 1000,
+    );
+    renderer.domElement.dataset.spacemouseFilterReleaseMs = String(
+      SPACEMOUSE_FILTER_RELEASE_SECONDS * 1000,
+    );
+    renderer.domElement.dataset.spacemouseMotionState = 'idle';
+    renderer.domElement.dataset.spacemouseMode = spaceMouseInputRef?.current?.mode || 'xyz';
+    renderer.domElement.dataset.spacemouseInputCount = '0';
     renderer.domElement.dataset.keyboardPrecisionMovementCount = '0';
     renderer.domElement.dataset.keyboardRotationSpeed = '72deg/s';
     renderer.domElement.dataset.minCameraDistance = detailDollyFloor.toPrecision(8);
@@ -1812,12 +1858,14 @@ export default function PointCloudViewer({
       );
     };
 
+    const topology = prepareMapGeometryTopology(geometry);
+    const pointRenderOrder = geometry.userData.pointRenderOrder;
     const displayGeometry = new THREE.BufferGeometry();
     Object.entries(geometry.attributes).forEach(([name, attribute]) => {
       displayGeometry.setAttribute(name, attribute);
     });
     displayGeometry.setIndex(
-      new THREE.BufferAttribute(createUniformPointOrder(geometry.getAttribute('position').count), 1),
+      new THREE.BufferAttribute(pointRenderOrder, 1),
     );
     displayGeometry.boundingBox = geometry.boundingBox?.clone() || null;
     displayGeometry.boundingSphere = geometry.boundingSphere?.clone() || null;
@@ -1832,18 +1880,55 @@ export default function PointCloudViewer({
       transparent: true,
       opacity: 0.92,
     });
-    installPointColorShader(material, bounds, colorModeRef.current);
+    installMapColorShader(material, bounds, colorModeRef.current);
     cloudMaterialRef.current = material;
     renderer.domElement.dataset.colorMode = colorModeRef.current;
     const cloud = new THREE.Points(displayGeometry, material);
     cloud.name = 'scene-map-point-cloud';
+    cloud.renderOrder = 2;
 
     const mapLayer = new THREE.Group();
     mapLayer.name = 'scene-map-render-layer';
+    let surfaceGeometry = null;
+    let meshMaterial = null;
+    if (topology.hasMesh) {
+      surfaceGeometry = new THREE.BufferGeometry();
+      Object.entries(geometry.attributes).forEach(([name, attribute]) => {
+        surfaceGeometry.setAttribute(name, attribute);
+      });
+      surfaceGeometry.setIndex(geometry.getIndex());
+      surfaceGeometry.setDrawRange(0, topology.meshIndexCount);
+      surfaceGeometry.boundingBox = geometry.boundingBox?.clone() || null;
+      surfaceGeometry.boundingSphere = geometry.boundingSphere?.clone() || null;
+      meshMaterial = new THREE.MeshBasicMaterial({
+        vertexColors: Boolean(geometry.getAttribute('color')),
+        color: geometry.getAttribute('color') ? 0xffffff : 0x9fc7ca,
+        side: THREE.DoubleSide,
+        depthTest: true,
+        depthWrite: true,
+        fog: true,
+        toneMapped: false,
+      });
+      installMapColorShader(meshMaterial, bounds, colorModeRef.current, { surface: true });
+      meshMaterialRef.current = meshMaterial;
+      const mesh = new THREE.Mesh(surfaceGeometry, meshMaterial);
+      mesh.name = 'scene-map-embedded-mesh';
+      mesh.renderOrder = 1;
+      mapLayer.add(mesh);
+    }
     mapLayer.add(cloud);
-    cloud.visible = true;
-    renderer.domElement.dataset.mapRenderMode = 'points';
-    renderer.domElement.dataset.mapPointCloudVisible = 'true';
+    cloud.visible = topology.unreferencedPointCount > 0;
+    renderer.domElement.dataset.mapRenderMode = topology.hasMesh ? 'hybrid-mesh-points' : 'points';
+    renderer.domElement.dataset.mapPointCloudVisible = cloud.visible ? 'true' : 'false';
+    renderer.domElement.dataset.plyMeshVisible = topology.hasMesh ? 'true' : 'false';
+    renderer.domElement.dataset.plyMeshFaceCount = String(topology.faceCount);
+    renderer.domElement.dataset.plyMeshReferencedPointCount = String(
+      topology.referencedPointCount,
+    );
+    renderer.domElement.dataset.plyUnmeshedPointCount = String(
+      topology.unreferencedPointCount,
+    );
+    renderer.domElement.dataset.plyMeshRenderStrategy = topology.renderStrategy;
     renderer.domElement.dataset.mapRenderIsolation = 'scene-map-only';
     scene.add(mapLayer);
 
@@ -1891,25 +1976,14 @@ export default function PointCloudViewer({
       renderer.domElement.dataset.cameraUpZ = camera.up.z.toPrecision(10);
     };
 
-    const progressiveWheelZoom = (event) => {
-      let delta = event.deltaY;
-      if (event.deltaMode === WheelEvent.DOM_DELTA_LINE) delta *= 16;
-      if (event.deltaMode === WheelEvent.DOM_DELTA_PAGE) {
-        delta *= Math.max(renderer.domElement.clientHeight, 1);
+    const applyMouseWheelZoomFactor = (factor) => {
+      if (!Number.isFinite(factor) || factor <= 0 || Math.abs(factor - 1) < 1e-12) {
+        return false;
       }
-      if (!Number.isFinite(delta) || delta === 0) return;
-
-      event.preventDefault();
-      event.stopImmediatePropagation();
-      claimKeyboardFocus('wheel');
       const offset = camera.position.clone().sub(controls.target);
       const distance = offset.length();
-      if (!distance) return;
+      if (!distance) return false;
       const effectiveDistance = distance / Math.max(camera.zoom, 1);
-      const normalizedDelta = Math.sign(delta) * Math.min(Math.abs(delta), 160);
-      const factor = Math.exp(
-        normalizedDelta * 0.0017 * zoomBoostForDistance(effectiveDistance),
-      );
       const nextEffectiveDistance = THREE.MathUtils.clamp(
         effectiveDistance * factor,
         minimumEffectiveDistance,
@@ -1926,6 +2000,48 @@ export default function PointCloudViewer({
       controls.update();
       syncDetailView();
       reportCameraView();
+      renderer.domElement.dataset.lastZoomSource = 'wheel';
+      return true;
+    };
+
+    const progressiveWheelZoom = (event) => {
+      let delta = event.deltaY;
+      if (event.deltaMode === WheelEvent.DOM_DELTA_LINE) delta *= 16;
+      if (event.deltaMode === WheelEvent.DOM_DELTA_PAGE) {
+        delta *= Math.max(renderer.domElement.clientHeight, 1);
+      }
+      if (!Number.isFinite(delta) || delta === 0) return;
+
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      const lastSpaceMouseMotionAt = Number(
+        spaceMouseInputRef?.current?.lastMotionTimestamp || 0,
+      );
+      const spaceMouseMotionAge = performance.now() - lastSpaceMouseMotionAt;
+      if (
+        spaceMouseInputRef?.current?.connected
+        && lastSpaceMouseMotionAt > 0
+        && spaceMouseMotionAge >= 0
+        && spaceMouseMotionAge <= SPACEMOUSE_WHEEL_GUARD_MS
+      ) {
+        // 3DxWare can expose cap rotation as an OS-level wheel gesture in
+        // addition to the WebHID report. Suppress that synthetic wheel burst;
+        // an ordinary mouse wheel becomes active again as soon as the short
+        // post-motion guard expires.
+        renderer.domElement.dataset.spacemouseWheelSuppressedCount = String(
+          Number(renderer.domElement.dataset.spacemouseWheelSuppressedCount || 0) + 1,
+        );
+        renderer.domElement.dataset.lastZoomDecision = 'blocked-spacemouse-driver-wheel';
+        return;
+      }
+      claimKeyboardFocus('wheel');
+      const effectiveDistance =
+        camera.position.distanceTo(controls.target) / Math.max(camera.zoom, 1);
+      const normalizedDelta = Math.sign(delta) * Math.min(Math.abs(delta), 160);
+      applyMouseWheelZoomFactor(
+        Math.exp(normalizedDelta * 0.0017 * zoomBoostForDistance(effectiveDistance)),
+      );
+      renderer.domElement.dataset.lastZoomDecision = 'accepted-mouse-wheel';
     };
     renderer.domElement.addEventListener('wheel', progressiveWheelZoom, {
       passive: false,
@@ -2441,6 +2557,9 @@ export default function PointCloudViewer({
       if (
         !chassisDragModeRef.current
         || event.button !== 0
+        || event.shiftKey
+        || pressedKeysRef.current.has('ShiftLeft')
+        || pressedKeysRef.current.has('ShiftRight')
         || transformControls.dragging
         || transformControls.axis
         || !chassisAtPointer(event)
@@ -2529,7 +2648,6 @@ export default function PointCloudViewer({
         !pointerStart
         || pointerStart.button !== 0
         || pointerStart.panGesture
-        || robotControlEnabledRef.current
       ) {
         return false;
       }
@@ -2557,8 +2675,21 @@ export default function PointCloudViewer({
     const onPickPointerDown = (event) => {
       if (event.button !== 0 && event.button !== 2) return;
       claimKeyboardFocus('pointer');
-      if (startChassisPointerDrag(event)) return;
-      if (transformControls.object && (transformControls.axis || transformControls.dragging)) {
+      const shiftPressed =
+        event.shiftKey
+        || pressedKeysRef.current.has('ShiftLeft')
+        || pressedKeysRef.current.has('ShiftRight');
+      const shiftPanOverride = event.button === 0 && shiftPressed;
+
+      // Shift + left drag always belongs to the viewport. Check it before the
+      // chassis and TransformControls so selecting a robot never changes the
+      // camera interaction contract.
+      if (!shiftPanOverride && startChassisPointerDrag(event)) return;
+      if (
+        !shiftPanOverride
+        && transformControls.object
+        && (transformControls.axis || transformControls.dragging)
+      ) {
         controls.enabled = false;
         pointerStart = null;
         renderer.domElement.dataset.pointerGestureState = 'space-ball';
@@ -2569,14 +2700,6 @@ export default function PointCloudViewer({
         focusAnimationRef.current = null;
         renderer.domElement.dataset.synchronizedFocusState = 'interrupted';
       }
-      const shiftPressed =
-        event.shiftKey
-        || pressedKeysRef.current.has('ShiftLeft')
-        || pressedKeysRef.current.has('ShiftRight');
-      const shiftPanOverride =
-        event.button === 0
-        && !robotControlEnabledRef.current
-        && shiftPressed;
       const panGesture =
         event.button === 2
         || shiftPanOverride;
@@ -2626,7 +2749,6 @@ export default function PointCloudViewer({
           || pressedKeysRef.current.has('ShiftRight');
         if (
           liveShiftPressed
-          && !robotControlEnabledRef.current
           && promotePointerToShiftPan()
         ) {
           event.preventDefault();
@@ -2783,6 +2905,52 @@ export default function PointCloudViewer({
     const endEffectorProjectedPosition = new THREE.Vector3();
     const chassisWorldPosition = new THREE.Vector3();
     const chassisProjectedPosition = new THREE.Vector3();
+    const filteredSpaceMouseAxes = Object.fromEntries(
+      SPACEMOUSE_VIEW_AXES.map((axis) => [axis, 0]),
+    );
+    const targetSpaceMouseAxes = Object.fromEntries(
+      SPACEMOUSE_VIEW_AXES.map((axis) => [axis, 0]),
+    );
+    let previousSpaceMouseMode = spaceMouseInputRef?.current?.mode || 'xyz';
+    let dominantSpaceMouseAxis = null;
+    let lastSpaceMouseTelemetryAt = -Infinity;
+    const clearFilteredSpaceMouseAxes = () => {
+      SPACEMOUSE_VIEW_AXES.forEach((axis) => {
+        filteredSpaceMouseAxes[axis] = 0;
+        targetSpaceMouseAxes[axis] = 0;
+      });
+    };
+    const updateFilteredSpaceMouseAxis = (axis, target, duration) => {
+      const current = filteredSpaceMouseAxes[axis];
+      const boundedTarget = THREE.MathUtils.clamp(Number(target) || 0, -1, 1);
+      targetSpaceMouseAxes[axis] = boundedTarget;
+      const startsOrReverses = boundedTarget !== 0 && (
+        current === 0
+        || Math.sign(boundedTarget) !== Math.sign(current)
+        || Math.abs(boundedTarget) > Math.abs(current)
+      );
+      const responseSeconds = startsOrReverses
+        ? SPACEMOUSE_FILTER_ATTACK_SECONDS
+        : SPACEMOUSE_FILTER_RELEASE_SECONDS;
+      const blend = 1 - Math.exp(-duration / Math.max(responseSeconds, 1e-4));
+      const next = current + (boundedTarget - current) * blend;
+      filteredSpaceMouseAxes[axis] = (
+        boundedTarget === 0 && Math.abs(next) < SPACEMOUSE_FILTER_EPSILON
+      ) ? 0 : next;
+    };
+    const writeSpaceMouseFilterTelemetry = (force = false) => {
+      const now = performance.now();
+      if (!force && now - lastSpaceMouseTelemetryAt < 50) return;
+      lastSpaceMouseTelemetryAt = now;
+      SPACEMOUSE_VIEW_AXES.forEach((axis) => {
+        const suffix = `${axis[0].toUpperCase()}${axis.slice(1)}`;
+        renderer.domElement.dataset[`spacemouseTarget${suffix}`] =
+          targetSpaceMouseAxes[axis].toFixed(4);
+        renderer.domElement.dataset[`spacemouseFiltered${suffix}`] =
+          filteredSpaceMouseAxes[axis].toFixed(4);
+      });
+    };
+    writeSpaceMouseFilterTelemetry(true);
     const keyboardPixelsForWorldDirection = (
       worldDirection,
       fallbackX,
@@ -2821,6 +2989,7 @@ export default function PointCloudViewer({
       const robotControlActive =
         robotControlEnabledRef.current && robotLayer.children.length > 0;
       let keyboardMoved = false;
+      let spaceMouseMoved = false;
       if (pressedKeys.size || keyboardImpulses.size) {
         const keyActive = (code) => pressedKeys.has(code) || keyboardImpulses.has(code);
         camera.getWorldDirection(forward);
@@ -3035,12 +3204,228 @@ export default function PointCloudViewer({
           }
         }
       }
+
+      const spaceMouseInput = spaceMouseInputRef?.current;
+      const spaceMouseMode = spaceMouseInput?.mode === 'rpy' ? 'rpy' : 'xyz';
+      const spaceMouseReady = Boolean(
+        spaceMouseInput?.connected
+        && spaceMouseInput?.calibrated
+        && !spaceMouseInput?.calibrating
+        && spaceMouseInput?.controlEnabled !== false
+      );
+      const spaceMouseReportFresh = Boolean(
+        spaceMouseReady
+        && performance.now() - Number(spaceMouseInput.timestamp || 0)
+          <= SPACEMOUSE_INPUT_STALE_MS,
+      );
+      renderer.domElement.dataset.spacemouseConnected = spaceMouseInput?.connected
+        ? 'true'
+        : 'false';
+      renderer.domElement.dataset.spacemouseCalibrated = spaceMouseInput?.calibrated
+        ? 'true'
+        : 'false';
+      renderer.domElement.dataset.spacemouseCalibrating = spaceMouseInput?.calibrating
+        ? 'true'
+        : 'false';
+      renderer.domElement.dataset.spacemouseControlEnabled =
+        spaceMouseInput?.controlEnabled === false ? 'false' : 'true';
+      renderer.domElement.dataset.spacemouseMode = spaceMouseMode;
+
+      SPACEMOUSE_VIEW_AXES.forEach((axis) => {
+        targetSpaceMouseAxes[axis] = 0;
+      });
+      const modeChanged = spaceMouseMode !== previousSpaceMouseMode;
+      if (!spaceMouseReady) {
+        clearFilteredSpaceMouseAxes();
+        dominantSpaceMouseAxis = null;
+      } else {
+        if (modeChanged) {
+          clearFilteredSpaceMouseAxes();
+          dominantSpaceMouseAxis = null;
+        }
+        const axes = spaceMouseReportFresh ? (spaceMouseInput.axes || {}) : {};
+        const candidateAxes = spaceMouseMode === 'rpy'
+          ? SPACEMOUSE_ROTATION_AXES
+          : SPACEMOUSE_TRANSLATION_AXES;
+        let strongestAxis = null;
+        let strongestMagnitude = SPACEMOUSE_FILTER_EPSILON;
+        candidateAxes.forEach((axis) => {
+          const magnitude = Math.abs(Number(axes[axis]) || 0);
+          if (magnitude > strongestMagnitude) {
+            strongestAxis = axis;
+            strongestMagnitude = magnitude;
+          }
+        });
+
+        let nextDominantAxis = strongestAxis;
+        if (strongestAxis && candidateAxes.includes(dominantSpaceMouseAxis)) {
+          const latchedMagnitude = Math.abs(Number(axes[dominantSpaceMouseAxis]) || 0);
+          if (
+            latchedMagnitude >= SPACEMOUSE_FILTER_EPSILON
+            && latchedMagnitude >= strongestMagnitude * SPACEMOUSE_DOMINANT_AXIS_HYSTERESIS
+          ) {
+            nextDominantAxis = dominantSpaceMouseAxis;
+          }
+        }
+
+        if (nextDominantAxis && nextDominantAxis !== dominantSpaceMouseAxis) {
+          // A winner change must never blend with the previous axis' release
+          // tail; clear it before the new axis enters the smoothing filter.
+          clearFilteredSpaceMouseAxes();
+          dominantSpaceMouseAxis = nextDominantAxis;
+        }
+
+        SPACEMOUSE_VIEW_AXES.forEach((axis) => {
+          if (axis === dominantSpaceMouseAxis) {
+            updateFilteredSpaceMouseAxis(
+              axis,
+              nextDominantAxis === axis ? (Number(axes[axis]) || 0) : 0,
+              deltaSeconds,
+            );
+          } else {
+            // Enforce winner-takes-all after smoothing as well, so no stale
+            // value can create a one-frame compound translation or rotation.
+            targetSpaceMouseAxes[axis] = 0;
+            filteredSpaceMouseAxes[axis] = 0;
+          }
+        });
+
+        if (
+          !nextDominantAxis
+          && dominantSpaceMouseAxis
+          && filteredSpaceMouseAxes[dominantSpaceMouseAxis] === 0
+        ) {
+          dominantSpaceMouseAxis = null;
+        }
+      }
+      previousSpaceMouseMode = spaceMouseMode;
+
+      const targetSpaceMouseMagnitude = Math.max(
+        ...SPACEMOUSE_VIEW_AXES.map((axis) => Math.abs(targetSpaceMouseAxes[axis])),
+      );
+      const filteredSpaceMouseMagnitude = Math.max(
+        ...SPACEMOUSE_VIEW_AXES.map((axis) => Math.abs(filteredSpaceMouseAxes[axis])),
+      );
+      const appliedSpaceMouseAxis = (
+        dominantSpaceMouseAxis
+        && Math.abs(filteredSpaceMouseAxes[dominantSpaceMouseAxis])
+          >= SPACEMOUSE_FILTER_EPSILON
+      ) ? dominantSpaceMouseAxis : '';
+      renderer.domElement.dataset.spacemouseDominantAxis = appliedSpaceMouseAxis;
+      renderer.domElement.dataset.spacemouseAppliedAxisCount = appliedSpaceMouseAxis ? '1' : '0';
+      renderer.domElement.dataset.spacemouseMotionState = spaceMouseInput?.calibrating
+        ? 'calibrating'
+        : targetSpaceMouseMagnitude >= SPACEMOUSE_FILTER_EPSILON
+          ? 'active'
+          : filteredSpaceMouseMagnitude >= SPACEMOUSE_FILTER_EPSILON
+            ? 'settling'
+            : 'idle';
+      writeSpaceMouseFilterTelemetry();
+
+      if (filteredSpaceMouseMagnitude >= SPACEMOUSE_FILTER_EPSILON) {
+        if (spaceMouseMode === 'rpy') {
+          const rollInput = filteredSpaceMouseAxes.roll;
+          const pitchInput = filteredSpaceMouseAxes.pitch;
+          const yawInput = filteredSpaceMouseAxes.yaw;
+          if (rollInput || pitchInput || yawInput) {
+            cameraOffset.copy(camera.position).sub(controls.target);
+            const lockedOrbitDistance = cameraOffset.length();
+            if (yawInput) {
+              keyboardRotation.setFromAxisAngle(
+                worldUp,
+                yawInput * SPACEMOUSE_ROTATION_SPEED * deltaSeconds,
+              );
+              cameraOffset.applyQuaternion(keyboardRotation);
+              camera.up.applyQuaternion(keyboardRotation);
+            }
+            if (pitchInput) {
+              lookForward.copy(cameraOffset).multiplyScalar(-1).normalize();
+              lookRight.crossVectors(lookForward, camera.up).normalize();
+              if (lookRight.lengthSq() > 1e-12) {
+                keyboardRotation.setFromAxisAngle(
+                  lookRight,
+                  -pitchInput * SPACEMOUSE_ROTATION_SPEED * deltaSeconds,
+                );
+                cameraOffset.applyQuaternion(keyboardRotation);
+                camera.up.applyQuaternion(keyboardRotation);
+              }
+            }
+            if (lockedOrbitDistance > 0) cameraOffset.setLength(lockedOrbitDistance);
+            camera.position.copy(controls.target).add(cameraOffset);
+            if (rollInput) {
+              camera.getWorldDirection(lookForward).normalize();
+              keyboardRotation.setFromAxisAngle(
+                lookForward,
+                rollInput * SPACEMOUSE_ROTATION_SPEED * deltaSeconds,
+              );
+              camera.up.applyQuaternion(keyboardRotation);
+            }
+            camera.up.normalize();
+            renderer.domElement.dataset.spacemouseLastMotion = [
+              rollInput ? 'roll' : '',
+              pitchInput ? 'pitch' : '',
+              yawInput ? 'yaw' : '',
+            ].filter(Boolean).join('+');
+            renderer.domElement.dataset.spacemouseRotationDistancePolicy = 'locked';
+            spaceMouseMoved = true;
+          }
+        } else {
+          // XYZ is translation-only: X moves the camera and target together
+          // along the current XY heading, while Y/Z pan laterally/vertically.
+          // Camera-target distance and optical zoom therefore remain untouched.
+          const xInput = filteredSpaceMouseAxes.x;
+          const yInput = filteredSpaceMouseAxes.y;
+          const zInput = filteredSpaceMouseAxes.z;
+          if (xInput) {
+            camera.getWorldDirection(forward);
+            forward.z = 0;
+            if (forward.lengthSq() < 1e-12) forward.set(0, 1, 0);
+            else forward.normalize();
+            const metrics = getPanMetrics();
+            const forwardSpeed = THREE.MathUtils.clamp(
+              metrics.effectiveDistance * SPACEMOUSE_FORWARD_SPEED_RATIO,
+              radius * 1e-5,
+              radius * 0.45,
+            );
+            movement.copy(forward).multiplyScalar(
+              xInput * forwardSpeed * deltaSeconds,
+            );
+            camera.position.add(movement);
+            controls.target.add(movement);
+            renderer.domElement.dataset.spacemouseForwardImplementation = 'world-xy';
+            spaceMouseMoved = true;
+          }
+          if (yInput || zInput) {
+            panByPixels(
+              yInput * SPACEMOUSE_PAN_PIXELS_PER_SECOND * deltaSeconds,
+              zInput * SPACEMOUSE_PAN_PIXELS_PER_SECOND * deltaSeconds,
+            );
+            spaceMouseMoved = true;
+          }
+          if (spaceMouseMoved) {
+            renderer.domElement.dataset.spacemouseLastMotion = [
+              xInput ? 'x' : '',
+              yInput ? 'y' : '',
+              zInput ? 'z' : '',
+            ].filter(Boolean).join('+');
+          }
+        }
+      }
+      if (spaceMouseMoved) {
+        renderer.domElement.dataset.spacemouseInputCount = String(
+          Number(renderer.domElement.dataset.spacemouseInputCount || 0) + 1,
+        );
+        renderer.domElement.dataset.spacemouseLastInputAt = String(
+          Number(spaceMouseInput.timestamp || 0).toFixed(2),
+        );
+      }
       keyboardImpulses.clear();
       controls.update();
       reportZividCameraPoses();
-      if (keyboardMoved) {
+      if (keyboardMoved || spaceMouseMoved) {
         syncDetailView();
-        // Application-owned keyboard rotations need an explicit persisted view update.
+        // Application-owned keyboard and SpaceMouse transforms need an explicit
+        // persisted view update because TrackballControls did not originate them.
         reportCameraView();
       }
 
@@ -3198,6 +3583,8 @@ export default function PointCloudViewer({
       controls.dispose();
       displayGeometry.dispose();
       material.dispose();
+      surfaceGeometry?.dispose();
+      meshMaterial?.dispose();
       grid.geometry.dispose();
       grid.material.dispose();
       disposeObject(originGroup);
@@ -3242,6 +3629,7 @@ export default function PointCloudViewer({
       cameraRef.current = null;
       displayGeometryRef.current = null;
       if (cloudMaterialRef.current === material) cloudMaterialRef.current = null;
+      if (meshMaterialRef.current === meshMaterial) meshMaterialRef.current = null;
     };
   }, [mapData?.geometry]);
 
@@ -3514,14 +3902,17 @@ export default function PointCloudViewer({
   }, [focusRequest, mapData?.geometry]);
 
   useEffect(() => {
-    const material = cloudMaterialRef.current;
+    const materials = [cloudMaterialRef.current, meshMaterialRef.current].filter(Boolean);
     const canvas = controlsRef.current?.domElement;
-    if (!material || !canvas) return;
+    if (!materials.length || !canvas) return;
 
-    material.userData.pointColorMode = colorMode;
-    const shader = material.userData.pointColorShader;
-    if (shader) shader.uniforms.atlasPointColorMode.value = colorModeValue(colorMode);
+    materials.forEach((material) => {
+      material.userData.mapColorMode = colorMode;
+      const shader = material.userData.mapColorShader;
+      if (shader) shader.uniforms.atlasPointColorMode.value = colorModeValue(colorMode);
+    });
     canvas.dataset.colorMode = colorMode;
+    canvas.dataset.plyMeshColorMode = colorMode;
   }, [colorMode, mapData?.geometry]);
 
   useEffect(() => {
@@ -3532,9 +3923,17 @@ export default function PointCloudViewer({
     displayGeometry.setDrawRange(0, renderedPointCount);
     canvas.dataset.resolutionPercent = String(Math.round(resolution.ratio * 100));
     canvas.dataset.renderPointCount = String(renderedPointCount);
+    canvas.dataset.sourcePointCount = String(sourcePointCount);
+    canvas.dataset.renderablePointCount = String(renderablePointCount);
     canvas.dataset.resolutionSelection = resolutionSelection;
     canvas.dataset.autoPointBudget = String(AUTO_POINT_BUDGET);
-  }, [renderedPointCount, resolution.ratio, resolutionSelection, sourcePointCount]);
+  }, [
+    renderablePointCount,
+    renderedPointCount,
+    resolution.ratio,
+    resolutionSelection,
+    sourcePointCount,
+  ]);
 
   useEffect(() => {
     const controls = controlsRef.current;
@@ -3619,15 +4018,12 @@ export default function PointCloudViewer({
       if (!event.repeat && isActionKey) keyboardImpulseRef.current.add(code);
       const canvas = controlsRef.current?.domElement;
       if (code === 'ShiftLeft' || code === 'ShiftRight') {
-        const temporaryShiftPan = !robotControlEnabledRef.current;
-        setShiftPanArmed(temporaryShiftPan);
+        setShiftPanArmed(true);
         if (canvas) {
-          canvas.dataset.shiftPanArmed = temporaryShiftPan ? 'true' : 'false';
-          canvas.dataset.effectiveInteractionMode = temporaryShiftPan
-            ? 'shift-pan'
-            : 'rotate';
+          canvas.dataset.shiftPanArmed = 'true';
+          canvas.dataset.effectiveInteractionMode = 'shift-pan';
         }
-        if (temporaryShiftPan) pointerInteractionRef.current?.activateShiftPan?.();
+        pointerInteractionRef.current?.activateShiftPan?.();
       }
       if (canvas && isActionKey) {
         const robotOwnsKey =
@@ -3660,9 +4056,7 @@ export default function PointCloudViewer({
         const shiftStillPressed =
           pressedKeysRef.current.has('ShiftLeft')
           || pressedKeysRef.current.has('ShiftRight');
-        const temporaryShiftPan =
-          shiftStillPressed
-          && !robotControlEnabledRef.current;
+        const temporaryShiftPan = shiftStillPressed;
         setShiftPanArmed(temporaryShiftPan);
         const canvas = controlsRef.current?.domElement;
         if (canvas) {
@@ -3963,7 +4357,7 @@ export default function PointCloudViewer({
   const mapLockSideLabel = mapLockedSides
     .map((side) => side === 'left' ? 'L' : 'R')
     .join('+');
-  const temporaryShiftPan = !robotControlActive && shiftPanArmed;
+  const temporaryShiftPan = shiftPanArmed;
 
   return (
     <div
@@ -4091,6 +4485,17 @@ export default function PointCloudViewer({
                 <RotateCcw size={12} />
                 <span>重置</span>
               </button>
+              {hasEmbeddedMesh && (
+                <div
+                  className="mesh-topology-readout"
+                  role="status"
+                  aria-label={`PLY 内嵌网格 ${meshInfo.faceCount.toLocaleString('zh-CN')} 个三角面，另有 ${renderablePointCount.toLocaleString('zh-CN')} 个未成面点`}
+                  title="PLY 自带 face 索引：成面区域以实体网格显示，未被引用的顶点继续显示为点云"
+                >
+                  <Box size={13} />
+                  <span><small>PLY MESH</small><strong>{formatPointCount(meshInfo.faceCount)} TRI</strong></span>
+                </div>
+              )}
               <button
                 type="button"
                 className={`height-color-toggle is-active mode-${colorModeMeta.id}`}
@@ -4177,13 +4582,13 @@ export default function PointCloudViewer({
           )}
           <div className="viewer-help">
             <span>
-              {chassisDragMode || temporaryShiftPan
+              {temporaryShiftPan || chassisDragMode
                 ? <Move3D size={12} />
                 : <Rotate3D size={12} />}
-              {chassisDragMode
-                ? '按住底盘拖拽 · 保持 Z / RPY'
-                : temporaryShiftPan
-                  ? 'Shift + 左键平移 · 松开恢复旋转'
+              {temporaryShiftPan
+                ? 'Shift + 左键平移 · 松开恢复旋转'
+                : chassisDragMode
+                  ? '按住底盘拖拽 · 保持 Z / RPY'
                   : '左键旋转 · 点 / 路径可选'}
             </span>
             <span>
@@ -4205,15 +4610,19 @@ export default function PointCloudViewer({
                 : robotControlActive
                 ? mapLockedSides.length
                   ? `全局锁定 ${mapLockSideLabel} · 移动底盘观察全链关节补偿`
-                  : 'Shift 底盘加速 · Q/E 升降 · ↑↓ 相机 Pitch'
-                : 'Shift 加速 / 临时平移 · 右键平移'}
+                  : 'Shift + 左键视角平移 · Q/E 升降 · ↑↓ 相机 Pitch'
+                : 'Shift + 左键临时平移 · 右键平移'}
             </span>
             {robotLoadState?.status === 'loaded' && !endEffectorControlActive && !chassisDragMode && (
               <span><Bot size={12} /> 双击底盘平移 · 双击左 / 右末端进入 6D 控制</span>
             )}
             <span>
               <Gauge size={12} />
-              {resolutionSelection === 'auto' ? '点数超限 · 已自动降采样' : '分辨率仅影响 3D 显示'}
+              {hasEmbeddedMesh
+                ? `内嵌网格 ${formatPointCount(meshInfo.faceCount)} 面 · 档位仅调整未成面点`
+                : resolutionSelection === 'auto'
+                  ? '点数超限 · 已自动降采样'
+                  : '分辨率仅影响 3D 显示'}
             </span>
           </div>
         </>

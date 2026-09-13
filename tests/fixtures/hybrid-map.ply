@@ -1,0 +1,22 @@
+ply
+format ascii 1.0
+comment hybrid indexed mesh and loose point fixture
+element vertex 7
+property float x
+property float y
+property float z
+property uchar red
+property uchar green
+property uchar blue
+element face 2
+property list uchar int vertex_indices
+end_header
+-1 -1 0 30 120 180
+1 -1 0 40 180 210
+1 1 0 230 170 50
+-1 1 0 210 80 45
+-1.4 0 0.8 80 230 160
+0 0 1.2 245 220 90
+1.4 0 0.8 230 90 80
+3 0 1 2
+3 0 2 3

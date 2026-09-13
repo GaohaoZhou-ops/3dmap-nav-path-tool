@@ -1,4 +1,5 @@
 import json
+import math
 import os
 from pathlib import Path
 
@@ -117,6 +118,62 @@ def run():
         assert control.get_attribute("aria-pressed") == "true"
         assert canvas.get_attribute("data-keyboard-control-owner") == "robot"
         assert "MECANUM DRIVE · ACTIVE" in page.get_by_label("机器人模型状态").inner_text()
+
+        # Selecting the robot must not disable the global Shift + left-drag
+        # viewport pan contract. The camera and target translate together while
+        # the robot remains untouched and keeps keyboard ownership afterwards.
+        interaction_button = page.locator(".viewer-interaction-mode")
+        shift_pose_before = read_pose(canvas)
+        shift_camera_before = read_camera(canvas)
+        shift_box = canvas.bounding_box()
+        assert shift_box
+        page.keyboard.down("Shift")
+        page.wait_for_function(
+            "document.querySelector('.three-canvas')?.dataset.effectiveInteractionMode === 'shift-pan'"
+        )
+        assert canvas.get_attribute("data-shift-pan-scope") == "camera-and-robot"
+        assert canvas.get_attribute("data-shift-pan-priority") == "viewport-first"
+        assert interaction_button.get_attribute("data-mode") == "shift-pan"
+        assert "Shift 平移" in interaction_button.inner_text()
+        page.mouse.move(
+            shift_box["x"] + shift_box["width"] * 0.32,
+            shift_box["y"] + shift_box["height"] * 0.56,
+        )
+        page.mouse.down()
+        page.mouse.move(
+            shift_box["x"] + shift_box["width"] * 0.48,
+            shift_box["y"] + shift_box["height"] * 0.66,
+            steps=5,
+        )
+        page.screenshot(path="/tmp/atlas-robot-shift-pan.png", full_page=True)
+        page.mouse.up()
+        page.keyboard.up("Shift")
+        page.wait_for_function(
+            "document.querySelector('.three-canvas')?.dataset.effectiveInteractionMode === 'rotate'"
+        )
+        shift_camera_after = read_camera(canvas)
+        assert read_pose(canvas) == shift_pose_before
+        assert canvas.get_attribute("data-last-pointer-gesture") == "shift-pan"
+        assert canvas.get_attribute("data-robot-control-enabled") == "true"
+        assert canvas.get_attribute("data-keyboard-control-owner") == "robot"
+        assert interaction_button.get_attribute("data-mode") == "rotate"
+        assert math.hypot(
+            shift_camera_after[3] - shift_camera_before[3],
+            shift_camera_after[4] - shift_camera_before[4],
+        ) > 0.01
+        for camera_index, target_index in ((0, 3), (1, 4), (2, 5)):
+            assert abs(
+                (shift_camera_after[camera_index] - shift_camera_before[camera_index])
+                - (shift_camera_after[target_index] - shift_camera_before[target_index])
+            ) < 1e-6
+
+        if os.environ.get("ATLAS_SHIFT_PAN_ONLY") == "1":
+            print("robot_shift_pan=passed")
+            print("page_errors=", errors)
+            assert not errors
+            browser.close()
+            return
+
         camera_before_control = read_camera(canvas)
 
         page.keyboard.press("w")

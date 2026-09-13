@@ -56,25 +56,46 @@ const createCameraGeometry = (sourceGeometry) => {
   if (!sourcePosition?.count) return null;
   const pointCount = sourcePosition.count;
   const renderCount = Math.min(pointCount, CAMERA_POINT_BUDGET);
-  const geometry = new THREE.BufferGeometry();
-  geometry.setAttribute('position', sourcePosition);
   const sourceColor = sourceGeometry.getAttribute('color');
   const hasRgb = sourceColor?.count === pointCount;
-  if (hasRgb) geometry.setAttribute('color', sourceColor);
+  const positions = new Float32Array(renderCount * 3);
+  const colors = hasRgb ? new Uint8Array(renderCount * 3) : null;
+  const encodeColor = (value) => {
+    const numeric = Number(value) || 0;
+    return Math.round(THREE.MathUtils.clamp(numeric > 1 ? numeric : numeric * 255, 0, 255));
+  };
 
-  if (renderCount < pointCount) {
-    const indices = new Uint32Array(renderCount);
-    for (let index = 0; index < renderCount; index += 1) {
-      indices[index] = Math.min(
-        pointCount - 1,
-        Math.floor(((index + 0.5) * pointCount) / renderCount),
-      );
+  for (let index = 0; index < renderCount; index += 1) {
+    const sourceIndex = renderCount === pointCount
+      ? index
+      : Math.min(
+          pointCount - 1,
+          Math.floor(((index + 0.5) * pointCount) / renderCount),
+        );
+    const targetOffset = index * 3;
+    positions[targetOffset] = sourcePosition.getX(sourceIndex);
+    positions[targetOffset + 1] = sourcePosition.getY(sourceIndex);
+    positions[targetOffset + 2] = sourcePosition.getZ(sourceIndex);
+    if (colors) {
+      colors[targetOffset] = encodeColor(sourceColor.getX(sourceIndex));
+      colors[targetOffset + 1] = encodeColor(sourceColor.getY(sourceIndex));
+      colors[targetOffset + 2] = encodeColor(sourceColor.getZ(sourceIndex));
     }
-    geometry.setIndex(new THREE.BufferAttribute(indices, 1));
   }
+
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+  if (colors) geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3, true));
   geometry.boundingBox = sourceGeometry.boundingBox?.clone() || null;
   geometry.boundingSphere = sourceGeometry.boundingSphere?.clone() || null;
-  return { geometry, pointCount, renderCount, hasRgb };
+  geometry.userData.bufferStrategy = 'dedicated-downsample';
+  return {
+    geometry,
+    pointCount,
+    renderCount,
+    hasRgb,
+    bufferByteLength: positions.byteLength + (colors?.byteLength || 0),
+  };
 };
 
 const createDepthMaterial = () => new THREE.ShaderMaterial({
@@ -239,7 +260,13 @@ export default function ZividCameraPanel({
 
     const cameraGeometry = createCameraGeometry(sourceGeometry);
     if (!cameraGeometry) return undefined;
-    const { geometry, pointCount, renderCount } = cameraGeometry;
+    const {
+      geometry,
+      pointCount,
+      renderCount,
+      bufferByteLength,
+    } = cameraGeometry;
+    setRendererStatus('waiting');
     let renderer;
     try {
       renderer = new THREE.WebGLRenderer({
@@ -264,7 +291,29 @@ export default function ZividCameraPanel({
     renderer.domElement.dataset.sourcePointCount = String(pointCount);
     renderer.domElement.dataset.renderPointCount = String(renderCount);
     renderer.domElement.dataset.downsampled = renderCount < pointCount ? 'true' : 'false';
+    renderer.domElement.dataset.gpuBufferStrategy = geometry.userData.bufferStrategy;
+    renderer.domElement.dataset.cameraBufferBytes = String(bufferByteLength);
+    renderer.domElement.dataset.sourceBufferReused = 'false';
     mount.replaceChildren(renderer.domElement);
+
+    let contextAvailable = true;
+    let announcedReady = false;
+    let lastRenderSignature = '';
+    const handleContextLost = (event) => {
+      event.preventDefault();
+      contextAvailable = false;
+      renderer.domElement.dataset.contextState = 'lost';
+      setRendererStatus('context-lost');
+    };
+    const handleContextRestored = () => {
+      contextAvailable = true;
+      announcedReady = false;
+      lastRenderSignature = '';
+      renderer.domElement.dataset.contextState = 'restored';
+      setRendererStatus('ready');
+    };
+    renderer.domElement.addEventListener('webglcontextlost', handleContextLost, false);
+    renderer.domElement.addEventListener('webglcontextrestored', handleContextRestored, false);
 
     const scene = new THREE.Scene();
     scene.background = new THREE.Color(0x02080b);
@@ -305,8 +354,6 @@ export default function ZividCameraPanel({
     resize();
 
     let frameId = 0;
-    let announcedReady = false;
-    let lastRenderSignature = '';
     const render = () => {
       const pose = poseRef.current;
       const currentView = viewRef.current;
@@ -373,10 +420,20 @@ export default function ZividCameraPanel({
       renderer.domElement.dataset.digitalZoom = currentZoom.toFixed(2);
       renderer.domElement.dataset.panX = Number(currentView.pan.x || 0).toFixed(4);
       renderer.domElement.dataset.panY = Number(currentView.pan.y || 0).toFixed(4);
-      renderer.render(scene, camera);
-      if (!announcedReady) {
-        announcedReady = true;
-        setRendererStatus('ready');
+      if (contextAvailable) {
+        try {
+          renderer.render(scene, camera);
+          if (!announcedReady) {
+            announcedReady = true;
+            renderer.domElement.dataset.contextState = 'ready';
+            setRendererStatus('ready');
+          }
+        } catch (error) {
+          console.warn('Zivid 相机仿真视图渲染失败', error);
+          contextAvailable = false;
+          renderer.domElement.dataset.contextState = 'error';
+          setRendererStatus('error');
+        }
       }
       frameId = requestAnimationFrame(render);
     };
@@ -385,6 +442,8 @@ export default function ZividCameraPanel({
     return () => {
       cancelAnimationFrame(frameId);
       resizeObserver.disconnect();
+      renderer.domElement.removeEventListener('webglcontextlost', handleContextLost, false);
+      renderer.domElement.removeEventListener('webglcontextrestored', handleContextRestored, false);
       points.material = null;
       geometry.dispose();
       rgbMaterial.dispose();
@@ -550,6 +609,12 @@ export default function ZividCameraPanel({
         </div>
         {!activePose && (
           <div className="zivid-camera-empty"><Focus size={17} /> 正在同步光学坐标系</div>
+        )}
+        {rendererStatus === 'error' && (
+          <div className="zivid-camera-empty"><Focus size={15} /> 相机渲染器不可用 · 主界面仍可操作</div>
+        )}
+        {rendererStatus === 'context-lost' && (
+          <div className="zivid-camera-empty"><Focus size={15} /> 相机显存正在恢复 · 主界面仍可操作</div>
         )}
         {activePose && frustumStats.checked > 0 && frustumStats.estimated === 0 && (
           <div className="zivid-camera-empty is-quiet"><Focus size={15} /> 当前视锥内暂无地图回波</div>

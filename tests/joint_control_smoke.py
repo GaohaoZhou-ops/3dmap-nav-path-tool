@@ -29,6 +29,9 @@ def csv_vector(element, attribute):
 
 def run():
     errors = []
+    map_file = Path(
+        os.environ.get("MAP_FILE", str(ROOT / "tests/fixtures/rotation-map.ply"))
+    ).expanduser().resolve()
     with sync_playwright() as playwright:
         browser = playwright.chromium.launch(headless=True)
         page = browser.new_page(viewport={"width": 1440, "height": 900})
@@ -45,7 +48,7 @@ def run():
         assert page.locator(".joint-value-row").count() == 0
 
         page.locator('input[type="file"][accept=".ply"]').set_input_files(
-            str(ROOT / "tests/fixtures/rotation-map.ply")
+            str(map_file)
         )
         page.locator(".loading-curtain").wait_for(state="hidden")
         page.get_by_role("button", name="加载机器人", exact=True).click()
@@ -77,6 +80,45 @@ def run():
         assert camera_teach.is_visible()
         zivid_panel = page.get_by_label("Zivid 2 M70 相机视图", exact=True)
         assert zivid_panel.is_visible()
+        camera_canvas = zivid_panel.get_by_label("Zivid 2 M70 仿真相机画面", exact=True)
+        assert camera_canvas.get_attribute("data-gpu-buffer-strategy") == "dedicated-downsample"
+        assert camera_canvas.get_attribute("data-source-buffer-reused") == "false"
+        source_point_count = int(camera_canvas.get_attribute("data-source-point-count"))
+        render_point_count = int(camera_canvas.get_attribute("data-render-point-count"))
+        camera_buffer_bytes = int(camera_canvas.get_attribute("data-camera-buffer-bytes"))
+        assert render_point_count <= min(source_point_count, 360_000)
+        assert camera_buffer_bytes <= render_point_count * 15
+        if source_point_count > 360_000:
+            assert render_point_count == 360_000
+            assert camera_canvas.get_attribute("data-downsampled") == "true"
+        context_loss_canceled = camera_canvas.evaluate(
+            """
+            canvas => {
+              const event = new Event('webglcontextlost', { cancelable: true });
+              canvas.dispatchEvent(event);
+              return event.defaultPrevented;
+            }
+            """
+        )
+        assert context_loss_canceled
+        page.wait_for_function(
+            "document.querySelector('[aria-label=\"Zivid 2 M70 相机视图\"]')?.dataset.rendererStatus === 'context-lost'"
+        )
+        assert page.locator(".app-shell").is_visible()
+        camera_canvas.evaluate(
+            "canvas => canvas.dispatchEvent(new Event('webglcontextrestored'))"
+        )
+        page.wait_for_function(
+            "document.querySelector('[aria-label=\"Zivid 2 M70 相机视图\"]')?.dataset.rendererStatus === 'ready'"
+        )
+        if os.environ.get("CAMERA_BUFFER_ONLY") == "1":
+            print("map_file=", map_file.name)
+            print("camera_points=", f"{render_point_count}/{source_point_count}")
+            print("camera_buffer_bytes=", camera_buffer_bytes)
+            print("page_errors=", errors)
+            assert not errors, errors
+            browser.close()
+            return
         assert camera_teach.get_attribute("data-attached-to-camera") == "true"
         assert camera_teach.evaluate(
             "node => node.parentElement?.getAttribute('aria-label')"
@@ -170,6 +212,15 @@ def run():
         )
         zivid_panel.get_by_role("button", name="关闭 Zivid 相机大图").click()
         camera_modal.wait_for(state="hidden")
+
+        if os.environ.get("CAMERA_ONLY") == "1":
+            print("map_file=", map_file.name)
+            print("camera_points=", f"{render_point_count}/{source_point_count}")
+            print("camera_buffer_bytes=", camera_buffer_bytes)
+            print("page_errors=", errors)
+            assert not errors, errors
+            browser.close()
+            return
 
         page.get_by_role("button", name="全部关节归零").click()
         page.wait_for_function(

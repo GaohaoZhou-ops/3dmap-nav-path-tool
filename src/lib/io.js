@@ -356,6 +356,7 @@ export function buildExport({
       fileName: mapData?.name || null,
       format: 'ply',
       pointCount: mapData?.pointCount || 0,
+      faceCount: mapData?.faceCount || 0,
       bounds: mapData?.bounds || null,
       sourceHash: mapData?.sourceHash || null,
       sourceHashKind: mapData?.sourceHashKind || null,

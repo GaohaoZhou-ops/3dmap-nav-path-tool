@@ -409,6 +409,7 @@ def run():
             """
         )
 
+        page.get_by_role("tab", name="示教数据管理").click()
         with page.expect_download() as download_info:
             page.get_by_role("button", name="导出示教工程 JSON").click()
         exported = json.loads(Path(download_info.value.path()).read_text())

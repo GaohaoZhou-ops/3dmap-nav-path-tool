@@ -26,12 +26,14 @@ def run():
         navigation_tab = page.get_by_role("tab", name="路径与导航")
         project_tab = page.get_by_role("tab", name="工程配置")
         teaching_tab = page.get_by_role("tab", name="虚拟示教与相机")
+        teaching_data_tab = page.get_by_role("tab", name="示教数据管理")
 
-        assert tabs.get_by_role("tab").count() == 3
+        assert tabs.get_by_role("tab").count() == 4
         assert inspector.get_attribute("data-active-page") == "project"
         assert project_tab.get_attribute("aria-selected") == "true"
         assert navigation_tab.get_attribute("aria-selected") == "false"
         assert teaching_tab.get_attribute("aria-selected") == "false"
+        assert teaching_data_tab.get_attribute("aria-selected") == "false"
         assert page.get_by_role("tabpanel").get_attribute("id") == "inspector-page-project"
         assert page.locator(".project-overview").is_visible()
         assert page.get_by_label("导航点搜索").count() == 0
@@ -63,17 +65,28 @@ def run():
         assert inspector.get_attribute("data-active-page") == "teaching"
         assert teaching_tab.get_attribute("aria-selected") == "true"
         assert page.get_by_label("虚拟示教", exact=True).is_visible()
-        export_button = page.get_by_role(
+        assert page.locator('section[aria-label="示教数据管理"]').count() == 0
+        assert page.get_by_role(
             "button", name="导出示教工程 JSON", exact=True
-        )
-        assert export_button.is_disabled()
+        ).count() == 0
         assert page.get_by_label("Zivid 2 M70 相机视图").count() == 0
         assert page.locator(".project-overview").count() == 0
         assert page.get_by_label("导航点搜索").count() == 0
 
+        teaching_tab.focus()
+        page.keyboard.press("ArrowRight")
+        assert inspector.get_attribute("data-active-page") == "teaching-data"
+        assert teaching_data_tab.get_attribute("aria-selected") == "true"
+        assert page.locator('section[aria-label="示教数据管理"]').is_visible()
+        assert page.get_by_label("虚拟示教", exact=True).count() == 0
+        export_button = page.get_by_role(
+            "button", name="导出示教工程 JSON", exact=True
+        )
+        assert export_button.is_disabled()
+
         page.locator('input[type="file"][accept=".ply"]').set_input_files(str(FIXTURE))
         page.locator(".loading-curtain").wait_for(state="hidden")
-        assert inspector.get_attribute("data-active-page") == "teaching"
+        assert inspector.get_attribute("data-active-page") == "teaching-data"
         assert export_button.is_enabled()
 
         # A selection from either map must reveal its editor on the navigation page.
@@ -91,7 +104,7 @@ def run():
         assert page.get_by_role("heading", name="P01", exact=True).is_visible()
         assert page.get_by_role("button", name="返回路径与导航").is_visible()
 
-        teaching_tab.click()
+        teaching_data_tab.click()
         with page.expect_download() as download_info:
             export_button.click()
         download = download_info.value

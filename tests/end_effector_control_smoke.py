@@ -104,7 +104,7 @@ def run():
         assert canvas.get_attribute("data-end-effector-ik-status") in ("tracking", "limited")
         final_ik_status = canvas.get_attribute("data-end-effector-ik-status")
 
-        page.get_by_role("tab", name="虚拟示教与相机").click()
+        page.get_by_role("tab", name="示教数据管理").click()
         with page.expect_download() as download_info:
             page.get_by_role("button", name="导出示教工程 JSON").click()
         locked_export = json.loads(Path(download_info.value.path()).read_text())
@@ -166,7 +166,7 @@ def run():
         )
         page.screenshot(path="/tmp/atlas-end-effector-lock.png", full_page=True)
 
-        page.get_by_role("tab", name="虚拟示教与相机").click()
+        page.get_by_role("tab", name="示教数据管理").click()
         with page.expect_download() as download_info:
             page.get_by_role("button", name="导出示教工程 JSON").click()
         exported = json.loads(Path(download_info.value.path()).read_text())
@@ -198,7 +198,7 @@ def run():
             axis: number_attr(canvas, f"robot-left-tool-world-{axis}")
             for axis in ("x", "y", "z")
         }
-        page.get_by_role("tab", name="虚拟示教与相机").click()
+        page.get_by_role("tab", name="示教数据管理").click()
         with page.expect_download() as download_info:
             page.get_by_role("button", name="导出示教工程 JSON").click()
         before_global_move = json.loads(Path(download_info.value.path()).read_text())
@@ -251,7 +251,7 @@ def run():
         assert global_position_error < 0.006
         assert global_rotation_error < 2.0
 
-        page.get_by_role("tab", name="虚拟示教与相机").click()
+        page.get_by_role("tab", name="示教数据管理").click()
         with page.expect_download() as download_info:
             page.get_by_role("button", name="导出示教工程 JSON").click()
         after_global_move = json.loads(Path(download_info.value.path()).read_text())

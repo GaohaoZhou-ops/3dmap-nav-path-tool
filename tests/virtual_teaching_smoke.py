@@ -32,6 +32,7 @@ def run():
         page.goto(BASE_URL, wait_until="networkidle")
         page.locator('[data-session-state="ready"]').wait_for()
         teaching_tab = page.get_by_role("tab", name="虚拟示教与相机")
+        teaching_data_tab = page.get_by_role("tab", name="示教数据管理")
         teaching_tab.click()
         assert teaching_tab.get_attribute("aria-selected") == "true"
         page.get_by_role("button", name="隐藏全关节浮动窗口").click()
@@ -67,10 +68,6 @@ def run():
         assert "rotation-map.ply" in page.locator(".teaching-context").inner_text()
         assert "botx_abx_zivid_m70" in page.locator(".teaching-context").inner_text()
 
-        task_name = page.get_by_role("textbox", name="示教任务名称")
-        task_name.fill("双臂装配演示")
-        task_name.press("Enter")
-
         robot_button = page.get_by_role("button", name="定位机器人模型")
         robot_button.click()
         page.wait_for_function(
@@ -87,6 +84,18 @@ def run():
         assert first_pose["yaw"] > 4
 
         page.get_by_role("button", name="记录当前机器人姿态").click()
+        page.wait_for_function(
+            "document.querySelector('.teaching-data-handoff')?.dataset.teachingPointCount === '1'"
+        )
+        assert page.locator(".teaching-point-row").count() == 0
+
+        page.get_by_role("button", name="管理数据", exact=False).click()
+        assert teaching_data_tab.get_attribute("aria-selected") == "true"
+        data_panel = page.locator('section[aria-label="示教数据管理"]')
+        assert data_panel.get_attribute("data-teaching-view") == "data"
+        task_name = page.get_by_role("textbox", name="示教任务名称")
+        task_name.fill("双臂装配演示")
+        task_name.press("Enter")
         first_row = page.locator(".teaching-point-row").first
         first_row.wait_for()
         assert first_row.get_attribute("data-joint-count") == str(movable_joint_count)
@@ -107,6 +116,8 @@ def run():
         point_name.fill("抓取准备位")
         point_name.press("Enter")
 
+        teaching_tab.click()
+        page.get_by_role("button", name="隐藏全关节浮动窗口").click()
         page.keyboard.press("w")
         page.keyboard.press("d")
         page.wait_for_timeout(160)
@@ -114,8 +125,11 @@ def run():
         assert abs(second_pose["x"] - first_pose["x"]) > 0.04
         page.get_by_role("button", name="记录当前机器人姿态").click()
         page.wait_for_function(
-            "document.querySelectorAll('.teaching-point-row').length === 2"
+            "document.querySelector('.teaching-data-handoff')?.dataset.teachingPointCount === '2'"
         )
+
+        teaching_data_tab.click()
+        page.wait_for_function("document.querySelectorAll('.teaching-point-row').length === 2")
         assert page.get_by_role("textbox", name="示教点名称").input_value() == "T02"
 
         page.get_by_role("button", name="查看示教点 抓取准备位").click()
@@ -179,8 +193,8 @@ def run():
             timeout=180_000,
         )
         page.locator(".loading-curtain").wait_for(state="hidden")
-        page.get_by_role("tab", name="虚拟示教与相机").click(force=True)
-        teaching_panel = page.get_by_label("虚拟示教", exact=True)
+        page.get_by_role("tab", name="示教数据管理").click(force=True)
+        teaching_panel = page.locator('section[aria-label="示教数据管理"]')
         assert teaching_panel.get_attribute("data-teaching-task-count") == "1"
         assert teaching_panel.get_attribute("data-teaching-context-match") == "true"
         assert page.get_by_role("textbox", name="示教任务名称").input_value() == "双臂装配演示"

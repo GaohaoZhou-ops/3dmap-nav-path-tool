@@ -1,18 +1,23 @@
 import { useEffect, useMemo, useState } from 'react';
+import { createPortal } from 'react-dom';
 import {
   Bot,
   Camera,
   ChevronRight,
   CirclePlus,
   ClipboardCheck,
+  Cloud,
   Crosshair,
+  Database,
   Download,
   FileJson,
   MapPin,
+  Maximize2,
   Move3D,
   Play,
   Save,
   Trash2,
+  X,
 } from 'lucide-react';
 
 const formatCapturedAt = (value) => {
@@ -34,6 +39,13 @@ const formatValue = (value, digits = 3) => {
   return Number.isFinite(parsed) ? parsed.toFixed(precision) : '--';
 };
 
+const formatBytes = (value) => {
+  const bytes = Math.max(0, Number(value) || 0);
+  if (bytes >= 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
+  if (bytes >= 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${Math.round(bytes)} B`;
+};
+
 export default function VirtualTeachingPanel({
   tasks,
   activeTaskId,
@@ -41,7 +53,9 @@ export default function VirtualTeachingPanel({
   robot,
   robotLoadState,
   robotJointValues,
+  view = 'capture',
   teachingMode = 'pose',
+  captureState = { status: 'idle', message: '' },
   onCreateTask,
   onSelectTask,
   onRenameTask,
@@ -52,7 +66,11 @@ export default function VirtualTeachingPanel({
   onApplyPoint,
   onTeachingModeChange,
   onExportProject,
+  onOpenDataPage,
+  onOpenCapturePage,
 }) {
+  const isDataView = view === 'data';
+  const HeaderIcon = isDataView ? Database : Crosshair;
   const activeTask = tasks.find((task) => task.id === activeTaskId) || tasks[0] || null;
   const [taskNameDraft, setTaskNameDraft] = useState(activeTask?.name || '');
   const [selectedPointId, setSelectedPointId] = useState(
@@ -60,6 +78,7 @@ export default function VirtualTeachingPanel({
   );
   const selectedPoint = activeTask?.points.find((point) => point.id === selectedPointId) || null;
   const [pointNameDraft, setPointNameDraft] = useState(selectedPoint?.name || '');
+  const [visionPreview, setVisionPreview] = useState(null);
 
   useEffect(() => {
     setTaskNameDraft(activeTask?.name || '');
@@ -73,12 +92,29 @@ export default function VirtualTeachingPanel({
     setPointNameDraft(selectedPoint?.name || '');
   }, [selectedPoint?.id, selectedPoint?.name]);
 
+  useEffect(() => {
+    setVisionPreview(null);
+  }, [selectedPoint?.id]);
+
+  useEffect(() => {
+    if (!visionPreview) return undefined;
+    const closeOnEscape = (event) => {
+      if (event.key === 'Escape') setVisionPreview(null);
+    };
+    window.addEventListener('keydown', closeOnEscape);
+    return () => window.removeEventListener('keydown', closeOnEscape);
+  }, [visionPreview]);
+
   const jointEntries = useMemo(
     () => Object.entries(selectedPoint?.fullBodyJoints?.values || {})
       .sort(([left], [right]) => left.localeCompare(right)),
     [selectedPoint],
   );
   const currentJointCount = Object.keys(robotJointValues || {}).length;
+  const selectedCameraFrames = ['left', 'right'].flatMap((side) => {
+    const frame = selectedPoint?.cameraCapture?.frames?.[side];
+    return frame ? [{ side, frame }] : [];
+  });
   const taskRobotKey = activeTask?.robot?.id || activeTask?.robot?.relativePath;
   const currentRobotKey = robot?.id || robot?.relativePath;
   const sameRobot = Boolean(taskRobotKey && currentRobotKey && taskRobotKey === currentRobotKey);
@@ -89,6 +125,7 @@ export default function VirtualTeachingPanel({
   const robotReady = robotLoadState?.status === 'loaded' && Boolean(robot);
   const canCreate = Boolean(mapData?.bounds && robotReady);
   const canCapture = Boolean(activeTask && robotReady && contextMatches);
+  const captureInProgress = captureState?.status === 'capturing';
   const canExport = Boolean(mapData?.bounds);
   const teachingPointCount = tasks.reduce(
     (count, task) => count + (task.points?.length || 0),
@@ -118,35 +155,49 @@ export default function VirtualTeachingPanel({
   };
 
   return (
+    <>
     <section
-      className={`virtual-teaching ${activeTask ? 'has-task' : 'is-empty'}`}
-      aria-label="虚拟示教"
+      className={`virtual-teaching ${isDataView ? 'is-data-view' : 'is-capture-view'} ${activeTask ? 'has-task' : 'is-empty'}`}
+      aria-label={isDataView ? '示教数据管理' : '虚拟示教'}
+      data-teaching-view={isDataView ? 'data' : 'capture'}
       data-teaching-task-count={tasks.length}
       data-active-teaching-task={activeTask?.id || ''}
       data-teaching-context-match={contextMatches ? 'true' : 'false'}
       data-current-joint-count={currentJointCount}
       data-teaching-mode={teachingMode}
+      data-camera-capture-status={captureState?.status || 'idle'}
     >
       <div className="virtual-teaching__header">
         <div className="virtual-teaching__identity">
-          <span><Crosshair size={14} /></span>
+          <span><HeaderIcon size={14} /></span>
           <div>
-            <small>VIRTUAL TEACH / PROJECT CORE</small>
-            <strong>虚拟示教</strong>
+            <small>{isDataView ? 'TEACHING DATA / ARCHIVE' : 'VIRTUAL TEACH / CAPTURE'}</small>
+            <strong>{isDataView ? '示教数据管理' : '虚拟示教'}</strong>
           </div>
         </div>
-        <button
-          type="button"
-          className="teaching-new-task"
-          onClick={onCreateTask}
-          disabled={!canCreate}
-          title={canCreate ? '以当前地图和机器人新建示教任务' : '请先加载地图与机器人'}
-        >
-          <CirclePlus size={12} /> 新建任务
-        </button>
+        {isDataView ? (
+          <button
+            type="button"
+            className="teaching-new-task teaching-back-to-capture"
+            onClick={onOpenCapturePage}
+            title="返回示教采集与实时相机画面"
+          >
+            <Crosshair size={12} /> 继续示教
+          </button>
+        ) : (
+          <button
+            type="button"
+            className="teaching-new-task"
+            onClick={onCreateTask}
+            disabled={!canCreate}
+            title={canCreate ? '以当前地图和机器人新建示教任务' : '请先加载地图与机器人'}
+          >
+            <CirclePlus size={12} /> 新建任务
+          </button>
+        )}
       </div>
 
-      <div
+      {isDataView && <div
         className="teaching-project-export"
         data-export-task-count={tasks.length}
         data-export-point-count={teachingPointCount}
@@ -169,9 +220,9 @@ export default function VirtualTeachingPanel({
         >
           <Download size={12} /> 导出工程
         </button>
-      </div>
+      </div>}
 
-      <div className="teaching-mode-switch" role="tablist" aria-label="选择虚拟示教模式">
+      {!isDataView && <div className="teaching-mode-switch" role="tablist" aria-label="选择虚拟示教模式">
         <button
           type="button"
           role="tab"
@@ -190,23 +241,29 @@ export default function VirtualTeachingPanel({
         >
           <Camera size={11} /> 相机反算
         </button>
-      </div>
+      </div>}
 
       {!activeTask && (
         <div className="teaching-empty-state">
           <div className="teaching-empty-state__reticle"><i /><span /></div>
-          <strong>{canCreate ? '建立第一条示教任务' : '等待地图与机器人'}</strong>
+          <strong>
+            {isDataView
+              ? '暂无可管理的示教数据'
+              : canCreate ? '建立第一条示教任务' : '等待地图与机器人'}
+          </strong>
           <span>
-            {canCreate
-              ? '任务将绑定当前地图和机器人；调整完成后逐点记录全身状态。'
-              : '机器人装配完成后，可记录地图定位与所有可动关节。'}
+            {isDataView
+              ? '请先在“示教 / 相机”子页新建任务并采集机器人姿态。'
+              : canCreate
+                ? '任务将绑定当前地图和机器人；调整完成后逐点记录全身状态。'
+                : '机器人装配完成后，可记录地图定位与所有可动关节。'}
           </span>
         </div>
       )}
 
       {activeTask && (
         <>
-          <div className="teaching-task-bar">
+          <div className={`teaching-task-bar ${isDataView ? '' : 'is-select-only'}`}>
             <label>
               <span className="visually-hidden">选择示教任务</span>
               <select
@@ -221,21 +278,23 @@ export default function VirtualTeachingPanel({
                 ))}
               </select>
             </label>
-            <button
-              type="button"
-              aria-label="删除当前示教任务"
-              title="删除当前示教任务"
-              onClick={() => {
-                if (window.confirm(`删除 ${activeTask.name} 及全部示教点？`)) {
-                  onDeleteTask(activeTask.id);
-                }
-              }}
-            >
-              <Trash2 size={12} />
-            </button>
+            {isDataView && (
+              <button
+                type="button"
+                aria-label="删除当前示教任务"
+                title="删除当前示教任务"
+                onClick={() => {
+                  if (window.confirm(`删除 ${activeTask.name} 及全部示教点？`)) {
+                    onDeleteTask(activeTask.id);
+                  }
+                }}
+              >
+                <Trash2 size={12} />
+              </button>
+            )}
           </div>
 
-          <label className="teaching-name-field">
+          {isDataView && <label className="teaching-name-field">
             <span>任务名称</span>
             <input
               aria-label="示教任务名称"
@@ -246,7 +305,7 @@ export default function VirtualTeachingPanel({
                 if (event.key === 'Enter') event.currentTarget.blur();
               }}
             />
-          </label>
+          </label>}
 
           <div className={`teaching-context ${contextMatches ? 'is-matched' : 'is-mismatch'}`}>
             <div title={activeTask.map.fileName}>
@@ -262,22 +321,42 @@ export default function VirtualTeachingPanel({
             <em>{contextMatches ? 'CONTEXT OK' : 'CONTEXT MISMATCH'}</em>
           </div>
 
+          {!isDataView && <>
           <button
             type="button"
             className="teaching-capture-button"
             onClick={onCapturePoint}
-            disabled={!canCapture}
+            disabled={!canCapture || captureInProgress}
+            aria-busy={captureInProgress}
             aria-label="记录当前机器人姿态"
-            title={canCapture ? '保存当前地图位姿和全部可动关节' : '当前地图或机器人与任务不匹配'}
+            title={canCapture
+              ? '保存地图位姿、全部关节与左右 Zivid RGB/XYZ 快照'
+              : '当前地图或机器人与任务不匹配'}
           >
             <span><Save size={15} /></span>
             <div>
-              <strong>记录当前机器人姿态</strong>
-              <small>MAP 6DOF + {currentJointCount} JOINT VALUES</small>
+              <strong>{captureInProgress ? '正在冻结双目视觉…' : '记录当前机器人姿态'}</strong>
+              <small>
+                {captureInProgress
+                  ? 'CAM-L + CAM-R · RGB + XYZ CLOUD'
+                  : `MAP 6DOF + ${currentJointCount} JOINTS + DUAL VISION`}
+              </small>
             </div>
             <kbd>T{String(activeTask.points.length + 1).padStart(2, '0')}</kbd>
           </button>
 
+          {captureState?.message && (
+            <div
+              className={`teaching-capture-state is-${captureState.status || 'idle'}`}
+              role={captureState.status === 'error' ? 'alert' : 'status'}
+            >
+              {captureState.status === 'capturing' ? <Camera size={10} /> : <Database size={10} />}
+              <span>{captureState.message}</span>
+            </div>
+          )}
+          </>}
+
+          {isDataView ? <>
           <div className="teaching-sequence-heading">
             <span>示教序列</span>
             <i />
@@ -287,7 +366,11 @@ export default function VirtualTeachingPanel({
           {!activeTask.points.length && (
             <div className="teaching-points-empty">
               <ClipboardCheck size={18} strokeWidth={1.3} />
-              <span>调整机器人后，点击上方按钮采集第一个示教点。</span>
+              <span>
+                {isDataView
+                  ? '当前任务还没有点位，请返回“示教 / 相机”完成采集。'
+                  : '调整机器人后，点击上方按钮采集第一个示教点。'}
+              </span>
             </div>
           )}
 
@@ -298,6 +381,7 @@ export default function VirtualTeachingPanel({
                 key={point.id}
                 data-teaching-point-id={point.id}
                 data-joint-count={point.fullBodyJoints?.count || 0}
+                data-camera-frame-count={Object.keys(point.cameraCapture?.frames || {}).length}
               >
                 <button
                   type="button"
@@ -312,7 +396,10 @@ export default function VirtualTeachingPanel({
                       X {formatValue(point.mapPose.position.x, 2)} · Y {formatValue(point.mapPose.position.y, 2)} · Z {formatValue(point.mapPose.position.z, 2)}
                     </small>
                   </span>
-                  <em>{point.fullBodyJoints?.count || 0} JTS</em>
+                  <em>
+                    {point.fullBodyJoints?.count || 0} JTS
+                    {point.cameraCapture ? ` · ${Object.keys(point.cameraCapture.frames || {}).length} CAM` : ''}
+                  </em>
                   <ChevronRight size={12} />
                 </button>
                 <button
@@ -373,6 +460,78 @@ export default function VirtualTeachingPanel({
                 ))}
               </div>
 
+              {selectedCameraFrames.length > 0 && (
+                <section
+                  className="teaching-vision-capture"
+                  aria-label="示教点双目视觉快照"
+                  data-camera-frame-count={selectedCameraFrames.length}
+                  data-camera-model={selectedPoint.cameraCapture.cameraModel || ''}
+                >
+                  <header>
+                    <span><Camera size={11} /></span>
+                    <div>
+                      <strong>双目视觉快照</strong>
+                      <small>FROZEN RGB + OPTICAL XYZ</small>
+                    </div>
+                    <em>{formatBytes(selectedPoint.cameraCapture.storageByteLength)}</em>
+                  </header>
+                  <div className="teaching-vision-grid">
+                    {selectedCameraFrames.map(({ side, frame }) => {
+                      const sideLabel = side === 'left' ? '左臂' : '右臂';
+                      const rgbImage = frame.rgb;
+                      const cloudImage = frame.pointCloud?.preview;
+                      return (
+                        <article
+                          key={side}
+                          className="teaching-vision-frame"
+                          data-camera-side={side}
+                          data-point-count={frame.pointCloud?.pointCount || 0}
+                        >
+                          <div className="teaching-vision-frame__heading">
+                            <strong>{sideLabel} M70</strong>
+                            <small>{side === 'left' ? 'CAM-L' : 'CAM-R'}</small>
+                          </div>
+                          <div className="teaching-vision-thumbnails">
+                            {[
+                              { id: 'rgb', label: 'RGB', icon: Camera, image: rgbImage },
+                              { id: 'pointcloud', label: 'XYZ', icon: Cloud, image: cloudImage },
+                            ].map((item) => {
+                              const PreviewIcon = item.icon;
+                              return (
+                                <button
+                                  type="button"
+                                  key={item.id}
+                                  disabled={!item.image?.dataUrl}
+                                  aria-label={`查看 ${selectedPoint.name} ${sideLabel}${item.label} 快照`}
+                                  onClick={() => setVisionPreview({
+                                    image: item.image,
+                                    title: `${selectedPoint.name} · ${sideLabel} ${item.label}`,
+                                    side,
+                                    mode: item.id,
+                                    pointCount: frame.pointCloud?.pointCount || 0,
+                                    frameName: frame.opticalPose?.frameName || '',
+                                  })}
+                                >
+                                  {item.image?.dataUrl
+                                    ? <img src={item.image.dataUrl} alt="" />
+                                    : <i><PreviewIcon size={13} /></i>}
+                                  <span><PreviewIcon size={9} /> {item.label}</span>
+                                  <Maximize2 size={8} />
+                                </button>
+                              );
+                            })}
+                          </div>
+                          <footer>
+                            <span>{Number(frame.pointCloud?.pointCount || 0).toLocaleString('zh-CN')} PTS</span>
+                            <span>{frame.pointCloud?.sampleMethod === 'uniform-visible-lod' ? 'LOD' : 'FULL FOV'}</span>
+                          </footer>
+                        </article>
+                      );
+                    })}
+                  </div>
+                </section>
+              )}
+
               <div className="teaching-joint-heading">
                 <span>全身关节快照</span>
                 <small>{jointEntries.length} VALUES · DEG / M</small>
@@ -411,8 +570,62 @@ export default function VirtualTeachingPanel({
               </div>
             </div>
           )}
+          </> : (
+            <div
+              className="teaching-data-handoff"
+              data-teaching-point-count={activeTask.points.length}
+            >
+              <span><Database size={16} /></span>
+              <div>
+                <strong>{activeTask.points.length} 个点位已归档</strong>
+                <small>历史点位、双目快照和工程导出已移至独立子页</small>
+              </div>
+              <button type="button" onClick={onOpenDataPage}>
+                管理数据 <ChevronRight size={11} />
+              </button>
+            </div>
+          )}
         </>
       )}
     </section>
+    {visionPreview && createPortal(
+      <div
+        className="teaching-vision-modal"
+        role="dialog"
+        aria-modal="true"
+        aria-label="示教视觉快照大图"
+        onPointerDown={(event) => {
+          if (event.target === event.currentTarget) setVisionPreview(null);
+        }}
+      >
+        <section data-preview-mode={visionPreview.mode}>
+          <header>
+            <div>
+              <small>TEACHING VISION ARCHIVE · {visionPreview.frameName}</small>
+              <strong>{visionPreview.title}</strong>
+            </div>
+            <span>
+              {visionPreview.mode === 'pointcloud'
+                ? `${Number(visionPreview.pointCount).toLocaleString('zh-CN')} XYZ POINTS`
+                : `${visionPreview.image.width} × ${visionPreview.image.height}`}
+            </span>
+            <button
+              type="button"
+              aria-label="关闭示教视觉快照"
+              onClick={() => setVisionPreview(null)}
+            >
+              <X size={15} />
+            </button>
+          </header>
+          <div>
+            <img src={visionPreview.image.dataUrl} alt={visionPreview.title} />
+            <i className="top-left" /><i className="top-right" />
+            <i className="bottom-left" /><i className="bottom-right" />
+          </div>
+        </section>
+      </div>,
+      document.body,
+    )}
+    </>
   );
 }

@@ -261,7 +261,7 @@ def run():
         perception_switch.click()
         assert perception_switch.get_attribute("aria-checked") == "false"
 
-        page.get_by_role("tab", name="虚拟示教与相机").click()
+        page.get_by_role("tab", name="示教数据管理").click()
         with page.expect_download() as download_info:
             page.get_by_role("button", name="导出示教工程 JSON").click()
         download = download_info.value

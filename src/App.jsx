@@ -275,6 +275,8 @@ export default function App() {
   const viewResetRevisionRef = useRef(0);
   const robotNotificationRef = useRef('');
   const cameraTeachingRevisionRef = useRef(0);
+  const zividCaptureProviderRef = useRef(null);
+  const teachingCaptureBusyRef = useRef(false);
   const spaceMouseInputRef = useRef(createSpaceMouseInputState());
   const [mapData, setMapData] = useState(null);
   const [heightRange, setHeightRange] = useState([0, 1]);
@@ -308,6 +310,10 @@ export default function App() {
   const [cameraTeachingResult, setCameraTeachingResult] = useState({
     status: 'idle',
     revision: 0,
+  });
+  const [teachingCaptureState, setTeachingCaptureState] = useState({
+    status: 'idle',
+    message: '',
   });
   const [sessionState, setSessionState] = useState({ status: 'checking', restored: false });
   const [loadState, setLoadState] = useState({
@@ -517,6 +523,7 @@ export default function App() {
         setJointPoses([]);
         setCameraTeachingCommand(null);
         setCameraTeachingResult({ status: 'idle', revision: 0 });
+        setTeachingCaptureState({ status: 'idle', message: '' });
       }
 
       if (persistSnapshot && sessionReadyRef.current && sessionIdRef.current) {
@@ -1001,6 +1008,9 @@ export default function App() {
       setZividCameraPoses({});
       setCameraTeachingCommand(null);
       setCameraTeachingResult({ status: 'idle', revision: 0 });
+      zividCaptureProviderRef.current = null;
+      teachingCaptureBusyRef.current = false;
+      setTeachingCaptureState({ status: 'idle', message: '' });
       setRobotPose(
         importedRobot ? normalizeRobotPose(project.robot?.origin) : normalizeRobotPose(null),
       );
@@ -1334,11 +1344,13 @@ export default function App() {
     };
     setTeachingTasks((current) => [...current, task]);
     setActiveTeachingTaskId(task.id);
+    setTeachingCaptureState({ status: 'idle', message: '' });
     notify(`${task.name} 已创建 · 已绑定当前地图与机器人`, 'success');
   }, [mapData, notify, robotLoadState.status, selectedRobot, teachingTasks.length]);
 
   const selectTeachingTask = useCallback((id) => {
     setActiveTeachingTaskId(id);
+    setTeachingCaptureState({ status: 'idle', message: '' });
   }, []);
 
   const renameTeachingTask = useCallback((id, name) => {
@@ -1363,7 +1375,7 @@ export default function App() {
     [activeTeachingTaskId, notify, teachingTasks],
   );
 
-  const captureTeachingPoint = useCallback(() => {
+  const captureTeachingPoint = useCallback(async () => {
     const task = teachingTasks.find((item) => item.id === activeTeachingTaskId);
     if (!task) {
       notify('请先新建或选择一个示教任务', 'warning');
@@ -1373,9 +1385,38 @@ export default function App() {
       notify('当前地图或机器人与该示教任务不一致，无法记录', 'warning');
       return;
     }
+    if (teachingCaptureBusyRef.current) return;
     const pose = normalizeRobotPose(robotPose);
     const joints = normalizeRobotJointValues(robotJointValues);
     const timestamp = new Date().toISOString();
+    const expectsZividCapture = Number(robotLoadState.zividCount) > 0;
+    let cameraCapture = null;
+    if (expectsZividCapture) {
+      const provider = zividCaptureProviderRef.current;
+      if (typeof provider !== 'function') {
+        const message = '左右 Zivid 画面正在准备，请稍后重试';
+        setTeachingCaptureState({ status: 'error', message });
+        notify(message, 'warning');
+        return;
+      }
+      teachingCaptureBusyRef.current = true;
+      setTeachingCaptureState({
+        status: 'capturing',
+        message: '正在冻结左右 RGB 与点云快照',
+      });
+      try {
+        const capturePromise = provider();
+        await waitForPaint();
+        cameraCapture = await capturePromise;
+      } catch (error) {
+        const message = error?.message || '双目视觉快照采集失败';
+        setTeachingCaptureState({ status: 'error', message });
+        notify(message, 'error');
+        return;
+      } finally {
+        teachingCaptureBusyRef.current = false;
+      }
+    }
     const point = {
       id: createId('teach-point'),
       name: `T${String(task.points.length + 1).padStart(2, '0')}`,
@@ -1393,6 +1434,7 @@ export default function App() {
         count: Object.keys(joints).length,
         values: { ...joints },
       },
+      cameraCapture,
     };
     setTeachingTasks((current) => current.map((item) => (
       item.id === task.id
@@ -1400,14 +1442,23 @@ export default function App() {
         : item
     )));
     notify(
-      `${point.name} 已示教 · MAP 6DOF + ${point.fullBodyJoints.count} 个全身关节`,
+      `${point.name} 已示教 · MAP 6DOF + ${point.fullBodyJoints.count} 个全身关节${cameraCapture ? ' + 双目 RGB/XYZ' : ''}`,
       'success',
     );
+    setTeachingCaptureState({
+      status: 'complete',
+      message: cameraCapture
+        ? '左右 RGB 与点云已随示教点保存'
+        : '机器人位姿与全身关节已保存',
+      pointId: point.id,
+      frameCount: cameraCapture ? Object.keys(cameraCapture.frames || {}).length : 0,
+    });
   }, [
     activeTeachingTaskId,
     notify,
     robotJointValues,
     robotLoadState.status,
+    robotLoadState.zividCount,
     robotPose,
     teachingContextMatches,
     teachingTasks,
@@ -1651,6 +1702,9 @@ export default function App() {
       setZividCameraPoses({});
       setCameraTeachingCommand(null);
       setCameraTeachingResult({ status: 'idle', revision: 0 });
+      zividCaptureProviderRef.current = null;
+      teachingCaptureBusyRef.current = false;
+      setTeachingCaptureState({ status: 'idle', message: '' });
       setRobotLoadState({
         status: mapData?.geometry ? 'loading' : 'pending',
         robotId: robot.id,
@@ -1716,6 +1770,9 @@ export default function App() {
   }, []);
   const handleZividCameraPoseChange = useCallback((nextPoses) => {
     setZividCameraPoses(nextPoses && typeof nextPoses === 'object' ? nextPoses : {});
+  }, []);
+  const handleZividCaptureProviderChange = useCallback((provider) => {
+    zividCaptureProviderRef.current = typeof provider === 'function' ? provider : null;
   }, []);
   const requestCameraTeachingMove = useCallback(
     (request) => {
@@ -2068,6 +2125,7 @@ export default function App() {
           jointPoses={jointPoses}
           zividCameraPoses={zividCameraPoses}
           cameraTeachingResult={cameraTeachingResult}
+          teachingCaptureState={teachingCaptureState}
           onRunConnectivity={runConnectivity}
           onSelectWaypoint={focusWaypointFromInspector}
           onSearchWaypoint={focusWaypointFromInspector}
@@ -2094,6 +2152,7 @@ export default function App() {
           onDeleteJointPose={deleteJointPose}
           onApplyJointPose={applyJointPose}
           onCameraTeachingMove={requestCameraTeachingMove}
+          onZividCaptureProviderChange={handleZividCaptureProviderChange}
           onExportTeachingProject={exportProject}
         />
       </main>

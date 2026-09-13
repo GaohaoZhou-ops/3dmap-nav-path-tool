@@ -7,6 +7,7 @@ import {
   ChevronRight,
   CircleGauge,
   Compass,
+  Database,
   MoveHorizontal,
   Route,
   Ruler,
@@ -83,6 +84,7 @@ export default function Inspector({
   jointPoses = [],
   zividCameraPoses,
   cameraTeachingResult,
+  teachingCaptureState,
   onRunConnectivity,
   onSelectWaypoint,
   onSearchWaypoint,
@@ -109,6 +111,7 @@ export default function Inspector({
   onDeleteJointPose,
   onApplyJointPose,
   onCameraTeachingMove,
+  onZividCaptureProviderChange,
   onExportTeachingProject,
 }) {
   const [activePage, setActivePage] = useState('project');
@@ -189,6 +192,10 @@ export default function Inspector({
     ? selectedEdge.limits.minSpeed > selectedEdge.limits.maxSpeed ||
       selectedEdge.limits.minAcceleration > selectedEdge.limits.maxAcceleration
     : false;
+  const teachingPointCount = teachingTasks.reduce(
+    (count, task) => count + (task.points?.length || 0),
+    0,
+  );
 
   const inspectorPages = [
     {
@@ -212,8 +219,16 @@ export default function Inspector({
       index: '03',
       label: '虚拟示教与相机',
       compactLabel: '示教 / 相机',
-      summary: `${teachingTasks.length}T · ${jointPoses.length}J · ${robotLoadState?.zividCount || 0}C`,
+      summary: `${teachingTasks.length}T · ${robotLoadState?.zividCount || 0}C`,
       icon: Bot,
+    },
+    {
+      id: 'teaching-data',
+      index: '04',
+      label: '示教数据管理',
+      compactLabel: '示教数据',
+      summary: `${teachingTasks.length}T · ${teachingPointCount}P`,
+      icon: Database,
     },
   ];
   const activePageMeta = inspectorPages.find((page) => page.id === activePage)
@@ -703,7 +718,9 @@ export default function Inspector({
               robot={robot}
               robotLoadState={robotLoadState}
               robotJointValues={robotJointValues}
+              view="capture"
               teachingMode={teachingMode}
+              captureState={teachingCaptureState}
               onCreateTask={onCreateTeachingTask}
               onSelectTask={onSelectTeachingTask}
               onRenameTask={onRenameTeachingTask}
@@ -714,6 +731,7 @@ export default function Inspector({
               onApplyPoint={onApplyTeachingPoint}
               onTeachingModeChange={handleTeachingModeChange}
               onExportProject={onExportTeachingProject}
+              onOpenDataPage={() => activateInspectorPage('teaching-data')}
             />
 
             <div
@@ -734,9 +752,41 @@ export default function Inspector({
                 meshRenderQuality={meshRenderQuality}
                 onMeshRenderQualityChange={onMeshRenderQualityChange}
                 onCameraTeachingMove={onCameraTeachingMove}
+                onCaptureProviderChange={onZividCaptureProviderChange}
               />
             </div>
 
+          </div>
+        )}
+
+        {activePage === 'teaching-data' && (
+          <div
+            className="inspector-page inspector-page--teaching-data"
+            role="tabpanel"
+            id="inspector-page-teaching-data"
+            aria-labelledby="inspector-tab-teaching-data"
+          >
+            <VirtualTeachingPanel
+              tasks={teachingTasks}
+              activeTaskId={activeTeachingTaskId}
+              mapData={mapData}
+              robot={robot}
+              robotLoadState={robotLoadState}
+              robotJointValues={robotJointValues}
+              view="data"
+              captureState={teachingCaptureState}
+              onCreateTask={onCreateTeachingTask}
+              onSelectTask={onSelectTeachingTask}
+              onRenameTask={onRenameTeachingTask}
+              onDeleteTask={onDeleteTeachingTask}
+              onCapturePoint={onCaptureTeachingPoint}
+              onRenamePoint={onRenameTeachingPoint}
+              onDeletePoint={onDeleteTeachingPoint}
+              onApplyPoint={onApplyTeachingPoint}
+              onTeachingModeChange={handleTeachingModeChange}
+              onExportProject={onExportTeachingProject}
+              onOpenCapturePage={() => activateInspectorPage('teaching')}
+            />
           </div>
         )}
       </div>

@@ -1,0 +1,182 @@
+import base64
+import json
+import os
+from pathlib import Path
+
+from playwright.sync_api import sync_playwright
+
+
+BASE_URL = os.environ.get("BASE_URL", "http://127.0.0.1:22083")
+ROOT = Path(__file__).resolve().parents[1]
+
+
+def assert_camera_capture(capture):
+    assert capture["status"] == "complete"
+    assert capture["cameraModel"] == "Zivid 2 M70"
+    assert capture["imageResolution"] == [640, 395]
+    assert capture["calibration"]["nativeResolution"] == [1944, 1200]
+    assert capture["calibration"]["horizontalFov"] == 56.6
+    assert capture["calibration"]["verticalFov"] == 35.6
+    assert capture["storageByteLength"] > 0
+    assert set(capture["frames"]) == {"left", "right"}
+    for side, frame in capture["frames"].items():
+        assert frame["side"] == side
+        assert frame["opticalPose"]["frameName"] == f"zivid_{side}_optical_frame"
+        assert frame["rgb"]["dataUrl"].startswith("data:image/")
+        assert frame["rgb"]["width"] == 640
+        assert frame["rgb"]["height"] == 395
+        cloud = frame["pointCloud"]
+        assert cloud["coordinateFrame"] == f"zivid_{side}_optical_frame"
+        assert cloud["convention"] == "x-right/y-down/z-forward"
+        assert cloud["positionEncoding"] == "uint16-le/base64"
+        assert cloud["colorEncoding"] == "rgb8/base64"
+        assert cloud["visiblePointCount"] >= cloud["pointCount"]
+        if cloud["pointCount"]:
+            assert cloud["positionData"]
+            assert cloud["colorData"]
+            assert len(base64.b64decode(cloud["positionData"])) == cloud["pointCount"] * 6
+            assert len(base64.b64decode(cloud["colorData"])) == cloud["pointCount"] * 3
+        assert cloud["preview"]["dataUrl"].startswith("data:image/")
+
+
+def run():
+    page_errors = []
+    console_errors = []
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(headless=True)
+        page = browser.new_page(viewport={"width": 1500, "height": 940})
+        page.set_default_timeout(180_000)
+        page.on("pageerror", lambda error: page_errors.append(str(error)))
+        page.on(
+            "console",
+            lambda message: console_errors.append(message.text)
+            if message.type == "error"
+            else None,
+        )
+
+        page.goto(BASE_URL, wait_until="networkidle")
+        page.locator('[data-session-state="ready"]').wait_for()
+        page.locator('input[type="file"][accept=".ply"]').set_input_files(
+            str(ROOT / "tests/fixtures/hybrid-camera-surface-map.ply")
+        )
+        page.locator(".loading-curtain").wait_for(state="hidden")
+        page.get_by_role("button", name="加载机器人", exact=True).click()
+        page.get_by_role("option", name="加载机器人 botx_abx_zivid_m70").click()
+        page.wait_for_function(
+            "document.querySelector('.three-canvas')?.dataset.robotModelState === 'loaded'",
+            timeout=180_000,
+        )
+
+        page.get_by_role("tab", name="虚拟示教与相机").click()
+        page.get_by_role("button", name="隐藏全关节浮动窗口").click()
+        page.wait_for_function(
+            "document.querySelector('.zivid-camera-canvas')?.dataset.contextState === 'ready'"
+        )
+        page.get_by_role("button", name="新建任务", exact=True).click()
+        capture_button = page.get_by_role("button", name="记录当前机器人姿态")
+        capture_button.click()
+        teaching_panel = page.get_by_label("虚拟示教", exact=True)
+        page.wait_for_function(
+            "document.querySelector('[aria-label=\"虚拟示教\"]')?.dataset.cameraCaptureStatus === 'complete'",
+            timeout=180_000,
+        )
+        assert capture_button.get_attribute("aria-busy") == "false"
+
+        page.get_by_role("button", name="管理数据", exact=False).click()
+        assert page.get_by_role(
+            "tab", name="示教数据管理"
+        ).get_attribute("aria-selected") == "true"
+        assert page.locator('section[aria-label="示教数据管理"]').is_visible()
+        point_row = page.locator(".teaching-point-row").first
+        assert int(point_row.get_attribute("data-joint-count")) == 24
+        assert point_row.get_attribute("data-camera-frame-count") == "2"
+        vision = page.get_by_label("示教点双目视觉快照", exact=True)
+        assert vision.get_attribute("data-camera-frame-count") == "2"
+        assert vision.get_attribute("data-camera-model") == "Zivid 2 M70"
+        frames = vision.locator(".teaching-vision-frame")
+        assert frames.count() == 2
+        point_counts = [
+            int(frames.nth(index).get_attribute("data-point-count"))
+            for index in range(frames.count())
+        ]
+        assert max(point_counts) > 0
+        thumbnails = vision.locator(".teaching-vision-thumbnails img")
+        assert thumbnails.count() == 4
+        for index in range(thumbnails.count()):
+            assert thumbnails.nth(index).get_attribute("src").startswith("data:image/")
+
+        page.get_by_role("button", name="查看 T01 左臂RGB 快照").click()
+        modal = page.get_by_role("dialog", name="示教视觉快照大图")
+        modal.wait_for()
+        assert modal.locator("img").get_attribute("src").startswith("data:image/")
+        page.screenshot(path="/tmp/atlas-teaching-vision-preview.png", full_page=True)
+        page.get_by_role("button", name="关闭示教视觉快照").click()
+        modal.wait_for(state="detached")
+
+        page.get_by_role("button", name="查看 T01 左臂XYZ 快照").click()
+        modal = page.get_by_role("dialog", name="示教视觉快照大图")
+        modal.wait_for()
+        assert "XYZ POINTS" in modal.inner_text()
+        page.get_by_role("button", name="关闭示教视觉快照").click()
+        modal.wait_for(state="detached")
+
+        with page.expect_download() as download_info:
+            page.get_by_role("button", name="导出示教工程 JSON").click()
+        exported = json.loads(Path(download_info.value.path()).read_text())
+        assert exported["schemaVersion"] == "1.1"
+        capture = exported["virtualTeaching"]["tasks"][0]["points"][0]["cameraCapture"]
+        assert exported["virtualTeaching"]["tasks"][0]["points"][0]["fullBodyJoints"]["count"] == 24
+        assert_camera_capture(capture)
+        assert max(
+            frame["pointCloud"]["pointCount"] for frame in capture["frames"].values()
+        ) > 0
+
+        page.wait_for_timeout(700)
+        stored_capture = page.evaluate(
+            """
+            async () => {
+              const database = await new Promise((resolve, reject) => {
+                const request = indexedDB.open('atlas-route-studio', 1);
+                request.onsuccess = () => resolve(request.result);
+                request.onerror = () => reject(request.error);
+              });
+              const transaction = database.transaction('workspace-session', 'readonly');
+              const record = await new Promise((resolve, reject) => {
+                const request = transaction.objectStore('workspace-session').get('config');
+                request.onsuccess = () => resolve(request.result);
+                request.onerror = () => reject(request.error);
+              });
+              database.close();
+              return record?.config?.project?.virtualTeaching?.tasks?.[0]?.points?.[0]?.cameraCapture;
+            }
+            """
+        )
+        assert_camera_capture(stored_capture)
+
+        page.reload(wait_until="domcontentloaded")
+        page.locator('[data-session-state="ready"]').wait_for()
+        page.wait_for_function(
+            "document.querySelector('.three-canvas')?.dataset.robotModelState === 'loaded'",
+            timeout=180_000,
+        )
+        page.locator(".loading-curtain").wait_for(state="hidden")
+        page.get_by_role("tab", name="示教数据管理").click(force=True)
+        restored_vision = page.get_by_label("示教点双目视觉快照", exact=True)
+        restored_vision.wait_for()
+        assert restored_vision.get_attribute("data-camera-frame-count") == "2"
+        assert restored_vision.locator(".teaching-vision-thumbnails img").count() == 4
+
+        page.screenshot(path="/tmp/atlas-teaching-vision-capture.png", full_page=True)
+        print("camera_frames=", vision.get_attribute("data-camera-frame-count"))
+        print("left_points=", capture["frames"]["left"]["pointCloud"]["pointCount"])
+        print("right_points=", capture["frames"]["right"]["pointCloud"]["pointCount"])
+        print("capture_bytes=", capture["storageByteLength"])
+        print("page_errors=", page_errors)
+        print("console_errors=", console_errors)
+        assert not page_errors
+        assert not console_errors
+        browser.close()
+
+
+if __name__ == "__main__":
+    run()

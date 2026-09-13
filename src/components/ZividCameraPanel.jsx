@@ -35,6 +35,11 @@ export const ZIVID_M70_PROFILE = Object.freeze({
 
 const CAMERA_POINT_BUDGET = 360_000;
 const MAX_DIGITAL_ZOOM = 24;
+const TEACHING_CAPTURE_WIDTH = 640;
+const TEACHING_CAPTURE_HEIGHT = Math.round(
+  TEACHING_CAPTURE_WIDTH * (ZIVID_M70_PROFILE.nativeHeight / ZIVID_M70_PROFILE.nativeWidth),
+);
+const TEACHING_CAPTURE_POINT_BUDGET = 16_000;
 const CAMERA_MESH_REGION_POSITION_STEP = 0.3;
 const CAMERA_MESH_REGION_QUATERNION_STEP = 0.1;
 const CAMERA_NEIGHBORHOOD_POSITION_STEP = 0.5;
@@ -685,6 +690,451 @@ const createDepthMaterial = () => new THREE.ShaderMaterial({
   toneMapped: false,
 });
 
+const byteArrayToBase64 = (value) => {
+  const bytes = value instanceof Uint8Array
+    ? value
+    : new Uint8Array(value.buffer, value.byteOffset || 0, value.byteLength);
+  const chunkSize = 0x8000;
+  let binary = '';
+  for (let offset = 0; offset < bytes.length; offset += chunkSize) {
+    binary += String.fromCharCode(...bytes.subarray(offset, offset + chunkSize));
+  }
+  return globalThis.btoa(binary);
+};
+
+const uint16LittleEndianBase64 = (values) => {
+  const bytes = new Uint8Array(values.length * 2);
+  values.forEach((value, index) => {
+    bytes[index * 2] = value & 0xff;
+    bytes[index * 2 + 1] = value >>> 8;
+  });
+  return byteArrayToBase64(bytes);
+};
+
+const dataUrlByteLength = (value) => {
+  const encoded = String(value || '').split(',', 2)[1] || '';
+  if (!encoded) return 0;
+  const padding = encoded.endsWith('==') ? 2 : encoded.endsWith('=') ? 1 : 0;
+  return Math.max(0, Math.floor((encoded.length * 3) / 4) - padding);
+};
+
+const captureCanvasImage = (canvas) => {
+  const preferred = canvas.toDataURL('image/webp', 0.84);
+  const dataUrl = preferred.startsWith('data:image/webp')
+    ? preferred
+    : canvas.toDataURL('image/png');
+  const mimeType = dataUrl.slice(5, dataUrl.indexOf(';')) || 'image/png';
+  return {
+    encoding: 'data-url',
+    mimeType,
+    width: canvas.width,
+    height: canvas.height,
+    byteLength: dataUrlByteLength(dataUrl),
+    dataUrl,
+  };
+};
+
+const normalizedCameraPoseSnapshot = (pose, side) => {
+  if (!pose?.position || !pose?.quaternion) return null;
+  const quaternionW = Number(pose.quaternion.w ?? 1);
+  return {
+    frameName: String(
+      pose.frameName || `zivid_${side === 'right' ? 'right' : 'left'}_optical_frame`,
+    ),
+    position: {
+      x: Number(pose.position.x) || 0,
+      y: Number(pose.position.y) || 0,
+      z: Number(pose.position.z) || 0,
+    },
+    quaternion: {
+      x: Number(pose.quaternion.x) || 0,
+      y: Number(pose.quaternion.y) || 0,
+      z: Number(pose.quaternion.z) || 0,
+      w: Number.isFinite(quaternionW) ? quaternionW : 1,
+    },
+  };
+};
+
+const captureVisiblePointCloud = (
+  sourceGeometry,
+  pose,
+  pointBudget = TEACHING_CAPTURE_POINT_BUDGET,
+) => {
+  const sourcePosition = sourceGeometry?.getAttribute('position');
+  const inversePose = normalizedInversePose(pose);
+  if (!sourcePosition?.count || !inversePose) {
+    throw new Error('点云或相机光学位姿尚未准备完成');
+  }
+  const sourceColor = sourceGeometry.getAttribute('color');
+  const hasRgb = sourceColor?.count === sourcePosition.count;
+  const neighborhood = cameraPointNeighborhood(sourceGeometry, null, inversePose);
+  const readPosition = directPositionReader(sourcePosition);
+  const tangentX = Math.tan(THREE.MathUtils.degToRad(ZIVID_M70_PROFILE.horizontalFov / 2));
+  const tangentY = Math.tan(THREE.MathUtils.degToRad(ZIVID_M70_PROFILE.verticalFov / 2));
+  const visible = [];
+
+  for (let index = 0; index < neighborhood.length; index += 1) {
+    const sourceIndex = neighborhood[index];
+    const [worldX, worldY, worldZ] = readPosition(sourceIndex);
+    const local = rotateIntoCamera(worldX, worldY, worldZ, inversePose);
+    if (
+      local.z < ZIVID_M70_PROFILE.near
+      || local.z > ZIVID_M70_PROFILE.far
+      || Math.abs(local.x) > local.z * tangentX
+      || Math.abs(local.y) > local.z * tangentY
+    ) {
+      continue;
+    }
+    visible.push({ sourceIndex, worldX, worldY, worldZ, local });
+  }
+
+  const capturedPointCount = Math.min(
+    visible.length,
+    Math.max(0, Math.floor(Number(pointBudget) || 0)),
+  );
+  const localPositions = new Float32Array(capturedPointCount * 3);
+  const worldPositions = new Float32Array(capturedPointCount * 3);
+  const colors = new Uint8Array(capturedPointCount * 3);
+  const minimum = [Number.POSITIVE_INFINITY, Number.POSITIVE_INFINITY, Number.POSITIVE_INFINITY];
+  const maximum = [Number.NEGATIVE_INFINITY, Number.NEGATIVE_INFINITY, Number.NEGATIVE_INFINITY];
+  const encodeColor = (value, fallback) => {
+    const parsed = Number(value);
+    if (!Number.isFinite(parsed)) return fallback;
+    return Math.round(THREE.MathUtils.clamp(parsed > 1 ? parsed : parsed * 255, 0, 255));
+  };
+
+  for (let captureIndex = 0; captureIndex < capturedPointCount; captureIndex += 1) {
+    const visibleIndex = capturedPointCount === visible.length
+      ? captureIndex
+      : Math.min(
+          visible.length - 1,
+          Math.floor(((captureIndex + 0.5) * visible.length) / capturedPointCount),
+        );
+    const point = visible[visibleIndex];
+    const offset = captureIndex * 3;
+    const localValues = [point.local.x, point.local.y, point.local.z];
+    localPositions.set(localValues, offset);
+    worldPositions.set([point.worldX, point.worldY, point.worldZ], offset);
+    localValues.forEach((value, axis) => {
+      minimum[axis] = Math.min(minimum[axis], value);
+      maximum[axis] = Math.max(maximum[axis], value);
+    });
+    colors[offset] = hasRgb ? encodeColor(sourceColor.getX(point.sourceIndex), 184) : 184;
+    colors[offset + 1] = hasRgb ? encodeColor(sourceColor.getY(point.sourceIndex), 198) : 198;
+    colors[offset + 2] = hasRgb ? encodeColor(sourceColor.getZ(point.sourceIndex), 199) : 199;
+  }
+
+  if (!capturedPointCount) {
+    minimum.fill(0);
+    maximum.fill(0);
+  }
+  const scale = minimum.map((value, axis) => {
+    const span = maximum[axis] - value;
+    return span > 0 ? span / 65535 : 0;
+  });
+  const quantizedPositions = new Uint16Array(capturedPointCount * 3);
+  for (let index = 0; index < localPositions.length; index += 1) {
+    const axis = index % 3;
+    quantizedPositions[index] = scale[axis] > 0
+      ? Math.round(THREE.MathUtils.clamp(
+          (localPositions[index] - minimum[axis]) / scale[axis],
+          0,
+          65535,
+        ))
+      : 0;
+  }
+
+  const previewGeometry = new THREE.BufferGeometry();
+  previewGeometry.setAttribute('position', new THREE.BufferAttribute(worldPositions, 3));
+  previewGeometry.setAttribute('color', new THREE.BufferAttribute(colors, 3, true));
+  previewGeometry.userData.bufferStrategy = 'teaching-capture-visible-points';
+
+  return {
+    previewGeometry,
+    pointCloud: {
+      coordinateFrame: String(pose.frameName || 'camera-optical-frame'),
+      convention: 'x-right/y-down/z-forward',
+      pointCount: capturedPointCount,
+      visiblePointCount: visible.length,
+      sourcePointCount: sourcePosition.count,
+      sampleMethod: capturedPointCount < visible.length ? 'uniform-visible-lod' : 'all-visible',
+      positionEncoding: 'uint16-le/base64',
+      positionComponents: ['x', 'y', 'z'],
+      positionOffset: minimum,
+      positionScale: scale,
+      positionData: uint16LittleEndianBase64(quantizedPositions),
+      colorEncoding: 'rgb8/base64',
+      colorData: byteArrayToBase64(colors),
+      hasSourceRgb: hasRgb,
+      byteLength: quantizedPositions.byteLength + colors.byteLength,
+    },
+  };
+};
+
+const renderTeachingCaptureImages = (
+  sourceGeometry,
+  pose,
+  qualityPlan,
+  pointCloudGeometry,
+) => {
+  const topology = prepareMapGeometryTopology(sourceGeometry);
+  const cameraSurfaceGeometry = createCameraSurfaceGeometry(sourceGeometry, qualityPlan, pose);
+  const globalRgbFallbackGeometry = !cameraSurfaceGeometry
+    ? createCameraGeometry(sourceGeometry, {
+        pointBudget: qualityPlan.rgbPointBudget,
+        sourceOrder: sourceGeometry.userData.pointRenderOrder,
+        bufferStrategy: 'teaching-capture-rgb-fallback',
+      })
+    : null;
+  const rgbCameraGeometry = cameraSurfaceGeometry
+    ? {
+        geometry: cameraSurfaceGeometry.pointGeometry,
+        renderCount: cameraSurfaceGeometry.renderPointCount,
+        hasRgb: cameraSurfaceGeometry.hasRgb,
+      }
+    : globalRgbFallbackGeometry;
+  const cameraMeshGeometry = topology.hasMesh
+    ? createCameraMeshGeometry(sourceGeometry, qualityPlan, pose)
+    : null;
+  let renderer = null;
+  let rgbMaterial = null;
+  let depthMaterial = null;
+  let rgbMeshMaterial = null;
+  let reconstructedSurfaceMaterial = null;
+
+  try {
+    renderer = new THREE.WebGLRenderer({
+      antialias: false,
+      alpha: false,
+      preserveDrawingBuffer: true,
+      powerPreference: 'high-performance',
+    });
+    renderer.setClearColor(0x02080b, 1);
+    renderer.setPixelRatio(1);
+    renderer.setSize(TEACHING_CAPTURE_WIDTH, TEACHING_CAPTURE_HEIGHT, false);
+    renderer.outputColorSpace = THREE.SRGBColorSpace;
+
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x02080b);
+    const camera = new THREE.PerspectiveCamera(
+      ZIVID_M70_PROFILE.verticalFov,
+      TEACHING_CAPTURE_WIDTH / TEACHING_CAPTURE_HEIGHT,
+      ZIVID_M70_PROFILE.near,
+      ZIVID_M70_PROFILE.far,
+    );
+    camera.position.set(pose.position.x, pose.position.y, pose.position.z);
+    camera.quaternion
+      .set(
+        pose.quaternion.x,
+        pose.quaternion.y,
+        pose.quaternion.z,
+        pose.quaternion.w,
+      )
+      .normalize()
+      .multiply(ROS_OPTICAL_TO_THREE_CAMERA);
+    camera.updateProjectionMatrix();
+    camera.updateMatrixWorld(true);
+    const surfaceAmbientLight = new THREE.HemisphereLight(0xe8fbff, 0x081115, 1.35);
+    const surfaceHeadLight = new THREE.DirectionalLight(0xffffff, 1.7);
+    surfaceHeadLight.position.set(0, 0, 0);
+    surfaceHeadLight.target.position.set(0, 0, -1);
+    camera.add(surfaceHeadLight, surfaceHeadLight.target);
+    scene.add(camera, surfaceAmbientLight);
+
+    rgbMaterial = new THREE.PointsMaterial({
+      color: rgbCameraGeometry?.hasRgb ? 0xffffff : 0xb8c6c7,
+      size: THREE.MathUtils.clamp(
+        Math.sqrt(
+          (TEACHING_CAPTURE_WIDTH * TEACHING_CAPTURE_HEIGHT)
+          / Math.max(cameraSurfaceGeometry?.strictVisiblePointCount || rgbCameraGeometry?.renderCount || 1, 1),
+        ) * 1.45,
+        2.8,
+        20,
+      ),
+      sizeAttenuation: false,
+      vertexColors: Boolean(rgbCameraGeometry?.hasRgb),
+      depthTest: true,
+      depthWrite: true,
+      depthFunc: topology.hasMesh ? THREE.LessDepth : THREE.LessEqualDepth,
+      toneMapped: false,
+    });
+    depthMaterial = createDepthMaterial();
+    depthMaterial.uniforms.uPointSize.value = 2.35;
+    const points = new THREE.Points(rgbCameraGeometry?.geometry || pointCloudGeometry, rgbMaterial);
+    points.frustumCulled = false;
+    points.renderOrder = 2;
+    points.visible = Boolean(
+      rgbCameraGeometry?.renderCount
+      && !cameraSurfaceGeometry?.renderTriangleCount,
+    );
+    scene.add(points);
+
+    let rgbMesh = null;
+    if (cameraMeshGeometry?.geometry) {
+      rgbMeshMaterial = new THREE.MeshBasicMaterial({
+        color: cameraMeshGeometry.hasRgb ? 0xffffff : 0xb8c6c7,
+        vertexColors: cameraMeshGeometry.hasRgb,
+        side: THREE.DoubleSide,
+        depthTest: true,
+        depthWrite: true,
+        polygonOffset: true,
+        polygonOffsetFactor: -1,
+        polygonOffsetUnits: -1,
+        toneMapped: false,
+      });
+      rgbMesh = new THREE.Mesh(cameraMeshGeometry.geometry, rgbMeshMaterial);
+      rgbMesh.frustumCulled = false;
+      rgbMesh.renderOrder = 1;
+      scene.add(rgbMesh);
+    }
+
+    let reconstructedSurface = null;
+    if (cameraSurfaceGeometry?.meshGeometry) {
+      reconstructedSurfaceMaterial = new THREE.MeshStandardMaterial({
+        color: cameraSurfaceGeometry.hasRgb ? 0xffffff : 0xb8c6c7,
+        vertexColors: cameraSurfaceGeometry.hasRgb,
+        side: THREE.DoubleSide,
+        depthTest: true,
+        depthWrite: true,
+        roughness: 0.92,
+        metalness: 0,
+        toneMapped: false,
+      });
+      reconstructedSurface = new THREE.Mesh(
+        cameraSurfaceGeometry.meshGeometry,
+        reconstructedSurfaceMaterial,
+      );
+      reconstructedSurface.frustumCulled = false;
+      reconstructedSurface.renderOrder = 1;
+      scene.add(reconstructedSurface);
+    }
+
+    renderer.render(scene, camera);
+    renderer.getContext().finish?.();
+    const rgb = captureCanvasImage(renderer.domElement);
+
+    if (rgbMesh) rgbMesh.visible = false;
+    if (reconstructedSurface) reconstructedSurface.visible = false;
+    points.geometry = pointCloudGeometry;
+    points.material = depthMaterial;
+    points.visible = Boolean(pointCloudGeometry?.getAttribute('position')?.count);
+    renderer.render(scene, camera);
+    renderer.getContext().finish?.();
+    const pointCloudPreview = captureCanvasImage(renderer.domElement);
+
+    return {
+      rgb,
+      pointCloudPreview,
+      rgbSurfaceMode: topology.hasMesh
+        ? 'embedded-mesh+local-surface'
+        : 'local-surface',
+      renderedMeshFaceCount: cameraMeshGeometry?.renderFaceCount || 0,
+      reconstructedTriangleCount: cameraSurfaceGeometry?.renderTriangleCount || 0,
+    };
+  } finally {
+    cameraSurfaceGeometry?.pointGeometry?.dispose();
+    cameraSurfaceGeometry?.meshGeometry?.dispose();
+    globalRgbFallbackGeometry?.geometry?.dispose();
+    cameraMeshGeometry?.geometry?.dispose();
+    rgbMaterial?.dispose();
+    depthMaterial?.dispose();
+    rgbMeshMaterial?.dispose();
+    reconstructedSurfaceMaterial?.dispose();
+    renderer?.dispose();
+    renderer?.forceContextLoss?.();
+  }
+};
+
+const captureZividTeachingVision = async ({
+  mapData,
+  cameraPoses,
+  meshRenderQuality,
+}) => {
+  const sourceGeometry = mapData?.geometry;
+  if (!sourceGeometry?.getAttribute('position')?.count) {
+    throw new Error('当前地图没有可采集的点云数据');
+  }
+  const capturedAt = new Date().toISOString();
+  const poses = Object.fromEntries(
+    ['left', 'right'].map((side) => [
+      side,
+      normalizedCameraPoseSnapshot(cameraPoses?.[side], side),
+    ]),
+  );
+  if (!poses.left || !poses.right) {
+    throw new Error('左右 Zivid 光学坐标系尚未同步完成');
+  }
+  const topology = prepareMapGeometryTopology(sourceGeometry);
+  const qualityPlan = resolveMeshRenderQuality(meshRenderQuality, topology.faceCount);
+  const frames = {};
+  let storageByteLength = 0;
+
+  await new Promise((resolve) => requestAnimationFrame(() => resolve()));
+  for (const side of ['left', 'right']) {
+    const pose = poses[side];
+    const pointCapture = captureVisiblePointCloud(sourceGeometry, pose);
+    try {
+      const images = renderTeachingCaptureImages(
+        sourceGeometry,
+        pose,
+        qualityPlan,
+        pointCapture.previewGeometry,
+      );
+      const frameByteLength = pointCapture.pointCloud.byteLength
+        + images.rgb.byteLength
+        + images.pointCloudPreview.byteLength;
+      storageByteLength += frameByteLength;
+      frames[side] = {
+        side,
+        capturedAt,
+        opticalPose: pose,
+        rgb: images.rgb,
+        pointCloud: {
+          ...pointCapture.pointCloud,
+          preview: images.pointCloudPreview,
+        },
+        rendering: {
+          quality: qualityPlan.effectiveId,
+          rgbSurfaceMode: images.rgbSurfaceMode,
+          renderedMeshFaceCount: images.renderedMeshFaceCount,
+          reconstructedTriangleCount: images.reconstructedTriangleCount,
+        },
+        byteLength: frameByteLength,
+      };
+    } finally {
+      pointCapture.previewGeometry.dispose();
+    }
+    await new Promise((resolve) => window.setTimeout(resolve, 0));
+  }
+
+  return {
+    version: 1,
+    status: 'complete',
+    cameraModel: ZIVID_M70_PROFILE.model,
+    capturedAt,
+    imageResolution: [TEACHING_CAPTURE_WIDTH, TEACHING_CAPTURE_HEIGHT],
+    calibration: {
+      projection: 'perspective',
+      nativeResolution: [ZIVID_M70_PROFILE.nativeWidth, ZIVID_M70_PROFILE.nativeHeight],
+      horizontalFov: ZIVID_M70_PROFILE.horizontalFov,
+      verticalFov: ZIVID_M70_PROFILE.verticalFov,
+      workingNear: ZIVID_M70_PROFILE.near,
+      workingFar: ZIVID_M70_PROFILE.far,
+    },
+    pointBudgetPerCamera: TEACHING_CAPTURE_POINT_BUDGET,
+    map: {
+      fileName: String(mapData?.name || ''),
+      sourceHash: mapData?.sourceHash ? String(mapData.sourceHash) : null,
+    },
+    quality: {
+      requested: qualityPlan.requestedId,
+      effective: qualityPlan.effectiveId,
+    },
+    frames,
+    storageByteLength,
+  };
+};
+
 const estimateVisiblePoints = (geometry, pose) => {
   const attribute = geometry?.getAttribute('position');
   if (!attribute?.count || !pose?.position || !pose?.quaternion) {
@@ -759,6 +1209,7 @@ export default function ZividCameraPanel({
   meshRenderQuality = 'auto',
   onMeshRenderQualityChange,
   onCameraTeachingMove,
+  onCaptureProviderChange,
 }) {
   const enabled = isM70Robot(robot, robotLoadState);
   const [internalActiveSide, setInternalActiveSide] = useState('left');
@@ -774,6 +1225,7 @@ export default function ZividCameraPanel({
   const [cameraMeshStats, setCameraMeshStats] = useState(EMPTY_CAMERA_MESH_STATS);
   const mountRef = useRef(null);
   const poseRef = useRef(null);
+  const cameraPosesRef = useRef(cameraPoses);
   const renderModeRef = useRef(renderMode);
   const viewRef = useRef({ zoom, pan });
   const dragRef = useRef(null);
@@ -799,6 +1251,7 @@ export default function ZividCameraPanel({
   );
 
   poseRef.current = activePose;
+  cameraPosesRef.current = cameraPoses;
   renderModeRef.current = renderMode;
   viewRef.current = { zoom, pan };
 
@@ -837,6 +1290,21 @@ export default function ZividCameraPanel({
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [expanded]);
+
+  useEffect(() => {
+    if (!onCaptureProviderChange) return undefined;
+    if (!enabled || !mapData?.geometry) {
+      onCaptureProviderChange(null);
+      return undefined;
+    }
+    const provider = () => captureZividTeachingVision({
+      mapData,
+      cameraPoses: cameraPosesRef.current,
+      meshRenderQuality,
+    });
+    onCaptureProviderChange(provider);
+    return () => onCaptureProviderChange(null);
+  }, [enabled, mapData, meshRenderQuality, onCaptureProviderChange]);
 
   useEffect(() => {
     const mount = mountRef.current;

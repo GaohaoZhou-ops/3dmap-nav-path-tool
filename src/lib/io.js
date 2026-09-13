@@ -108,6 +108,151 @@ const normalizeTeachingJoints = (value) => {
   };
 };
 
+const normalizeCaptureImage = (value) => {
+  if (!value || typeof value !== 'object') return null;
+  const dataUrl = String(value.dataUrl || value.data || '');
+  if (!dataUrl.startsWith('data:image/')) return null;
+  return {
+    encoding: 'data-url',
+    mimeType: String(value.mimeType || dataUrl.slice(5, dataUrl.indexOf(';')) || 'image/png'),
+    width: Math.max(1, Math.floor(numberOr(value.width, 1))),
+    height: Math.max(1, Math.floor(numberOr(value.height, 1))),
+    byteLength: Math.max(0, Math.floor(numberOr(value.byteLength))),
+    dataUrl,
+  };
+};
+
+const normalizeOpticalPose = (value, side) => {
+  const pose = value && typeof value === 'object' ? value : {};
+  const position = pose.position && typeof pose.position === 'object' ? pose.position : {};
+  const quaternion = pose.quaternion && typeof pose.quaternion === 'object'
+    ? pose.quaternion
+    : {};
+  return {
+    frameName: String(
+      pose.frameName || `zivid_${side === 'right' ? 'right' : 'left'}_optical_frame`,
+    ),
+    position: {
+      x: numberOr(position.x),
+      y: numberOr(position.y),
+      z: numberOr(position.z),
+    },
+    quaternion: {
+      x: numberOr(quaternion.x),
+      y: numberOr(quaternion.y),
+      z: numberOr(quaternion.z),
+      w: numberOr(quaternion.w, 1),
+    },
+  };
+};
+
+const normalizeVector3Array = (value) => (
+  Array.isArray(value)
+    ? [0, 1, 2].map((index) => numberOr(value[index]))
+    : [0, 0, 0]
+);
+
+const normalizeTeachingPointCloud = (value, frameName) => {
+  if (!value || typeof value !== 'object') return null;
+  const pointCount = Math.max(0, Math.floor(numberOr(value.pointCount)));
+  return {
+    coordinateFrame: String(value.coordinateFrame || frameName || 'camera-optical-frame'),
+    convention: String(value.convention || 'x-right/y-down/z-forward'),
+    pointCount,
+    visiblePointCount: Math.max(pointCount, Math.floor(numberOr(value.visiblePointCount, pointCount))),
+    sourcePointCount: Math.max(pointCount, Math.floor(numberOr(value.sourcePointCount, pointCount))),
+    sampleMethod: String(value.sampleMethod || 'all-visible'),
+    positionEncoding: String(value.positionEncoding || 'uint16-le/base64'),
+    positionComponents: Array.isArray(value.positionComponents)
+      ? value.positionComponents.slice(0, 3).map(String)
+      : ['x', 'y', 'z'],
+    positionOffset: normalizeVector3Array(value.positionOffset),
+    positionScale: normalizeVector3Array(value.positionScale),
+    positionData: String(value.positionData || ''),
+    colorEncoding: String(value.colorEncoding || 'rgb8/base64'),
+    colorData: String(value.colorData || ''),
+    hasSourceRgb: Boolean(value.hasSourceRgb),
+    byteLength: Math.max(0, Math.floor(numberOr(value.byteLength))),
+    preview: normalizeCaptureImage(value.preview),
+  };
+};
+
+const normalizeTeachingCameraFrame = (value, side) => {
+  if (!value || typeof value !== 'object') return null;
+  const opticalPose = normalizeOpticalPose(value.opticalPose || value.pose, side);
+  const rgb = normalizeCaptureImage(value.rgb || value.image);
+  const pointCloud = normalizeTeachingPointCloud(
+    value.pointCloud || value.cloud,
+    opticalPose.frameName,
+  );
+  if (!rgb && !pointCloud) return null;
+  const rendering = value.rendering && typeof value.rendering === 'object'
+    ? value.rendering
+    : {};
+  return {
+    side,
+    capturedAt: String(value.capturedAt || ''),
+    opticalPose,
+    rgb,
+    pointCloud,
+    rendering: {
+      quality: String(rendering.quality || 'balanced'),
+      rgbSurfaceMode: String(rendering.rgbSurfaceMode || 'local-surface'),
+      renderedMeshFaceCount: Math.max(0, Math.floor(numberOr(rendering.renderedMeshFaceCount))),
+      reconstructedTriangleCount: Math.max(
+        0,
+        Math.floor(numberOr(rendering.reconstructedTriangleCount)),
+      ),
+    },
+    byteLength: Math.max(0, Math.floor(numberOr(value.byteLength))),
+  };
+};
+
+const normalizeTeachingCameraCapture = (value) => {
+  if (!value || typeof value !== 'object') return null;
+  const rawFrames = value.frames && typeof value.frames === 'object' ? value.frames : value;
+  const frames = Object.fromEntries(
+    ['left', 'right'].flatMap((side) => {
+      const frame = normalizeTeachingCameraFrame(rawFrames[side], side);
+      return frame ? [[side, frame]] : [];
+    }),
+  );
+  if (!Object.keys(frames).length) return null;
+  const imageResolution = Array.isArray(value.imageResolution)
+    ? value.imageResolution.slice(0, 2).map((item) => Math.max(1, Math.floor(numberOr(item, 1))))
+    : [640, 395];
+  return {
+    version: Math.max(1, Math.floor(numberOr(value.version, 1))),
+    status: String(value.status || 'complete'),
+    cameraModel: String(value.cameraModel || 'Zivid 2 M70'),
+    capturedAt: String(value.capturedAt || ''),
+    imageResolution,
+    calibration: {
+      projection: String(value.calibration?.projection || 'perspective'),
+      nativeResolution: Array.isArray(value.calibration?.nativeResolution)
+        ? value.calibration.nativeResolution
+          .slice(0, 2)
+          .map((item) => Math.max(1, Math.floor(numberOr(item, 1))))
+        : [1944, 1200],
+      horizontalFov: numberOr(value.calibration?.horizontalFov, 56.6),
+      verticalFov: numberOr(value.calibration?.verticalFov, 35.6),
+      workingNear: numberOr(value.calibration?.workingNear, 0.3),
+      workingFar: numberOr(value.calibration?.workingFar, 1.3),
+    },
+    pointBudgetPerCamera: Math.max(0, Math.floor(numberOr(value.pointBudgetPerCamera))),
+    map: {
+      fileName: String(value.map?.fileName || ''),
+      sourceHash: value.map?.sourceHash ? String(value.map.sourceHash) : null,
+    },
+    quality: {
+      requested: String(value.quality?.requested || 'auto'),
+      effective: String(value.quality?.effective || 'balanced'),
+    },
+    frames,
+    storageByteLength: Math.max(0, Math.floor(numberOr(value.storageByteLength))),
+  };
+};
+
 export function normalizeTeachingTasks(payload) {
   const rawTasks = Array.isArray(payload)
     ? payload
@@ -137,6 +282,9 @@ export function normalizeTeachingTasks(payload) {
           point?.mapPose || point?.robotPose || point?.pose,
         ),
         fullBodyJoints: joints,
+        cameraCapture: normalizeTeachingCameraCapture(
+          point?.cameraCapture || point?.visionCapture || point?.cameraFrames,
+        ),
       };
     });
     const robot = task?.robot && typeof task.robot === 'object' ? task.robot : {};
@@ -351,7 +499,7 @@ export function buildExport({
   const pointById = new Map(waypoints.map((point) => [point.id, point]));
   const exportedRobotPose = robotPose || robot?.origin || {};
   return {
-    schemaVersion: '1.0',
+    schemaVersion: '1.1',
     exportedAt: new Date().toISOString(),
     coordinateSystem: {
       horizontalPlane: 'XY',

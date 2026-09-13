@@ -39,6 +39,7 @@ def run():
         teaching_tab = page.get_by_role("tab", name="虚拟示教与相机")
         teaching_tab.click()
         assert teaching_tab.get_attribute("aria-selected") == "true"
+        page.get_by_role("button", name="隐藏全关节浮动窗口").click()
         panel = page.get_by_label("Zivid 2 M70 相机视图")
         panel.scroll_into_view_if_needed()
         panel.wait_for()

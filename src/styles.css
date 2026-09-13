@@ -1784,6 +1784,98 @@ code {
   background: linear-gradient(90deg, transparent, rgba(30, 24, 9, 0.36), transparent);
 }
 
+.robot-collision-alert {
+  --collision-tone: var(--cyan);
+  --collision-rgb: 89, 219, 232;
+  position: absolute;
+  top: 93px;
+  left: 10px;
+  z-index: 6;
+  display: grid;
+  grid-template-columns: 31px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 9px;
+  width: min(500px, calc(100% - 20px));
+  min-height: 46px;
+  padding: 6px 9px 6px 6px;
+  border: 1px solid rgba(var(--collision-rgb), 0.42);
+  border-left: 2px solid var(--collision-tone);
+  color: var(--collision-tone);
+  background:
+    linear-gradient(90deg, rgba(var(--collision-rgb), 0.13), transparent 68%),
+    rgba(4, 13, 16, 0.9);
+  box-shadow:
+    inset 0 0 20px rgba(var(--collision-rgb), 0.035),
+    0 10px 28px rgba(0, 0, 0, 0.32);
+  backdrop-filter: blur(9px);
+  pointer-events: none;
+}
+
+.robot-collision-alert.is-safe {
+  --collision-tone: var(--green);
+  --collision-rgb: 94, 229, 154;
+}
+
+.robot-collision-alert.is-near {
+  --collision-tone: var(--amber);
+  --collision-rgb: 244, 201, 93;
+}
+
+.robot-collision-alert.is-collision,
+.robot-collision-alert.is-error {
+  --collision-tone: var(--red);
+  --collision-rgb: 255, 112, 110;
+}
+
+.robot-collision-alert__icon {
+  display: grid;
+  place-items: center;
+  width: 29px;
+  height: 29px;
+  border: 1px solid rgba(var(--collision-rgb), 0.35);
+  background: rgba(var(--collision-rgb), 0.1);
+  box-shadow: inset 0 0 12px rgba(var(--collision-rgb), 0.08);
+}
+
+.robot-collision-alert > div {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.robot-collision-alert small {
+  color: rgba(var(--collision-rgb), 0.68);
+  font: 5px "SFMono-Regular", Menlo, monospace;
+  letter-spacing: .14em;
+}
+
+.robot-collision-alert strong {
+  margin-top: 2px;
+  color: #ecf7f4;
+  font-size: 9px;
+  font-weight: 620;
+}
+
+.robot-collision-alert em {
+  margin-top: 2px;
+  overflow: hidden;
+  color: rgba(210, 231, 228, 0.68);
+  font: normal 6px "SFMono-Regular", Menlo, monospace;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.robot-collision-alert > b {
+  min-width: 58px;
+  padding-left: 9px;
+  border-left: 1px solid rgba(var(--collision-rgb), 0.24);
+  color: var(--collision-tone);
+  font: 600 9px "SFMono-Regular", Menlo, monospace;
+  text-align: right;
+  text-shadow: 0 0 14px rgba(var(--collision-rgb), 0.35);
+  white-space: nowrap;
+}
+
 .three-canvas {
   display: block;
   width: 100%;
@@ -6965,6 +7057,227 @@ input[type="number"]::-webkit-inner-spin-button {
   background:
     linear-gradient(90deg, rgba(89, 219, 232, 0.12), rgba(89, 219, 232, 0.035));
   box-shadow: inset 2px 0 var(--cyan);
+}
+
+.teaching-collision-guard {
+  --guard-tone: 89, 219, 232;
+  position: relative;
+  margin: 0 9px 9px;
+  overflow: hidden;
+  border: 1px solid rgba(var(--guard-tone), 0.2);
+  background:
+    linear-gradient(115deg, rgba(var(--guard-tone), 0.075), transparent 52%),
+    rgba(3, 12, 15, 0.86);
+  box-shadow: inset 2px 0 rgba(var(--guard-tone), 0.5);
+}
+
+.teaching-collision-guard.is-disabled {
+  --guard-tone: 121, 148, 149;
+  filter: saturate(0.72);
+}
+
+.teaching-collision-guard.is-safe {
+  --guard-tone: 94, 229, 154;
+}
+
+.teaching-collision-guard.is-near {
+  --guard-tone: 244, 201, 93;
+}
+
+.teaching-collision-guard.is-collision,
+.teaching-collision-guard.is-error {
+  --guard-tone: 255, 112, 110;
+}
+
+.teaching-collision-guard__head {
+  display: grid;
+  grid-template-columns: 27px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 7px;
+  min-height: 41px;
+  padding: 6px 7px;
+  border-bottom: 1px solid rgba(var(--guard-tone), 0.13);
+}
+
+.teaching-collision-guard__mark {
+  display: grid;
+  place-items: center;
+  width: 25px;
+  height: 25px;
+  border: 1px solid rgba(var(--guard-tone), 0.25);
+  color: rgb(var(--guard-tone));
+  background: rgba(var(--guard-tone), 0.065);
+}
+
+.teaching-collision-guard__head > div {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.teaching-collision-guard__head small {
+  color: rgba(var(--guard-tone), 0.62);
+  font: 5px "SFMono-Regular", Menlo, monospace;
+  letter-spacing: .08em;
+}
+
+.teaching-collision-guard__head strong {
+  margin-top: 2px;
+  color: #cfe0dd;
+  font-size: 8px;
+  font-weight: 590;
+}
+
+.teaching-collision-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 25px;
+  padding: 0 6px;
+  border: 1px solid rgba(137, 177, 179, 0.18);
+  color: #718988;
+  background: rgba(1, 8, 10, 0.66);
+  cursor: pointer;
+}
+
+.teaching-collision-toggle > i {
+  position: relative;
+  display: block;
+  width: 23px;
+  height: 11px;
+  border: 1px solid rgba(137, 177, 179, 0.25);
+  background: rgba(137, 177, 179, 0.06);
+}
+
+.teaching-collision-toggle > i > span {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 5px;
+  height: 5px;
+  background: #718988;
+  transition: transform 140ms ease, background 140ms ease;
+}
+
+.teaching-collision-toggle > em {
+  font: normal 6px "SFMono-Regular", Menlo, monospace;
+  letter-spacing: .08em;
+}
+
+.teaching-collision-toggle.is-on {
+  border-color: rgba(89, 219, 232, 0.42);
+  color: var(--cyan);
+  background: rgba(89, 219, 232, 0.08);
+}
+
+.teaching-collision-toggle.is-on > i {
+  border-color: rgba(89, 219, 232, 0.48);
+  background: rgba(89, 219, 232, 0.1);
+}
+
+.teaching-collision-toggle.is-on > i > span {
+  background: var(--cyan);
+  box-shadow: 0 0 7px rgba(89, 219, 232, 0.58);
+  transform: translateX(12px);
+}
+
+.teaching-collision-toggle:hover:not(:disabled) {
+  border-color: rgba(89, 219, 232, 0.58);
+  color: #b9f4f6;
+}
+
+.teaching-collision-toggle:focus-visible {
+  outline: 1px solid var(--cyan);
+  outline-offset: 2px;
+}
+
+.teaching-collision-toggle:disabled {
+  cursor: not-allowed;
+  opacity: .42;
+}
+
+.teaching-collision-guard__status {
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 7px;
+  min-height: 42px;
+  padding: 6px 7px;
+  background: rgba(var(--guard-tone), 0.035);
+}
+
+.teaching-collision-guard__status > span {
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  color: rgb(var(--guard-tone));
+}
+
+.teaching-collision-guard__status > div {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.teaching-collision-guard__status strong {
+  color: #c7d9d6;
+  font-size: 7px;
+  font-weight: 580;
+}
+
+.teaching-collision-guard__status small {
+  margin-top: 2px;
+  overflow: hidden;
+  color: #68807f;
+  font: 5px "SFMono-Regular", Menlo, monospace;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.teaching-collision-guard__status > b {
+  min-width: 47px;
+  color: rgb(var(--guard-tone));
+  font: 600 7px "SFMono-Regular", Menlo, monospace;
+  text-align: right;
+  white-space: nowrap;
+}
+
+.teaching-collision-guard__policy {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 25px;
+  padding: 4px 7px;
+  border-top: 1px solid rgba(137, 177, 179, 0.08);
+  color: #617675;
+  font: 5px "SFMono-Regular", Menlo, monospace;
+}
+
+.teaching-collision-guard__policy > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  white-space: nowrap;
+}
+
+.teaching-collision-guard__policy > span > i {
+  width: 5px;
+  height: 5px;
+  background: var(--red);
+  box-shadow: 0 0 5px rgba(255, 112, 110, .32);
+}
+
+.teaching-collision-guard__policy > span:nth-child(2) > i {
+  background: var(--amber);
+  box-shadow: 0 0 5px rgba(244, 201, 93, .3);
+}
+
+.teaching-collision-guard__policy > em {
+  margin-left: auto;
+  color: rgba(89, 219, 232, .58);
+  font-style: normal;
+  white-space: nowrap;
 }
 
 .camera-teaching-workspace {

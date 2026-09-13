@@ -46,6 +46,7 @@ import {
   normalizeRobotPose,
 } from './lib/robotLoader.js';
 import { normalizeRobotJointLocks } from './lib/robotJointLocks.js';
+import { createRobotCollisionStatus } from './lib/robotCollision.js';
 import { sha256ArrayBuffer } from './lib/hash.js';
 import {
   normalizeMeshRenderQuality,
@@ -302,6 +303,10 @@ export default function App() {
   const [robotJointValues, setRobotJointValues] = useState({});
   const [lockedRobotJointNames, setLockedRobotJointNames] = useState([]);
   const [robotControlEnabled, setRobotControlEnabled] = useState(false);
+  const [robotCollisionProtectionEnabled, setRobotCollisionProtectionEnabled] = useState(false);
+  const [robotCollisionStatus, setRobotCollisionStatus] = useState(
+    () => createRobotCollisionStatus(),
+  );
   const [teachingTasks, setTeachingTasks] = useState([]);
   const [activeTeachingTaskId, setActiveTeachingTaskId] = useState(null);
   const [jointPoses, setJointPoses] = useState([]);
@@ -518,6 +523,8 @@ export default function App() {
         setRobotJointValues({});
         setLockedRobotJointNames([]);
         setRobotControlEnabled(false);
+        setRobotCollisionProtectionEnabled(false);
+        setRobotCollisionStatus(createRobotCollisionStatus());
         setTeachingTasks([]);
         setActiveTeachingTaskId(null);
         setJointPoses([]);
@@ -1021,6 +1028,8 @@ export default function App() {
         importedRobot ? normalizeRobotJointLocks(project.robot?.lockedJoints) : [],
       );
       setRobotControlEnabled(false);
+      setRobotCollisionProtectionEnabled(false);
+      setRobotCollisionStatus(createRobotCollisionStatus());
       setRobotLoadState({ status: importedRobot ? 'pending' : 'idle' });
       setSynchronizedFocus(null);
       setRestoredView2d(project.view2d);
@@ -1699,6 +1708,8 @@ export default function App() {
       setRobotJointValues({});
       setLockedRobotJointNames([]);
       setRobotControlEnabled(false);
+      setRobotCollisionProtectionEnabled(false);
+      setRobotCollisionStatus(createRobotCollisionStatus());
       setZividCameraPoses({});
       setCameraTeachingCommand(null);
       setCameraTeachingResult({ status: 'idle', revision: 0 });
@@ -1754,6 +1765,50 @@ export default function App() {
       return unchanged ? current : normalized;
     });
   }, []);
+  const handleRobotCollisionProtectionStatus = useCallback((nextStatus) => {
+    if (!nextStatus || typeof nextStatus !== 'object') return;
+    const normalized = createRobotCollisionStatus({
+      ...nextStatus,
+      collisionLinks: Array.isArray(nextStatus.collisionLinks)
+        ? [...nextStatus.collisionLinks]
+        : [],
+      nearLinks: Array.isArray(nextStatus.nearLinks) ? [...nextStatus.nearLinks] : [],
+      excludedLinks: Array.isArray(nextStatus.excludedLinks)
+        ? [...nextStatus.excludedLinks]
+        : [],
+    });
+    setRobotCollisionStatus((current) => (
+      JSON.stringify(current) === JSON.stringify(normalized) ? current : normalized
+    ));
+  }, []);
+  const handleRobotCollisionProtectionChange = useCallback(
+    (enabled) => {
+      const nextEnabled = Boolean(enabled);
+      if (
+        nextEnabled
+        && (!mapData?.geometry || robotLoadState.status !== 'loaded' || !selectedRobot)
+      ) {
+        notify('请先完成地图与机器人模型加载', 'warning');
+        return;
+      }
+      setRobotCollisionProtectionEnabled(nextEnabled);
+      setRobotCollisionStatus(createRobotCollisionStatus(nextEnabled
+        ? {
+            enabled: true,
+            state: 'building',
+            message: '正在建立环境空间索引',
+            detail: '检测将在专用 Worker 中运行',
+          }
+        : {}));
+      notify(
+        nextEnabled
+          ? '自碰撞保护已开启 · 底盘与轮组已排除'
+          : '自碰撞保护已关闭 · 检测资源已释放',
+        nextEnabled ? 'info' : 'success',
+      );
+    },
+    [mapData?.geometry, notify, robotLoadState.status, selectedRobot],
+  );
   const handleRobotJointValuesChange = useCallback((nextValues) => {
     const normalized = normalizeRobotJointValues(nextValues);
     setRobotJointValues((current) => {
@@ -2012,12 +2067,14 @@ export default function App() {
                 robotControlEnabled={robotControlEnabled}
                 spaceMouseInputRef={spaceMouseInputRef}
                 cameraTeachingCommand={cameraTeachingCommand}
+                collisionProtectionEnabled={robotCollisionProtectionEnabled}
                 onRobotLoadState={handleRobotLoadState}
                 onRobotPoseChange={handleRobotPoseChange}
                 onRobotJointValuesChange={handleRobotJointValuesChange}
                 onRobotControlChange={handleRobotControlChange}
                 onZividCameraPoseChange={handleZividCameraPoseChange}
                 onCameraTeachingResult={handleCameraTeachingResult}
+                onCollisionProtectionStatus={handleRobotCollisionProtectionStatus}
               />
               <HeightRange
                 bounds={mapData?.bounds}
@@ -2120,6 +2177,8 @@ export default function App() {
           robotJointValues={robotJointValues}
           lockedRobotJointNames={lockedRobotJointNames}
           robotControlEnabled={robotControlEnabled}
+          robotCollisionProtectionEnabled={robotCollisionProtectionEnabled}
+          robotCollisionStatus={robotCollisionStatus}
           meshRenderQuality={meshRenderQuality}
           onMeshRenderQualityChange={setMeshRenderQuality}
           spaceMouseInputRef={spaceMouseInputRef}
@@ -2156,6 +2215,7 @@ export default function App() {
           onApplyJointPose={applyJointPose}
           onCameraTeachingMove={requestCameraTeachingMove}
           onZividCaptureProviderChange={handleZividCaptureProviderChange}
+          onRobotCollisionProtectionChange={handleRobotCollisionProtectionChange}
           onExportTeachingProject={exportProject}
         />
       </main>

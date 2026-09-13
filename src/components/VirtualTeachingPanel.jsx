@@ -16,6 +16,8 @@ import {
   Move3D,
   Play,
   Save,
+  ShieldAlert,
+  ShieldCheck,
   Trash2,
   X,
 } from 'lucide-react';
@@ -56,6 +58,8 @@ export default function VirtualTeachingPanel({
   view = 'capture',
   teachingMode = 'pose',
   captureState = { status: 'idle', message: '' },
+  collisionProtectionEnabled = false,
+  collisionProtectionStatus = { state: 'disabled' },
   onCreateTask,
   onSelectTask,
   onRenameTask,
@@ -65,6 +69,7 @@ export default function VirtualTeachingPanel({
   onDeletePoint,
   onApplyPoint,
   onTeachingModeChange,
+  onCollisionProtectionChange,
   onExportProject,
   onOpenDataPage,
   onOpenCapturePage,
@@ -131,6 +136,16 @@ export default function VirtualTeachingPanel({
     (count, task) => count + (task.points?.length || 0),
     0,
   );
+  const collisionState = collisionProtectionEnabled
+    ? collisionProtectionStatus?.state || 'building'
+    : 'disabled';
+  const collisionDistanceMillimeters = Number.isFinite(
+    collisionProtectionStatus?.minimumDistance,
+  )
+    ? Math.max(0, collisionProtectionStatus.minimumDistance * 1000)
+    : null;
+  const CollisionIcon = collisionState === 'safe' ? ShieldCheck : ShieldAlert;
+  const collisionToggleDisabled = !collisionProtectionEnabled && !canCreate;
 
   const commitTaskName = () => {
     if (!activeTask) return;
@@ -166,6 +181,10 @@ export default function VirtualTeachingPanel({
       data-current-joint-count={currentJointCount}
       data-teaching-mode={teachingMode}
       data-camera-capture-status={captureState?.status || 'idle'}
+      data-collision-protection-enabled={collisionProtectionEnabled ? 'true' : 'false'}
+      data-collision-state={collisionState}
+      data-collision-safety-threshold="0.1"
+      data-collision-chassis-excluded="true"
     >
       <div className="virtual-teaching__header">
         <div className="virtual-teaching__identity">
@@ -242,6 +261,66 @@ export default function VirtualTeachingPanel({
           <Camera size={11} /> 相机反算
         </button>
       </div>}
+
+      {!isDataView && (
+        <section
+          className={`teaching-collision-guard is-${collisionState}`}
+          aria-label="自碰撞保护"
+          data-protection-default="off"
+          data-bottom-structure-policy="excluded"
+        >
+          <div className="teaching-collision-guard__head">
+            <span className="teaching-collision-guard__mark"><CollisionIcon size={14} /></span>
+            <div>
+              <small>ENVIRONMENT CLEARANCE / 100 MM</small>
+              <strong>自碰撞保护</strong>
+            </div>
+            <button
+              type="button"
+              className={`teaching-collision-toggle ${collisionProtectionEnabled ? 'is-on' : ''}`}
+              aria-label={collisionProtectionEnabled ? '关闭自碰撞保护' : '开启自碰撞保护'}
+              aria-pressed={collisionProtectionEnabled}
+              disabled={collisionToggleDisabled}
+              onClick={() => onCollisionProtectionChange?.(!collisionProtectionEnabled)}
+              title={collisionToggleDisabled
+                ? '请先加载地图与机器人'
+                : collisionProtectionEnabled
+                  ? '关闭并释放环境空间索引'
+                  : '开启非底盘结构的环境干涉与 10 cm 安全距离检测'}
+            >
+              <i><span /></i>
+              <em>{collisionProtectionEnabled ? 'ON' : 'OFF'}</em>
+            </button>
+          </div>
+          <div
+            className="teaching-collision-guard__status"
+            role={['collision', 'near', 'error'].includes(collisionState) ? 'alert' : 'status'}
+            aria-live="polite"
+          >
+            <span><CollisionIcon size={13} /></span>
+            <div>
+              <strong>
+                {collisionProtectionStatus?.message
+                  || (collisionProtectionEnabled ? '检测准备中' : '保护已关闭')}
+              </strong>
+              <small>
+                {collisionProtectionStatus?.detail
+                  || '开启后将启动专用 Worker 进行高负载检测'}
+              </small>
+            </div>
+            <b>
+              {collisionDistanceMillimeters !== null
+                ? `${collisionDistanceMillimeters.toFixed(0)} mm`
+                : collisionState === 'safe' ? '≥100 mm' : '100 mm'}
+            </b>
+          </div>
+          <div className="teaching-collision-guard__policy">
+            <span><i /> 红色常亮：已干涉</span>
+            <span><i /> 黄色常亮：&lt; 10 cm</span>
+            <em>底盘 / 轮组已排除</em>
+          </div>
+        </section>
+      )}
 
       {!activeTask && (
         <div className="teaching-empty-state">

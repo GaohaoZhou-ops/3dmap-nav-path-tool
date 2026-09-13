@@ -77,6 +77,8 @@ export default function Inspector({
   robotJointValues,
   lockedRobotJointNames = [],
   robotControlEnabled,
+  robotCollisionProtectionEnabled = false,
+  robotCollisionStatus,
   meshRenderQuality = 'auto',
   onMeshRenderQualityChange,
   spaceMouseInputRef,
@@ -113,6 +115,7 @@ export default function Inspector({
   onApplyJointPose,
   onCameraTeachingMove,
   onZividCaptureProviderChange,
+  onRobotCollisionProtectionChange,
   onExportTeachingProject,
 }) {
   const [activePage, setActivePage] = useState('project');
@@ -722,6 +725,8 @@ export default function Inspector({
               view="capture"
               teachingMode={teachingMode}
               captureState={teachingCaptureState}
+              collisionProtectionEnabled={robotCollisionProtectionEnabled}
+              collisionProtectionStatus={robotCollisionStatus}
               onCreateTask={onCreateTeachingTask}
               onSelectTask={onSelectTeachingTask}
               onRenameTask={onRenameTeachingTask}
@@ -731,6 +736,7 @@ export default function Inspector({
               onDeletePoint={onDeleteTeachingPoint}
               onApplyPoint={onApplyTeachingPoint}
               onTeachingModeChange={handleTeachingModeChange}
+              onCollisionProtectionChange={onRobotCollisionProtectionChange}
               onExportProject={onExportTeachingProject}
               onOpenDataPage={() => activateInspectorPage('teaching-data')}
             />

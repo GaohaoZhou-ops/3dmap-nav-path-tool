@@ -17,6 +17,8 @@ import {
   Plus,
   Rotate3D,
   RotateCcw,
+  ShieldAlert,
+  ShieldCheck,
 } from 'lucide-react';
 import EndEffectorControlPanel from './EndEffectorControlPanel.jsx';
 import {
@@ -36,6 +38,17 @@ import {
   setRobotJointValue,
 } from '../lib/robotLoader.js';
 import { normalizeRobotJointLocks } from '../lib/robotJointLocks.js';
+import {
+  applyRobotCollisionHighlights,
+  collectRobotCollisionProxies,
+  createRobotCollisionStatus,
+  disposeRobotCollisionProxies,
+  ROBOT_COLLISION_CHECK_INTERVAL_MS,
+  ROBOT_COLLISION_CONTACT_MARGIN,
+  ROBOT_COLLISION_SAFETY_DISTANCE,
+  selectRobotCollisionProbe,
+  serializeRobotCollisionProxies,
+} from '../lib/robotCollision.js';
 
 const RESOLUTION_LEVELS = [
   { ratio: 0.05, label: '极速', tone: 'turbo' },
@@ -93,6 +106,7 @@ const ROBOT_ROTATION_SPEED = THREE.MathUtils.degToRad(72);
 const ROBOT_POSE_REPORT_INTERVAL = 70;
 const ROBOT_JOINT_REPORT_INTERVAL = 70;
 const ZIVID_CAMERA_POSE_REPORT_INTERVAL = 70;
+const COLLISION_INDEX_CELL_SIZE = 0.12;
 const END_EFFECTOR_SCREEN_DIAMETER = 58;
 const IK_ORIENTATION_SCALE = 0.24;
 const IK_DAMPING = 0.045;
@@ -252,6 +266,56 @@ const formatPointCount = (count) => {
 };
 
 const formatHeight = (value) => (Math.abs(value) < 0.005 ? '0.00' : value.toFixed(2));
+
+const packCollisionPositions = (attribute) => {
+  const count = attribute?.count || 0;
+  if (
+    attribute?.array instanceof Float32Array
+    && !attribute.isInterleavedBufferAttribute
+    && attribute.itemSize === 3
+  ) {
+    return attribute.array.slice(0, count * 3);
+  }
+  const packed = new Float32Array(count * 3);
+  for (let index = 0; index < count; index += 1) {
+    const offset = index * 3;
+    packed[offset] = attribute.getX(index);
+    packed[offset + 1] = attribute.getY(index);
+    packed[offset + 2] = attribute.getZ(index);
+  }
+  return packed;
+};
+
+const packCollisionIndices = (attribute) => {
+  const count = attribute?.count || 0;
+  if (attribute?.array instanceof Uint32Array && !attribute.isInterleavedBufferAttribute) {
+    return attribute.array.slice(0, count);
+  }
+  if (attribute?.array instanceof Uint16Array && !attribute.isInterleavedBufferAttribute) {
+    return Uint32Array.from(attribute.array.subarray(0, count));
+  }
+  const packed = new Uint32Array(count);
+  for (let index = 0; index < count; index += 1) packed[index] = attribute.getX(index);
+  return packed;
+};
+
+const collisionStatusSignature = (status) => JSON.stringify({
+  enabled: status.enabled,
+  state: status.state,
+  minimumDistance: Number.isFinite(status.minimumDistance)
+    ? Number(status.minimumDistance).toFixed(4)
+    : null,
+  collisionLinks: status.collisionLinks,
+  nearLinks: status.nearLinks,
+  excludedLinks: status.excludedLinks,
+  monitoredLinkCount: status.monitoredLinkCount,
+  monitoredProxyCount: status.monitoredProxyCount,
+  sourcePointCount: status.sourcePointCount,
+  indexedPointCount: status.indexedPointCount,
+  meshSampleCount: status.meshSampleCount,
+  message: status.message,
+  detail: status.detail,
+});
 
 const normalizeDegrees = (value) => {
   const wrapped = ((Number(value) + 180) % 360 + 360) % 360 - 180;
@@ -955,12 +1019,14 @@ export default function PointCloudViewer({
   robotControlEnabled = false,
   spaceMouseInputRef,
   cameraTeachingCommand,
+  collisionProtectionEnabled = false,
   onRobotLoadState,
   onRobotPoseChange,
   onRobotJointValuesChange,
   onRobotControlChange,
   onZividCameraPoseChange,
   onCameraTeachingResult,
+  onCollisionProtectionStatus,
 }) {
   const mountRef = useRef(null);
   const spaceMouseAxisHudRef = useRef(null);
@@ -1008,6 +1074,10 @@ export default function PointCloudViewer({
   const onRobotControlChangeRef = useRef(onRobotControlChange);
   const onZividCameraPoseChangeRef = useRef(onZividCameraPoseChange);
   const onCameraTeachingResultRef = useRef(onCameraTeachingResult);
+  const onCollisionProtectionStatusRef = useRef(onCollisionProtectionStatus);
+  const collisionMonitorGenerationRef = useRef(0);
+  const collisionHighlightCleanupRef = useRef(null);
+  const collisionCheckRequestRef = useRef(null);
   const zividCameraFramesRef = useRef({ left: null, right: null });
   const lastZividCameraPoseReportRef = useRef(0);
   const lastZividCameraPoseSignatureRef = useRef('');
@@ -1015,6 +1085,7 @@ export default function PointCloudViewer({
   const robotJointValuesRef = useRef(normalizeRobotJointValues(robotJointValues));
   const lockedRobotJointNamesRef = useRef(normalizeRobotJointLocks(lockedRobotJointNames));
   const robotControlEnabledRef = useRef(Boolean(robotControlEnabled));
+  const robotLoadStateRef = useRef(robotLoadState);
   const robotPoseActionsRef = useRef(null);
   const lastRobotPoseReportRef = useRef(0);
   const lastRobotJointReportRef = useRef(0);
@@ -1030,6 +1101,9 @@ export default function PointCloudViewer({
     left: null,
     right: null,
   });
+  const [robotCollisionStatus, setRobotCollisionStatus] = useState(
+    () => createRobotCollisionStatus(),
+  );
   interactionModeRef.current = interactionMode;
   colorModeRef.current = colorMode;
   onSelectWaypointRef.current = onSelectWaypoint;
@@ -1043,7 +1117,9 @@ export default function PointCloudViewer({
   onRobotControlChangeRef.current = onRobotControlChange;
   onZividCameraPoseChangeRef.current = onZividCameraPoseChange;
   onCameraTeachingResultRef.current = onCameraTeachingResult;
+  onCollisionProtectionStatusRef.current = onCollisionProtectionStatus;
   robotControlEnabledRef.current = Boolean(robotControlEnabled);
+  robotLoadStateRef.current = robotLoadState;
   lockedRobotJointNamesRef.current = normalizeRobotJointLocks(lockedRobotJointNames);
   const [manualResolution, setManualResolution] = useState({ mapKey: null, index: null });
 
@@ -3819,6 +3895,8 @@ export default function PointCloudViewer({
     const canvas = controlsRef.current?.domElement;
     if (!layer || !canvas) return undefined;
 
+    collisionHighlightCleanupRef.current?.();
+    collisionHighlightCleanupRef.current = null;
     chassisDragInteractionRef.current?.exit?.('robot-change');
     robotChassisHandleRef.current = null;
     loadedRobotRef.current = null;
@@ -3968,6 +4046,8 @@ export default function PointCloudViewer({
 
     return () => {
       controller.abort();
+      collisionHighlightCleanupRef.current?.();
+      collisionHighlightCleanupRef.current = null;
       chassisDragInteractionRef.current?.exit?.('robot-change');
       robotChassisHandleRef.current = null;
       canvas.dataset.chassisDragHandleReady = 'false';
@@ -3982,6 +4062,343 @@ export default function PointCloudViewer({
       if (loadedRobot) disposeRobotModel(loadedRobot);
     };
   }, [mapData?.geometry, robotDescriptor]);
+
+  useEffect(() => {
+    const canvas = controlsRef.current?.domElement;
+    const geometry = mapData?.geometry;
+    const generation = collisionMonitorGenerationRef.current + 1;
+    collisionMonitorGenerationRef.current = generation;
+    let disposed = false;
+    let worker = null;
+    let workerReady = false;
+    let workerBusy = false;
+    let collisionCheckPending = false;
+    let checkTimer = null;
+    let deferredCheckTimer = null;
+    let lastCheckSubmittedAt = Number.NEGATIVE_INFINITY;
+    let observedRobot = null;
+    let proxyCollection = null;
+    let lastPoseSignature = '';
+    let lastPublishedSignature = '';
+    let checkRevision = 0;
+    let checkCount = 0;
+    let indexMetrics = {
+      sourcePointCount: geometry?.getAttribute?.('position')?.count || 0,
+      indexedPointCount: 0,
+      meshSampleCount: 0,
+    };
+    let currentStatus = createRobotCollisionStatus({
+      enabled: Boolean(collisionProtectionEnabled),
+    });
+
+    const writeStatusDataset = (status) => {
+      if (!canvas) return;
+      canvas.dataset.collisionProtectionEnabled = status.enabled ? 'true' : 'false';
+      canvas.dataset.collisionState = status.state;
+      canvas.dataset.collisionSafetyDistance = String(ROBOT_COLLISION_SAFETY_DISTANCE);
+      canvas.dataset.collisionContactMargin = String(ROBOT_COLLISION_CONTACT_MARGIN);
+      canvas.dataset.collisionMinimumDistance = Number.isFinite(status.minimumDistance)
+        ? Number(status.minimumDistance).toFixed(6)
+        : '';
+      canvas.dataset.collisionLinks = (status.collisionLinks || []).join(',');
+      canvas.dataset.collisionNearLinks = (status.nearLinks || []).join(',');
+      canvas.dataset.collisionExcludedLinks = (status.excludedLinks || []).join(',');
+      canvas.dataset.collisionMonitoredLinkCount = String(status.monitoredLinkCount || 0);
+      canvas.dataset.collisionMonitoredProxyCount = String(status.monitoredProxyCount || 0);
+      canvas.dataset.collisionSourcePoints = String(status.sourcePointCount || 0);
+      canvas.dataset.collisionIndexedPoints = String(status.indexedPointCount || 0);
+      canvas.dataset.collisionMeshSamples = String(status.meshSampleCount || 0);
+      canvas.dataset.collisionCheckCount = String(status.checkCount || 0);
+      canvas.dataset.collisionHighlightedLinks = [
+        ...(status.collisionLinks || []),
+        ...(status.nearLinks || []),
+      ].join(',');
+      canvas.dataset.collisionHighlightColor = status.state === 'collision'
+        ? '#ff4545'
+        : status.state === 'near'
+          ? '#ffc84a'
+          : 'none';
+    };
+
+    const publishStatus = (patch) => {
+      currentStatus = createRobotCollisionStatus({
+        ...currentStatus,
+        ...patch,
+        enabled: Boolean(collisionProtectionEnabled),
+        threshold: ROBOT_COLLISION_SAFETY_DISTANCE,
+      });
+      writeStatusDataset(currentStatus);
+      const signature = collisionStatusSignature(currentStatus);
+      if (signature === lastPublishedSignature) return;
+      lastPublishedSignature = signature;
+      setRobotCollisionStatus(currentStatus);
+      onCollisionProtectionStatusRef.current?.(currentStatus);
+    };
+
+    const clearProxyCollection = () => {
+      if (proxyCollection) disposeRobotCollisionProxies(proxyCollection);
+      proxyCollection = null;
+      observedRobot = null;
+      if (canvas) {
+        canvas.dataset.collisionProbePoint = '';
+        canvas.dataset.collisionProbeLink = '';
+      }
+    };
+    if (!collisionProtectionEnabled) {
+      if (canvas) canvas.dataset.collisionWorker = 'inactive';
+      publishStatus({
+        state: 'disabled',
+        message: '自碰撞保护未开启',
+        detail: '专用空间索引与距离检测尚未占用硬件资源',
+      });
+      return undefined;
+    }
+
+    const positionAttribute = geometry?.getAttribute?.('position');
+    if (!canvas || !positionAttribute?.count) {
+      publishStatus({
+        state: 'error',
+        message: '干涉检测不可用',
+        detail: '请先加载有效的地图点云',
+      });
+      return undefined;
+    }
+    collisionHighlightCleanupRef.current = clearProxyCollection;
+
+    publishStatus({
+      state: 'building',
+      message: '正在建立环境空间索引',
+      detail: `${positionAttribute.count.toLocaleString('zh-CN')} 个地图顶点正在专用 Worker 中处理`,
+      ...indexMetrics,
+    });
+
+    const ensureRobotProxies = () => {
+      const robot = loadedRobotRef.current;
+      if (!robot) return false;
+      if (observedRobot === robot && proxyCollection) return proxyCollection.proxies.length > 0;
+      clearProxyCollection();
+      observedRobot = robot;
+      proxyCollection = collectRobotCollisionProxies(robot);
+      lastPoseSignature = '';
+      const serialized = serializeRobotCollisionProxies(proxyCollection);
+      const probe = selectRobotCollisionProbe(serialized.records);
+      if (probe && canvas) {
+        canvas.dataset.collisionProbePoint = probe.center
+          .map((value) => Number(value).toFixed(6))
+          .join(',');
+        canvas.dataset.collisionProbeLink = probe.linkName;
+      }
+      return proxyCollection.proxies.length > 0;
+    };
+
+    const requestCollisionCheck = () => {
+      if (disposed) return;
+      canvas.dataset.collisionRequestCount = String(
+        Number(canvas.dataset.collisionRequestCount || 0) + 1,
+      );
+      if (!workerReady || !worker) {
+        collisionCheckPending = true;
+        return;
+      }
+      if (workerBusy) {
+        collisionCheckPending = true;
+        return;
+      }
+      const timeUntilNextCheck = ROBOT_COLLISION_CHECK_INTERVAL_MS
+        - (performance.now() - lastCheckSubmittedAt);
+      if (timeUntilNextCheck > 1) {
+        collisionCheckPending = true;
+        if (!deferredCheckTimer) {
+          deferredCheckTimer = window.setTimeout(() => {
+            deferredCheckTimer = null;
+            requestCollisionCheck();
+          }, timeUntilNextCheck);
+        }
+        return;
+      }
+      collisionCheckPending = false;
+      if (!ensureRobotProxies()) {
+        publishStatus({
+          state: robotLoadStateRef.current?.status === 'error' ? 'error' : 'waiting',
+          message: robotLoadStateRef.current?.status === 'error'
+            ? '机器人检测体不可用'
+            : '等待机器人检测体',
+          detail: robotLoadStateRef.current?.status === 'error'
+            ? '机器人模型加载失败，请重新选择模型'
+            : '模型装配完成后将自动开始检测',
+          ...indexMetrics,
+        });
+        return;
+      }
+      robotLayerRef.current?.updateMatrixWorld(true);
+      const serialized = serializeRobotCollisionProxies(proxyCollection);
+      const probe = selectRobotCollisionProbe(serialized.records);
+      if (probe) {
+        canvas.dataset.collisionProbePoint = probe.center
+          .map((value) => Number(value).toFixed(6))
+          .join(',');
+        canvas.dataset.collisionProbeLink = probe.linkName;
+      }
+      if (serialized.signature === lastPoseSignature) {
+        canvas.dataset.collisionSkippedPoseCount = String(
+          Number(canvas.dataset.collisionSkippedPoseCount || 0) + 1,
+        );
+        return;
+      }
+      lastPoseSignature = serialized.signature;
+      workerBusy = true;
+      lastCheckSubmittedAt = performance.now();
+      checkRevision += 1;
+      canvas.dataset.collisionSubmittedRevision = String(checkRevision);
+      worker.postMessage({
+        type: 'check',
+        revision: checkRevision,
+        proxies: serialized.records,
+        threshold: ROBOT_COLLISION_SAFETY_DISTANCE,
+        contactMargin: ROBOT_COLLISION_CONTACT_MARGIN,
+      });
+    };
+    const requestCollisionCheckFromScene = () => {
+      collisionCheckPending = true;
+      requestCollisionCheck();
+    };
+    collisionCheckRequestRef.current = requestCollisionCheckFromScene;
+
+    try {
+      worker = new Worker(new URL('../workers/robotCollision.worker.js', import.meta.url), {
+        type: 'module',
+      });
+      canvas.dataset.collisionWorker = 'building';
+      worker.onmessage = (event) => {
+        if (disposed || collisionMonitorGenerationRef.current !== generation) return;
+        const message = event.data || {};
+        if (message.type === 'ready') {
+          workerReady = true;
+          indexMetrics = {
+            sourcePointCount: Number(message.sourcePointCount) || 0,
+            indexedPointCount: Number(message.indexedPointCount) || 0,
+            meshSampleCount: Number(message.meshSampleCount) || 0,
+          };
+          canvas.dataset.collisionWorker = 'dedicated';
+          canvas.dataset.collisionIndexBuildMs = Number(message.buildMs || 0).toFixed(2);
+          canvas.dataset.collisionIndexCellSize = String(message.cellSize || COLLISION_INDEX_CELL_SIZE);
+          canvas.dataset.collisionIndexBuckets = String(message.bucketCount || 0);
+          publishStatus({
+            state: 'waiting',
+            message: '环境索引已就绪',
+            detail: `已索引 ${(indexMetrics.indexedPointCount).toLocaleString('zh-CN')} 个环境样本，正在同步机器人`,
+            ...indexMetrics,
+          });
+          requestCollisionCheck();
+          return;
+        }
+        if (message.type === 'result') {
+          workerBusy = false;
+          if (Number(message.revision) !== checkRevision || !proxyCollection) return;
+          checkCount += 1;
+          const collisionLinks = Array.isArray(message.collisionLinks)
+            ? message.collisionLinks
+            : [];
+          const nearLinks = Array.isArray(message.nearLinks) ? message.nearLinks : [];
+          const minimumDistance = Number.isFinite(message.minimumDistance)
+            ? Number(message.minimumDistance)
+            : null;
+          const state = collisionLinks.length ? 'collision' : nearLinks.length ? 'near' : 'safe';
+          applyRobotCollisionHighlights(proxyCollection, { collisionLinks, nearLinks });
+          canvas.dataset.collisionLastCheckMs = Number(message.checkMs || 0).toFixed(2);
+          publishStatus({
+            state,
+            minimumDistance,
+            collisionLinks,
+            nearLinks,
+            excludedLinks: proxyCollection.excludedLinks,
+            monitoredLinkCount: proxyCollection.monitoredLinks.length,
+            monitoredProxyCount: proxyCollection.proxies.length,
+            checkCount,
+            message: state === 'collision'
+              ? '检测到环境干涉'
+              : state === 'near'
+                ? '进入 100 mm 安全边界'
+                : '非底盘结构安全',
+            detail: state === 'collision'
+              ? `红色部件：${collisionLinks.slice(0, 4).join(' / ')}${collisionLinks.length > 4 ? ` +${collisionLinks.length - 4}` : ''}`
+              : state === 'near'
+                ? `最近直线距离 ${Math.max(0, minimumDistance * 1000).toFixed(0)} mm · ${nearLinks.slice(0, 3).join(' / ')}`
+                : '最近环境样本距离不小于 100 mm',
+            ...indexMetrics,
+          });
+          if (collisionCheckPending) {
+            window.setTimeout(requestCollisionCheck, 0);
+          }
+          return;
+        }
+        if (message.type === 'error') {
+          workerBusy = false;
+          applyRobotCollisionHighlights(proxyCollection, {});
+          publishStatus({
+            state: 'error',
+            message: '干涉检测中断',
+            detail: message.message || '专用 Worker 返回了未知错误',
+            ...indexMetrics,
+          });
+        }
+      };
+      worker.onerror = (event) => {
+        if (disposed || collisionMonitorGenerationRef.current !== generation) return;
+        workerBusy = false;
+        applyRobotCollisionHighlights(proxyCollection, {});
+        publishStatus({
+          state: 'error',
+          message: '干涉检测中断',
+          detail: event.message || '专用 Worker 无法建立环境索引',
+        });
+      };
+
+      const positions = packCollisionPositions(positionAttribute);
+      const indices = packCollisionIndices(geometry.getIndex?.());
+      worker.postMessage({
+        type: 'init',
+        positions,
+        indices,
+        requestedCellSize: COLLISION_INDEX_CELL_SIZE,
+      }, [positions.buffer, indices.buffer]);
+      checkTimer = window.setInterval(
+        requestCollisionCheck,
+        ROBOT_COLLISION_CHECK_INTERVAL_MS,
+      );
+    } catch (error) {
+      publishStatus({
+        state: 'error',
+        message: '干涉检测无法启动',
+        detail: error.message || '当前浏览器不支持专用 Worker',
+      });
+    }
+
+    return () => {
+      disposed = true;
+      if (collisionMonitorGenerationRef.current === generation) {
+        collisionMonitorGenerationRef.current += 1;
+      }
+      if (checkTimer) window.clearInterval(checkTimer);
+      if (deferredCheckTimer) window.clearTimeout(deferredCheckTimer);
+      worker?.terminate();
+      applyRobotCollisionHighlights(proxyCollection, {});
+      clearProxyCollection();
+      if (collisionCheckRequestRef.current === requestCollisionCheckFromScene) {
+        collisionCheckRequestRef.current = null;
+      }
+      if (collisionHighlightCleanupRef.current === clearProxyCollection) {
+        collisionHighlightCleanupRef.current = null;
+      }
+      canvas.dataset.collisionWorker = 'terminated';
+      canvas.dataset.collisionHighlightedLinks = '';
+      canvas.dataset.collisionHighlightColor = 'none';
+    };
+  }, [collisionProtectionEnabled, mapData?.geometry, robotDescriptor]);
+
+  useEffect(() => {
+    collisionCheckRequestRef.current?.();
+  }, [robotJointValues, robotPose]);
 
   useEffect(() => {
     if (!initialView || appliedInitialViewRef.current === initialView) return;
@@ -4582,6 +4999,10 @@ export default function PointCloudViewer({
   const persistentPanMode = interactionMode === 'pan';
   const temporaryShiftPan = shiftPanArmed && !persistentPanMode;
   const effectiveViewportPan = persistentPanMode || shiftPanArmed;
+  const collisionStatusState = robotCollisionStatus?.state || 'disabled';
+  const collisionDistanceMillimeters = Number.isFinite(robotCollisionStatus?.minimumDistance)
+    ? Math.max(0, robotCollisionStatus.minimumDistance * 1000)
+    : null;
 
   return (
     <div
@@ -4611,6 +5032,31 @@ export default function PointCloudViewer({
             <strong data-axis-code>X</strong>
             <span data-axis-label>前进 / 后退</span>
           </div>
+          {collisionProtectionEnabled && (
+            <div
+              className={`robot-collision-alert is-${collisionStatusState}`}
+              role={['collision', 'near', 'error'].includes(collisionStatusState) ? 'alert' : 'status'}
+              aria-live="polite"
+              data-collision-state={collisionStatusState}
+              data-collision-distance={collisionDistanceMillimeters ?? ''}
+            >
+              <span className="robot-collision-alert__icon">
+                {collisionStatusState === 'safe'
+                  ? <ShieldCheck size={16} />
+                  : <ShieldAlert size={16} />}
+              </span>
+              <div>
+                <small>NON-CHASSIS / ENV CLEARANCE</small>
+                <strong>{robotCollisionStatus.message}</strong>
+                <em>{robotCollisionStatus.detail}</em>
+              </div>
+              <b>
+                {collisionDistanceMillimeters !== null
+                  ? `${collisionDistanceMillimeters.toFixed(0)} mm`
+                  : collisionStatusState === 'safe' ? '≥100 mm' : '100 mm'}
+              </b>
+            </div>
+          )}
           <div className="viewer-top-tools">
             <div className="viewer-tool-switch" role="toolbar" aria-label="三维视图工具">
               <button

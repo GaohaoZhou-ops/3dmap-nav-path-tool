@@ -39,3 +39,4 @@ robots/
 # resources
 *.ply
 !tests/fixtures/hybrid-map.ply
+!tests/fixtures/hybrid-camera-surface-map.ply

@@ -5,6 +5,7 @@ import {
   Camera,
   Cloud,
   Focus,
+  Gauge,
   Maximize2,
   Minus,
   Plus,
@@ -12,6 +13,12 @@ import {
   X,
 } from 'lucide-react';
 import CameraTeachingControls from './CameraTeachingControls.jsx';
+import {
+  createUniformMeshIndex,
+  MESH_RENDER_QUALITY_OPTIONS,
+  prepareMapGeometryTopology,
+  resolveMeshRenderQuality,
+} from '../lib/mapGeometry.js';
 
 export const ZIVID_M70_PROFILE = Object.freeze({
   model: 'Zivid 2 M70',
@@ -28,6 +35,19 @@ export const ZIVID_M70_PROFILE = Object.freeze({
 
 const CAMERA_POINT_BUDGET = 360_000;
 const MAX_DIGITAL_ZOOM = 24;
+const CAMERA_MESH_REGION_POSITION_STEP = 0.3;
+const CAMERA_MESH_REGION_QUATERNION_STEP = 0.1;
+const CAMERA_NEIGHBORHOOD_POSITION_STEP = 0.5;
+const CAMERA_POINT_NEIGHBORHOOD_RADIUS = 2.15;
+const CAMERA_FACE_NEIGHBORHOOD_RADIUS = 2.65;
+const CAMERA_NEIGHBORHOOD_CACHE_LIMIT = 4;
+const CAMERA_SURFACE_FOV_MARGIN = 0.08;
+const CAMERA_SURFACE_GRID_BY_QUALITY = Object.freeze({
+  performance: { columns: 38, rows: 24 },
+  balanced: { columns: 54, rows: 34 },
+  detail: { columns: 72, rows: 45 },
+  full: { columns: 92, rows: 57 },
+});
 const ROS_OPTICAL_TO_THREE_CAMERA = new THREE.Quaternion().setFromAxisAngle(
   new THREE.Vector3(1, 0, 0),
   Math.PI,
@@ -51,11 +71,421 @@ const compactNumber = (value) => {
   return String(value || 0);
 };
 
-const createCameraGeometry = (sourceGeometry) => {
+const normalizedInversePose = (pose) => {
+  if (!pose?.position || !pose?.quaternion) return null;
+  const px = Number(pose.position.x || 0);
+  const py = Number(pose.position.y || 0);
+  const pz = Number(pose.position.z || 0);
+  const rawX = Number(pose.quaternion.x || 0);
+  const rawY = Number(pose.quaternion.y || 0);
+  const rawZ = Number(pose.quaternion.z || 0);
+  const rawW = Number(pose.quaternion.w ?? 1);
+  const length = Math.hypot(rawX, rawY, rawZ, rawW);
+  if (!Number.isFinite(px + py + pz + length) || length < 1e-8) return null;
+  return {
+    px,
+    py,
+    pz,
+    qx: -rawX / length,
+    qy: -rawY / length,
+    qz: -rawZ / length,
+    qw: rawW / length,
+  };
+};
+
+const cameraMeshRegionKeyForPose = (pose) => {
+  const inverse = normalizedInversePose(pose);
+  if (!inverse) return 'waiting-for-optical-frame';
+  const quaternionSign = inverse.qw < 0 ? -1 : 1;
+  const quantize = (value, step) => Math.round(value / step);
+  return [
+    quantize(inverse.px, CAMERA_MESH_REGION_POSITION_STEP),
+    quantize(inverse.py, CAMERA_MESH_REGION_POSITION_STEP),
+    quantize(inverse.pz, CAMERA_MESH_REGION_POSITION_STEP),
+    quantize(-inverse.qx * quaternionSign, CAMERA_MESH_REGION_QUATERNION_STEP),
+    quantize(-inverse.qy * quaternionSign, CAMERA_MESH_REGION_QUATERNION_STEP),
+    quantize(-inverse.qz * quaternionSign, CAMERA_MESH_REGION_QUATERNION_STEP),
+    quantize(inverse.qw * quaternionSign, CAMERA_MESH_REGION_QUATERNION_STEP),
+  ].join(':');
+};
+
+const cameraNeighborhoodCell = (inversePose) => {
+  const quantize = (value) => Math.round(value / CAMERA_NEIGHBORHOOD_POSITION_STEP);
+  const ix = quantize(inversePose.px);
+  const iy = quantize(inversePose.py);
+  const iz = quantize(inversePose.pz);
+  return {
+    key: `${ix}:${iy}:${iz}`,
+    x: ix * CAMERA_NEIGHBORHOOD_POSITION_STEP,
+    y: iy * CAMERA_NEIGHBORHOOD_POSITION_STEP,
+    z: iz * CAMERA_NEIGHBORHOOD_POSITION_STEP,
+  };
+};
+
+const touchCacheEntry = (entries, key, value, limit = CAMERA_NEIGHBORHOOD_CACHE_LIMIT) => {
+  entries.delete(key);
+  entries.set(key, value);
+  while (entries.size > limit) {
+    entries.delete(entries.keys().next().value);
+  }
+  return value;
+};
+
+const directPositionReader = (positionAttribute) => {
+  const array = positionAttribute?.array;
+  const direct = Boolean(
+    array
+    && !positionAttribute.isInterleavedBufferAttribute
+    && positionAttribute.itemSize >= 3,
+  );
+  const stride = positionAttribute?.itemSize || 3;
+  return (index) => {
+    if (!direct) {
+      return [
+        positionAttribute.getX(index),
+        positionAttribute.getY(index),
+        positionAttribute.getZ(index),
+      ];
+    }
+    const offset = index * stride;
+    return [array[offset], array[offset + 1], array[offset + 2]];
+  };
+};
+
+const cameraPointNeighborhood = (sourceGeometry, sourceOrder, inversePose) => {
+  const sourcePosition = sourceGeometry?.getAttribute('position');
+  if (!sourcePosition?.count || !inversePose) return new Uint32Array(0);
+  const order = sourceOrder instanceof Uint32Array ? sourceOrder : null;
+  const availableCount = order?.length || sourcePosition.count;
+  const cell = cameraNeighborhoodCell(inversePose);
+  const cacheKey = `${cell.key}:${availableCount}:${order ? 'subset' : 'all'}`;
+  let cache = sourceGeometry.userData.zividPointNeighborhoodCache;
+  if (
+    cache?.version !== 1
+    || cache.positionAttribute !== sourcePosition
+    || cache.sourceOrder !== order
+  ) {
+    cache = {
+      version: 1,
+      positionAttribute: sourcePosition,
+      sourceOrder: order,
+      entries: new Map(),
+    };
+    sourceGeometry.userData.zividPointNeighborhoodCache = cache;
+  }
+  const cached = cache.entries.get(cacheKey);
+  if (cached) return touchCacheEntry(cache.entries, cacheKey, cached);
+
+  const positionArray = sourcePosition.array;
+  const directPositionRead = Boolean(
+    positionArray
+    && !sourcePosition.isInterleavedBufferAttribute
+    && sourcePosition.itemSize >= 3,
+  );
+  const positionStride = sourcePosition.itemSize || 3;
+  const radiusSquared = CAMERA_POINT_NEIGHBORHOOD_RADIUS ** 2;
+  const selected = [];
+  for (let orderIndex = 0; orderIndex < availableCount; orderIndex += 1) {
+    const sourceIndex = order ? order[orderIndex] : orderIndex;
+    const positionOffset = sourceIndex * positionStride;
+    const x = directPositionRead
+      ? positionArray[positionOffset]
+      : sourcePosition.getX(sourceIndex);
+    const dx = x - cell.x;
+    if (Math.abs(dx) > CAMERA_POINT_NEIGHBORHOOD_RADIUS) continue;
+    const y = directPositionRead
+      ? positionArray[positionOffset + 1]
+      : sourcePosition.getY(sourceIndex);
+    const dy = y - cell.y;
+    if (Math.abs(dy) > CAMERA_POINT_NEIGHBORHOOD_RADIUS) continue;
+    const z = directPositionRead
+      ? positionArray[positionOffset + 2]
+      : sourcePosition.getZ(sourceIndex);
+    const dz = z - cell.z;
+    if (Math.abs(dz) > CAMERA_POINT_NEIGHBORHOOD_RADIUS) continue;
+    if ((dx * dx) + (dy * dy) + (dz * dz) <= radiusSquared) selected.push(sourceIndex);
+  }
+  return touchCacheEntry(cache.entries, cacheKey, Uint32Array.from(selected));
+};
+
+const cameraNeighborhoodIntersectsMesh = (meshBounds, inversePose) => {
+  if (!meshBounds?.min || !meshBounds?.max || !inversePose) return true;
+  const distanceToInterval = (value, minimum, maximum) => (
+    value < minimum ? minimum - value : value > maximum ? value - maximum : 0
+  );
+  const dx = distanceToInterval(inversePose.px, meshBounds.min.x, meshBounds.max.x);
+  const dy = distanceToInterval(inversePose.py, meshBounds.min.y, meshBounds.max.y);
+  const dz = distanceToInterval(inversePose.pz, meshBounds.min.z, meshBounds.max.z);
+  return ((dx * dx) + (dy * dy) + (dz * dz)) <= CAMERA_FACE_NEIGHBORHOOD_RADIUS ** 2;
+};
+
+const rotateIntoCamera = (x, y, z, inversePose) => {
+  const vx = x - inversePose.px;
+  const vy = y - inversePose.py;
+  const vz = z - inversePose.pz;
+  const tx = 2 * (inversePose.qy * vz - inversePose.qz * vy);
+  const ty = 2 * (inversePose.qz * vx - inversePose.qx * vz);
+  const tz = 2 * (inversePose.qx * vy - inversePose.qy * vx);
+  return {
+    x: vx + inversePose.qw * tx + (inversePose.qy * tz - inversePose.qz * ty),
+    y: vy + inversePose.qw * ty + (inversePose.qz * tx - inversePose.qx * tz),
+    z: vz + inversePose.qw * tz + (inversePose.qx * ty - inversePose.qy * tx),
+  };
+};
+
+const circumcircleContains = (a, b, c, point) => {
+  const denominator = 2 * (
+    a.x * (b.y - c.y)
+    + b.x * (c.y - a.y)
+    + c.x * (a.y - b.y)
+  );
+  if (Math.abs(denominator) < 1e-10) return false;
+  const aLength = (a.x * a.x) + (a.y * a.y);
+  const bLength = (b.x * b.x) + (b.y * b.y);
+  const cLength = (c.x * c.x) + (c.y * c.y);
+  const centerX = (
+    aLength * (b.y - c.y)
+    + bLength * (c.y - a.y)
+    + cLength * (a.y - b.y)
+  ) / denominator;
+  const centerY = (
+    aLength * (c.x - b.x)
+    + bLength * (a.x - c.x)
+    + cLength * (b.x - a.x)
+  ) / denominator;
+  const radiusSquared = ((centerX - a.x) ** 2) + ((centerY - a.y) ** 2);
+  const pointDistanceSquared = ((centerX - point.x) ** 2) + ((centerY - point.y) ** 2);
+  return pointDistanceSquared <= radiusSquared + 1e-8;
+};
+
+const triangulateProjectedSurface = (surfacePoints) => {
+  if (surfacePoints.length < 3) return [];
+  const points = [
+    ...surfacePoints,
+    { x: -20, y: -20 },
+    { x: 20, y: -20 },
+    { x: 0, y: 20 },
+  ];
+  const sourceCount = surfacePoints.length;
+  let triangles = [[sourceCount, sourceCount + 1, sourceCount + 2]];
+
+  for (let pointIndex = 0; pointIndex < sourceCount; pointIndex += 1) {
+    const point = points[pointIndex];
+    const retained = [];
+    const boundary = new Map();
+    for (const triangle of triangles) {
+      if (!circumcircleContains(
+        points[triangle[0]],
+        points[triangle[1]],
+        points[triangle[2]],
+        point,
+      )) {
+        retained.push(triangle);
+        continue;
+      }
+      for (let edgeIndex = 0; edgeIndex < 3; edgeIndex += 1) {
+        const left = triangle[edgeIndex];
+        const right = triangle[(edgeIndex + 1) % 3];
+        const key = left < right ? `${left}:${right}` : `${right}:${left}`;
+        const edge = boundary.get(key);
+        if (edge) edge.count += 1;
+        else boundary.set(key, { left, right, count: 1 });
+      }
+    }
+    triangles = retained;
+    boundary.forEach((edge) => {
+      if (edge.count === 1) triangles.push([edge.left, edge.right, pointIndex]);
+    });
+  }
+  return triangles.filter((triangle) => triangle.every((index) => index < sourceCount));
+};
+
+const createCameraSurfaceGeometry = (sourceGeometry, qualityPlan, pose) => {
+  const sourcePosition = sourceGeometry?.getAttribute('position');
+  const inversePose = normalizedInversePose(pose);
+  if (!sourcePosition?.count || !inversePose) return null;
+  const sourceColor = sourceGeometry.getAttribute('color');
+  const hasRgb = sourceColor?.count === sourcePosition.count;
+  const sourceOrder = sourceGeometry.userData.pointRenderOrder;
+  const neighborhood = cameraPointNeighborhood(
+    sourceGeometry,
+    sourceOrder instanceof Uint32Array ? sourceOrder : null,
+    inversePose,
+  );
+  const effectiveQuality = qualityPlan.faceCount > 0
+    ? qualityPlan.effectiveId || 'balanced'
+    : 'balanced';
+  const gridPlan = CAMERA_SURFACE_GRID_BY_QUALITY[effectiveQuality]
+    || CAMERA_SURFACE_GRID_BY_QUALITY.balanced;
+  const gridCellCount = gridPlan.columns * gridPlan.rows;
+  const selectedIndices = new Int32Array(gridCellCount);
+  selectedIndices.fill(-1);
+  const selectedDepths = new Float32Array(gridCellCount);
+  selectedDepths.fill(Number.POSITIVE_INFINITY);
+  const projectedX = new Float32Array(gridCellCount);
+  const projectedY = new Float32Array(gridCellCount);
+  const tangentX = Math.tan(THREE.MathUtils.degToRad(ZIVID_M70_PROFILE.horizontalFov / 2));
+  const tangentY = Math.tan(THREE.MathUtils.degToRad(ZIVID_M70_PROFILE.verticalFov / 2));
+  const projectionLimit = 1 + CAMERA_SURFACE_FOV_MARGIN;
+  const readPosition = directPositionReader(sourcePosition);
+  let candidatePointCount = 0;
+  let strictVisiblePointCount = 0;
+
+  for (let neighborhoodIndex = 0; neighborhoodIndex < neighborhood.length; neighborhoodIndex += 1) {
+    const sourceIndex = neighborhood[neighborhoodIndex];
+    const [x, y, z] = readPosition(sourceIndex);
+    const local = rotateIntoCamera(x, y, z, inversePose);
+    if (local.z < ZIVID_M70_PROFILE.near || local.z > ZIVID_M70_PROFILE.far) continue;
+    const normalizedX = local.x / Math.max(local.z * tangentX, 1e-6);
+    const normalizedY = local.y / Math.max(local.z * tangentY, 1e-6);
+    if (Math.abs(normalizedX) > projectionLimit || Math.abs(normalizedY) > projectionLimit) continue;
+    candidatePointCount += 1;
+    if (Math.abs(normalizedX) <= 1 && Math.abs(normalizedY) <= 1) strictVisiblePointCount += 1;
+    const column = THREE.MathUtils.clamp(
+      Math.floor(((normalizedX + projectionLimit) / (projectionLimit * 2)) * gridPlan.columns),
+      0,
+      gridPlan.columns - 1,
+    );
+    const row = THREE.MathUtils.clamp(
+      Math.floor(((normalizedY + projectionLimit) / (projectionLimit * 2)) * gridPlan.rows),
+      0,
+      gridPlan.rows - 1,
+    );
+    const cellIndex = row * gridPlan.columns + column;
+    if (local.z >= selectedDepths[cellIndex]) continue;
+    selectedDepths[cellIndex] = local.z;
+    selectedIndices[cellIndex] = sourceIndex;
+    projectedX[cellIndex] = normalizedX;
+    projectedY[cellIndex] = normalizedY;
+  }
+
+  const surfacePoints = [];
+  for (let cellIndex = 0; cellIndex < gridCellCount; cellIndex += 1) {
+    const sourceIndex = selectedIndices[cellIndex];
+    if (sourceIndex < 0) continue;
+    const [x, y, z] = readPosition(sourceIndex);
+    surfacePoints.push({
+      x: projectedX[cellIndex],
+      y: projectedY[cellIndex],
+      depth: selectedDepths[cellIndex],
+      sourceIndex,
+      worldX: x,
+      worldY: y,
+      worldZ: z,
+    });
+  }
+
+  const pointPositions = new Float32Array(surfacePoints.length * 3);
+  const pointColors = hasRgb ? new Uint8Array(surfacePoints.length * 3) : null;
+  const encodeColor = (value) => {
+    const numeric = Number(value) || 0;
+    return Math.round(THREE.MathUtils.clamp(numeric > 1 ? numeric : numeric * 255, 0, 255));
+  };
+  surfacePoints.forEach((point, index) => {
+    const offset = index * 3;
+    pointPositions[offset] = point.worldX;
+    pointPositions[offset + 1] = point.worldY;
+    pointPositions[offset + 2] = point.worldZ;
+    if (pointColors) {
+      pointColors[offset] = encodeColor(sourceColor.getX(point.sourceIndex));
+      pointColors[offset + 1] = encodeColor(sourceColor.getY(point.sourceIndex));
+      pointColors[offset + 2] = encodeColor(sourceColor.getZ(point.sourceIndex));
+    }
+  });
+  const pointGeometry = new THREE.BufferGeometry();
+  pointGeometry.setAttribute('position', new THREE.BufferAttribute(pointPositions, 3));
+  if (pointColors) pointGeometry.setAttribute('color', new THREE.BufferAttribute(pointColors, 3, true));
+  pointGeometry.userData.bufferStrategy = 'camera-local-depth-binned-surfels';
+
+  const candidateTriangles = triangulateProjectedSurface(surfacePoints);
+  const nominalAngularSpacing = Math.sqrt(
+    (4 * tangentX * tangentY) / Math.max(surfacePoints.length, 1),
+  );
+  const maximumAngularEdge = THREE.MathUtils.clamp(
+    nominalAngularSpacing * 5.5,
+    0.04,
+    0.28,
+  );
+  const acceptedTriangles = candidateTriangles.filter((triangle) => {
+    const vertices = triangle.map((index) => surfacePoints[index]);
+    for (let edgeIndex = 0; edgeIndex < 3; edgeIndex += 1) {
+      const left = vertices[edgeIndex];
+      const right = vertices[(edgeIndex + 1) % 3];
+      const angularEdge = Math.hypot(
+        (left.x - right.x) * tangentX,
+        (left.y - right.y) * tangentY,
+      );
+      if (angularEdge > maximumAngularEdge) return false;
+      const minimumDepth = Math.min(left.depth, right.depth);
+      if (Math.abs(left.depth - right.depth) > Math.max(0.06, minimumDepth * 0.18)) return false;
+      const worldEdge = Math.hypot(
+        left.worldX - right.worldX,
+        left.worldY - right.worldY,
+        left.worldZ - right.worldZ,
+      );
+      if (worldEdge > Math.max(0.14, minimumDepth * 0.45)) return false;
+    }
+    return true;
+  });
+
+  let meshGeometry = null;
+  let meshBufferByteLength = 0;
+  if (acceptedTriangles.length) {
+    const meshPositions = new Float32Array(acceptedTriangles.length * 9);
+    const meshColors = hasRgb ? new Uint8Array(acceptedTriangles.length * 9) : null;
+    acceptedTriangles.forEach((triangle, triangleIndex) => {
+      triangle.forEach((pointIndex, cornerIndex) => {
+        const point = surfacePoints[pointIndex];
+        const offset = (triangleIndex * 3 + cornerIndex) * 3;
+        meshPositions[offset] = point.worldX;
+        meshPositions[offset + 1] = point.worldY;
+        meshPositions[offset + 2] = point.worldZ;
+        if (meshColors) {
+          meshColors[offset] = encodeColor(sourceColor.getX(point.sourceIndex));
+          meshColors[offset + 1] = encodeColor(sourceColor.getY(point.sourceIndex));
+          meshColors[offset + 2] = encodeColor(sourceColor.getZ(point.sourceIndex));
+        }
+      });
+    });
+    meshGeometry = new THREE.BufferGeometry();
+    meshGeometry.setAttribute('position', new THREE.BufferAttribute(meshPositions, 3));
+    if (meshColors) meshGeometry.setAttribute('color', new THREE.BufferAttribute(meshColors, 3, true));
+    meshGeometry.computeVertexNormals();
+    meshGeometry.userData.bufferStrategy = 'camera-local-depth-triangulation';
+    meshBufferByteLength = meshPositions.byteLength + (meshColors?.byteLength || 0);
+  }
+
+  return {
+    pointGeometry,
+    meshGeometry,
+    hasRgb,
+    neighborhoodPointCount: neighborhood.length,
+    candidatePointCount,
+    strictVisiblePointCount,
+    renderPointCount: surfacePoints.length,
+    renderTriangleCount: acceptedTriangles.length,
+    bufferByteLength: pointPositions.byteLength
+      + (pointColors?.byteLength || 0)
+      + meshBufferByteLength,
+    selectionMode: 'camera-local-depth-surface',
+  };
+};
+
+const createCameraGeometry = (
+  sourceGeometry,
+  {
+    pointBudget = CAMERA_POINT_BUDGET,
+    sourceOrder = null,
+    bufferStrategy = 'dedicated-downsample',
+  } = {},
+) => {
   const sourcePosition = sourceGeometry?.getAttribute('position');
   if (!sourcePosition?.count) return null;
   const pointCount = sourcePosition.count;
-  const renderCount = Math.min(pointCount, CAMERA_POINT_BUDGET);
+  const availablePointCount = sourceOrder instanceof Uint32Array
+    ? sourceOrder.length
+    : pointCount;
+  const renderCount = Math.min(availablePointCount, Math.max(0, pointBudget));
   const sourceColor = sourceGeometry.getAttribute('color');
   const hasRgb = sourceColor?.count === pointCount;
   const positions = new Float32Array(renderCount * 3);
@@ -66,12 +496,15 @@ const createCameraGeometry = (sourceGeometry) => {
   };
 
   for (let index = 0; index < renderCount; index += 1) {
-    const sourceIndex = renderCount === pointCount
+    const orderIndex = renderCount === availablePointCount
       ? index
       : Math.min(
-          pointCount - 1,
-          Math.floor(((index + 0.5) * pointCount) / renderCount),
+          availablePointCount - 1,
+          Math.floor(((index + 0.5) * availablePointCount) / renderCount),
         );
+    const sourceIndex = sourceOrder instanceof Uint32Array
+      ? sourceOrder[orderIndex]
+      : orderIndex;
     const targetOffset = index * 3;
     positions[targetOffset] = sourcePosition.getX(sourceIndex);
     positions[targetOffset + 1] = sourcePosition.getY(sourceIndex);
@@ -88,13 +521,124 @@ const createCameraGeometry = (sourceGeometry) => {
   if (colors) geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3, true));
   geometry.boundingBox = sourceGeometry.boundingBox?.clone() || null;
   geometry.boundingSphere = sourceGeometry.boundingSphere?.clone() || null;
-  geometry.userData.bufferStrategy = 'dedicated-downsample';
+  geometry.userData.bufferStrategy = bufferStrategy;
   return {
     geometry,
     pointCount,
+    availablePointCount,
     renderCount,
     hasRgb,
     bufferByteLength: positions.byteLength + (colors?.byteLength || 0),
+  };
+};
+
+const createCameraMeshGeometry = (sourceGeometry, qualityPlan, pose) => {
+  const topology = prepareMapGeometryTopology(sourceGeometry);
+  const sourcePosition = sourceGeometry?.getAttribute('position');
+  const sourceIndex = sourceGeometry?.getIndex();
+  if (!topology.hasMesh || !sourcePosition?.count || !sourceIndex?.count) return null;
+
+  const faceBudget = Math.min(topology.faceCount, qualityPlan.renderedFaceCount);
+  if (!faceBudget) return null;
+  const sourceColor = sourceGeometry.getAttribute('color');
+  const hasRgb = sourceColor?.count === sourcePosition.count;
+  const inversePose = normalizedInversePose(pose);
+  const candidateFaceCount = topology.faceCount;
+  const selectionMode = inversePose ? 'camera-global-mesh-lod' : 'uniform-global-fallback';
+
+  if (
+    inversePose
+    && !cameraNeighborhoodIntersectsMesh(topology.meshBounds, inversePose)
+  ) {
+    return {
+      geometry: null,
+      sourceFaceCount: topology.faceCount,
+      candidateFaceCount: 0,
+      renderFaceCount: 0,
+      selectionMode: 'camera-mesh-bounds-rejected',
+      hasRgb,
+      bufferByteLength: 0,
+      sourceBufferReused: false,
+    };
+  }
+
+  const sampledIndices = createUniformMeshIndex(sourceIndex, faceBudget);
+  const renderFaceCount = Math.min(faceBudget, Math.floor((sampledIndices?.length || 0) / 3));
+  if (!renderFaceCount) {
+    return {
+      geometry: null,
+      sourceFaceCount: topology.faceCount,
+      candidateFaceCount,
+      renderFaceCount: 0,
+      selectionMode,
+      hasRgb,
+      bufferByteLength: 0,
+      sourceBufferReused: false,
+    };
+  }
+
+  let lodCache = sourceGeometry.userData.zividCameraMeshLodCache;
+  if (
+    lodCache?.version !== 1
+    || lodCache.positionAttribute !== sourcePosition
+    || lodCache.indexAttribute !== sourceIndex
+    || lodCache.colorAttribute !== sourceColor
+  ) {
+    lodCache = {
+      version: 1,
+      positionAttribute: sourcePosition,
+      indexAttribute: sourceIndex,
+      colorAttribute: sourceColor,
+      entries: new Map(),
+    };
+    sourceGeometry.userData.zividCameraMeshLodCache = lodCache;
+  }
+  const lodCacheKey = `${renderFaceCount}:${hasRgb ? 'rgb' : 'mono'}`;
+  let packedBuffers = lodCache.entries.get(lodCacheKey);
+  const sourceBufferReused = Boolean(packedBuffers);
+  if (packedBuffers) {
+    packedBuffers = touchCacheEntry(lodCache.entries, lodCacheKey, packedBuffers, 2);
+  }
+  const positions = packedBuffers?.positions || new Float32Array(renderFaceCount * 9);
+  const colors = packedBuffers?.colors || (hasRgb ? new Uint8Array(renderFaceCount * 9) : null);
+  const encodeColor = (value) => {
+    const numeric = Number(value) || 0;
+    return Math.round(THREE.MathUtils.clamp(numeric > 1 ? numeric : numeric * 255, 0, 255));
+  };
+  if (!sourceBufferReused) {
+    for (let outputFace = 0; outputFace < renderFaceCount; outputFace += 1) {
+      const sourceFaceOffset = outputFace * 3;
+      for (let corner = 0; corner < 3; corner += 1) {
+        const sourceVertex = sampledIndices[sourceFaceOffset + corner];
+        const outputOffset = (outputFace * 3 + corner) * 3;
+        positions[outputOffset] = sourcePosition.getX(sourceVertex);
+        positions[outputOffset + 1] = sourcePosition.getY(sourceVertex);
+        positions[outputOffset + 2] = sourcePosition.getZ(sourceVertex);
+        if (colors) {
+          colors[outputOffset] = encodeColor(sourceColor.getX(sourceVertex));
+          colors[outputOffset + 1] = encodeColor(sourceColor.getY(sourceVertex));
+          colors[outputOffset + 2] = encodeColor(sourceColor.getZ(sourceVertex));
+        }
+      }
+    }
+    touchCacheEntry(lodCache.entries, lodCacheKey, { positions, colors }, 2);
+  }
+
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+  if (colors) geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3, true));
+  geometry.boundingBox = sourceGeometry.boundingBox?.clone() || null;
+  geometry.boundingSphere = sourceGeometry.boundingSphere?.clone() || null;
+  geometry.userData.bufferStrategy = 'dedicated-uniform-triangle-lod';
+  return {
+    geometry,
+    sourceFaceCount: topology.faceCount,
+    candidateFaceCount,
+    renderFaceCount,
+    selectionMode,
+    hasRgb,
+    bufferByteLength: positions.byteLength + (colors?.byteLength || 0),
+    sourceBufferReused,
   };
 };
 
@@ -192,6 +736,16 @@ const poseLabel = (pose) => {
   return `X ${x.toFixed(2)} · Y ${y.toFixed(2)} · Z ${z.toFixed(2)}`;
 };
 
+const EMPTY_CAMERA_MESH_STATS = Object.freeze({
+  candidateFaceCount: 0,
+  renderFaceCount: 0,
+  selectionMode: 'none',
+  surfaceCandidatePointCount: 0,
+  surfacePointCount: 0,
+  surfaceTriangleCount: 0,
+  surfaceSelectionMode: 'none',
+});
+
 export default function ZividCameraPanel({
   mapData,
   robot,
@@ -202,6 +756,8 @@ export default function ZividCameraPanel({
   teachingMode = 'pose',
   cameraTeachingEnabled = false,
   cameraTeachingResult,
+  meshRenderQuality = 'auto',
+  onMeshRenderQualityChange,
   onCameraTeachingMove,
 }) {
   const enabled = isM70Robot(robot, robotLoadState);
@@ -215,6 +771,7 @@ export default function ZividCameraPanel({
   const [expanded, setExpanded] = useState(false);
   const [dragging, setDragging] = useState(false);
   const [rendererStatus, setRendererStatus] = useState('waiting');
+  const [cameraMeshStats, setCameraMeshStats] = useState(EMPTY_CAMERA_MESH_STATS);
   const mountRef = useRef(null);
   const poseRef = useRef(null);
   const renderModeRef = useRef(renderMode);
@@ -222,6 +779,20 @@ export default function ZividCameraPanel({
   const dragRef = useRef(null);
   const activePose = cameraPoses?.[activeSide] || null;
   const hasRgb = Boolean(mapData?.geometry?.getAttribute('color'));
+  const meshInfo = mapData?.meshInfo || mapData?.geometry?.userData?.mapTopology || null;
+  const hasEmbeddedMesh = Boolean(meshInfo?.hasMesh && meshInfo.faceCount > 0);
+  const meshQualityPlan = resolveMeshRenderQuality(
+    meshRenderQuality,
+    meshInfo?.faceCount,
+  );
+  const liveCameraMeshRegionKey = useMemo(
+    () => cameraMeshRegionKeyForPose(activePose),
+    [activePose],
+  );
+  const [settledCameraMeshRegionKey, setSettledCameraMeshRegionKey] = useState(
+    liveCameraMeshRegionKey,
+  );
+  const builtCameraMeshRegionKeyRef = useRef('');
   const frustumStats = useMemo(
     () => estimateVisiblePoints(mapData?.geometry, activePose),
     [activePose, mapData?.geometry],
@@ -234,6 +805,20 @@ export default function ZividCameraPanel({
   useEffect(() => {
     if (!enabled && expanded) setExpanded(false);
   }, [enabled, expanded]);
+
+  useEffect(() => {
+    if (!mapData?.geometry) setCameraMeshStats(EMPTY_CAMERA_MESH_STATS);
+  }, [mapData?.geometry]);
+
+  useEffect(() => {
+    if (!mapData?.geometry || liveCameraMeshRegionKey === builtCameraMeshRegionKeyRef.current) {
+      return undefined;
+    }
+    const settleTimer = window.setTimeout(() => {
+      setSettledCameraMeshRegionKey(liveCameraMeshRegionKey);
+    }, 280);
+    return () => window.clearTimeout(settleTimer);
+  }, [liveCameraMeshRegionKey, mapData?.geometry]);
 
   useEffect(() => {
     setZoom(1);
@@ -258,14 +843,57 @@ export default function ZividCameraPanel({
     const sourceGeometry = mapData?.geometry;
     if (!enabled || !mount || !sourceGeometry) return undefined;
 
+    const topology = prepareMapGeometryTopology(sourceGeometry);
+    const qualityPlan = resolveMeshRenderQuality(meshRenderQuality, topology.faceCount);
     const cameraGeometry = createCameraGeometry(sourceGeometry);
     if (!cameraGeometry) return undefined;
+    const cameraSurfaceGeometry = createCameraSurfaceGeometry(
+      sourceGeometry,
+      qualityPlan,
+      poseRef.current,
+    );
+    const globalRgbFallbackGeometry = !cameraSurfaceGeometry
+      ? createCameraGeometry(sourceGeometry, {
+          pointBudget: qualityPlan.rgbPointBudget,
+          sourceOrder: sourceGeometry.userData.pointRenderOrder,
+          bufferStrategy: 'dedicated-rgb-point-fallback-lod',
+        })
+      : null;
+    const rgbCameraGeometry = cameraSurfaceGeometry
+      ? {
+          geometry: cameraSurfaceGeometry.pointGeometry,
+          renderCount: cameraSurfaceGeometry.renderPointCount,
+          hasRgb: cameraSurfaceGeometry.hasRgb,
+          bufferByteLength: 0,
+        }
+      : globalRgbFallbackGeometry || cameraGeometry;
+    const cameraMeshGeometry = topology.hasMesh
+      ? createCameraMeshGeometry(sourceGeometry, qualityPlan, poseRef.current)
+      : null;
+    builtCameraMeshRegionKeyRef.current = cameraMeshRegionKeyForPose(poseRef.current);
     const {
       geometry,
       pointCount,
       renderCount,
       bufferByteLength,
     } = cameraGeometry;
+    const rgbPointRenderCount = rgbCameraGeometry?.renderCount || 0;
+    const rgbMeshFaceCount = cameraMeshGeometry?.renderFaceCount || 0;
+    const rgbMeshCandidateFaceCount = cameraMeshGeometry?.candidateFaceCount || 0;
+    const meshSelectionMode = cameraMeshGeometry?.selectionMode || 'none';
+    setCameraMeshStats({
+      candidateFaceCount: rgbMeshCandidateFaceCount,
+      renderFaceCount: rgbMeshFaceCount,
+      selectionMode: meshSelectionMode,
+      surfaceCandidatePointCount: cameraSurfaceGeometry?.candidatePointCount || 0,
+      surfacePointCount: cameraSurfaceGeometry?.renderPointCount || 0,
+      surfaceTriangleCount: cameraSurfaceGeometry?.renderTriangleCount || 0,
+      surfaceSelectionMode: cameraSurfaceGeometry?.selectionMode || 'none',
+    });
+    const cameraBufferByteLength = bufferByteLength
+      + (cameraSurfaceGeometry?.bufferByteLength || 0)
+      + (globalRgbFallbackGeometry?.bufferByteLength || 0)
+      + (cameraMeshGeometry?.bufferByteLength || 0);
     setRendererStatus('waiting');
     let renderer;
     try {
@@ -278,11 +906,21 @@ export default function ZividCameraPanel({
       console.warn('Zivid 相机仿真视图初始化失败', error);
       setRendererStatus('error');
       geometry.dispose();
+      cameraSurfaceGeometry?.pointGeometry?.dispose();
+      cameraSurfaceGeometry?.meshGeometry?.dispose();
+      globalRgbFallbackGeometry?.geometry?.dispose();
+      cameraMeshGeometry?.geometry?.dispose();
       return undefined;
     }
 
     renderer.setClearColor(0x02080b, 1);
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.75));
+    const pixelRatioCap = {
+      performance: 0.85,
+      balanced: 1.15,
+      detail: 1.45,
+      full: 1.75,
+    }[qualityPlan.effectiveId] || 1.15;
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, pixelRatioCap));
     renderer.outputColorSpace = THREE.SRGBColorSpace;
     renderer.domElement.className = 'zivid-camera-canvas';
     renderer.domElement.tabIndex = 0;
@@ -291,9 +929,41 @@ export default function ZividCameraPanel({
     renderer.domElement.dataset.sourcePointCount = String(pointCount);
     renderer.domElement.dataset.renderPointCount = String(renderCount);
     renderer.domElement.dataset.downsampled = renderCount < pointCount ? 'true' : 'false';
-    renderer.domElement.dataset.gpuBufferStrategy = geometry.userData.bufferStrategy;
-    renderer.domElement.dataset.cameraBufferBytes = String(bufferByteLength);
+    renderer.domElement.dataset.rgbRenderPointCount = String(rgbPointRenderCount);
+    renderer.domElement.dataset.rgbSurfaceCandidatePointCount = String(
+      cameraSurfaceGeometry?.candidatePointCount || 0,
+    );
+    renderer.domElement.dataset.rgbSurfacePointCount = String(
+      cameraSurfaceGeometry?.renderPointCount || 0,
+    );
+    renderer.domElement.dataset.rgbSurfaceTriangleCount = String(
+      cameraSurfaceGeometry?.renderTriangleCount || 0,
+    );
+    renderer.domElement.dataset.rgbSurfaceSelection = cameraSurfaceGeometry?.selectionMode || 'none';
+    renderer.domElement.dataset.sourceMeshFaceCount = String(topology.faceCount);
+    renderer.domElement.dataset.cameraMeshCandidateFaceCount = String(rgbMeshCandidateFaceCount);
+    renderer.domElement.dataset.renderMeshFaceCount = String(rgbMeshFaceCount);
+    renderer.domElement.dataset.cameraMeshSelection = meshSelectionMode;
+    renderer.domElement.dataset.meshRenderQuality = qualityPlan.requestedId;
+    renderer.domElement.dataset.meshRenderQualityEffective = qualityPlan.effectiveId;
+    renderer.domElement.dataset.rgbSurfaceMode = topology.hasMesh
+      ? 'embedded-mesh+local-surface'
+      : 'local-surface';
+    renderer.domElement.dataset.rgbPointLayer = topology.hasMesh
+      ? 'local-unreferenced-vertices'
+      : 'local-map-points';
+    renderer.domElement.dataset.rgbPointsDepthPolicy = topology.hasMesh
+      ? 'strictly-in-front-of-mesh'
+      : 'standard';
+    renderer.domElement.dataset.gpuBufferStrategy = [
+      geometry.userData.bufferStrategy,
+      cameraMeshGeometry?.geometry?.userData?.bufferStrategy,
+      cameraSurfaceGeometry?.meshGeometry?.userData?.bufferStrategy,
+      cameraSurfaceGeometry?.pointGeometry?.userData?.bufferStrategy,
+    ].filter(Boolean).join('+');
+    renderer.domElement.dataset.cameraBufferBytes = String(cameraBufferByteLength);
     renderer.domElement.dataset.sourceBufferReused = 'false';
+    renderer.domElement.dataset.pixelRatioCap = String(pixelRatioCap);
     mount.replaceChildren(renderer.domElement);
 
     let contextAvailable = true;
@@ -324,18 +994,68 @@ export default function ZividCameraPanel({
       ZIVID_M70_PROFILE.far,
     );
     camera.matrixAutoUpdate = true;
+    const surfaceAmbientLight = new THREE.HemisphereLight(0xe8fbff, 0x081115, 1.35);
+    const surfaceHeadLight = new THREE.DirectionalLight(0xffffff, 1.7);
+    surfaceHeadLight.position.set(0, 0, 0);
+    surfaceHeadLight.target.position.set(0, 0, -1);
+    camera.add(surfaceHeadLight, surfaceHeadLight.target);
+    scene.add(camera, surfaceAmbientLight);
     const rgbMaterial = new THREE.PointsMaterial({
-      color: cameraGeometry.hasRgb ? 0xffffff : 0xb8c6c7,
-      size: expanded ? 1.55 : 1.25,
+      color: rgbCameraGeometry.hasRgb ? 0xffffff : 0xb8c6c7,
+      size: expanded ? 5 : 4,
       sizeAttenuation: false,
-      vertexColors: cameraGeometry.hasRgb,
+      vertexColors: rgbCameraGeometry.hasRgb,
       depthTest: true,
       depthWrite: true,
+      depthFunc: topology.hasMesh ? THREE.LessDepth : THREE.LessEqualDepth,
       toneMapped: false,
     });
     const depthMaterial = createDepthMaterial();
-    const points = new THREE.Points(geometry, rgbMaterial);
+    const points = new THREE.Points(rgbCameraGeometry?.geometry || geometry, rgbMaterial);
     points.frustumCulled = false;
+    points.renderOrder = 2;
+    let rgbMesh = null;
+    let rgbMeshMaterial = null;
+    if (cameraMeshGeometry?.geometry) {
+      rgbMeshMaterial = new THREE.MeshBasicMaterial({
+        color: cameraMeshGeometry.hasRgb ? 0xffffff : 0xb8c6c7,
+        vertexColors: cameraMeshGeometry.hasRgb,
+        side: THREE.DoubleSide,
+        depthTest: true,
+        depthWrite: true,
+        polygonOffset: true,
+        polygonOffsetFactor: -1,
+        polygonOffsetUnits: -1,
+        toneMapped: false,
+      });
+      rgbMesh = new THREE.Mesh(cameraMeshGeometry.geometry, rgbMeshMaterial);
+      rgbMesh.name = 'zivid-rgb-embedded-map-mesh';
+      rgbMesh.frustumCulled = false;
+      rgbMesh.renderOrder = 1;
+      scene.add(rgbMesh);
+    }
+    let reconstructedSurface = null;
+    let reconstructedSurfaceMaterial = null;
+    if (cameraSurfaceGeometry?.meshGeometry) {
+      reconstructedSurfaceMaterial = new THREE.MeshStandardMaterial({
+        color: cameraSurfaceGeometry.hasRgb ? 0xffffff : 0xb8c6c7,
+        vertexColors: cameraSurfaceGeometry.hasRgb,
+        side: THREE.DoubleSide,
+        depthTest: true,
+        depthWrite: true,
+        roughness: 0.92,
+        metalness: 0,
+        toneMapped: false,
+      });
+      reconstructedSurface = new THREE.Mesh(
+        cameraSurfaceGeometry.meshGeometry,
+        reconstructedSurfaceMaterial,
+      );
+      reconstructedSurface.name = 'zivid-rgb-local-reconstructed-surface';
+      reconstructedSurface.frustumCulled = false;
+      reconstructedSurface.renderOrder = 1;
+      scene.add(reconstructedSurface);
+    }
     scene.add(points);
 
     let width = 1;
@@ -347,7 +1067,18 @@ export default function ZividCameraPanel({
       camera.aspect = width / height;
       camera.updateProjectionMatrix();
       depthMaterial.uniforms.uPointSize.value = (expanded ? 2.3 : 1.85)
-        * Math.min(window.devicePixelRatio || 1, 1.75);
+        * renderer.getPixelRatio();
+      const visibleSurfacePointCount = Math.max(
+        1,
+        cameraSurfaceGeometry?.strictVisiblePointCount
+          || cameraSurfaceGeometry?.renderPointCount
+          || rgbPointRenderCount,
+      );
+      rgbMaterial.size = THREE.MathUtils.clamp(
+        Math.sqrt((width * height) / visibleSurfacePointCount) * 1.45,
+        expanded ? 2.2 : 2.8,
+        expanded ? 26 : 20,
+      );
     };
     const resizeObserver = new ResizeObserver(resize);
     resizeObserver.observe(mount);
@@ -413,8 +1144,24 @@ export default function ZividCameraPanel({
         camera.updateProjectionMatrix();
       }
 
-      points.material = renderModeRef.current === 'pointcloud' ? depthMaterial : rgbMaterial;
+      const pointCloudMode = renderModeRef.current === 'pointcloud';
+      points.geometry = pointCloudMode
+        ? geometry
+        : rgbCameraGeometry?.geometry || geometry;
+      points.material = pointCloudMode ? depthMaterial : rgbMaterial;
+      points.visible = pointCloudMode || (
+        rgbPointRenderCount > 0
+        && !cameraSurfaceGeometry?.renderTriangleCount
+      );
+      if (rgbMesh) rgbMesh.visible = !pointCloudMode;
+      if (reconstructedSurface) reconstructedSurface.visible = !pointCloudMode;
       renderer.domElement.dataset.renderMode = renderModeRef.current;
+      renderer.domElement.dataset.rgbMeshVisible = rgbMesh && !pointCloudMode ? 'true' : 'false';
+      renderer.domElement.dataset.rgbReconstructedSurfaceVisible = reconstructedSurface
+        && !pointCloudMode ? 'true' : 'false';
+      renderer.domElement.dataset.activePointCount = String(
+        pointCloudMode ? renderCount : rgbPointRenderCount,
+      );
       renderer.domElement.dataset.cameraSide = activeSide;
       renderer.domElement.dataset.opticalFrame = pose?.frameName || '';
       renderer.domElement.dataset.digitalZoom = currentZoom.toFixed(2);
@@ -445,13 +1192,27 @@ export default function ZividCameraPanel({
       renderer.domElement.removeEventListener('webglcontextlost', handleContextLost, false);
       renderer.domElement.removeEventListener('webglcontextrestored', handleContextRestored, false);
       points.material = null;
+      points.geometry = null;
       geometry.dispose();
+      cameraSurfaceGeometry?.pointGeometry?.dispose();
+      cameraSurfaceGeometry?.meshGeometry?.dispose();
+      globalRgbFallbackGeometry?.geometry?.dispose();
+      cameraMeshGeometry?.geometry?.dispose();
       rgbMaterial.dispose();
       depthMaterial.dispose();
+      rgbMeshMaterial?.dispose();
+      reconstructedSurfaceMaterial?.dispose();
       renderer.dispose();
       renderer.domElement.remove();
     };
-  }, [activeSide, enabled, expanded, mapData?.geometry]);
+  }, [
+    activeSide,
+    enabled,
+    expanded,
+    mapData?.geometry,
+    meshRenderQuality,
+    settledCameraMeshRegionKey,
+  ]);
 
   if (!enabled) return null;
 
@@ -476,6 +1237,15 @@ export default function ZividCameraPanel({
       data-camera-side={activeSide}
       data-render-mode={renderMode}
       data-renderer-status={rendererStatus}
+      data-rgb-surface-mode={hasEmbeddedMesh ? 'embedded-mesh+local-surface' : 'local-surface'}
+      data-mesh-render-quality={meshQualityPlan.requestedId}
+      data-camera-mesh-selection={cameraMeshStats.selectionMode}
+      data-camera-mesh-candidate-face-count={cameraMeshStats.candidateFaceCount}
+      data-rendered-mesh-face-count={cameraMeshStats.renderFaceCount}
+      data-rgb-surface-candidate-point-count={cameraMeshStats.surfaceCandidatePointCount}
+      data-rgb-surface-point-count={cameraMeshStats.surfacePointCount}
+      data-rgb-surface-triangle-count={cameraMeshStats.surfaceTriangleCount}
+      data-rgb-surface-selection={cameraMeshStats.surfaceSelectionMode}
       data-horizontal-fov={ZIVID_M70_PROFILE.horizontalFov}
       data-vertical-fov={ZIVID_M70_PROFILE.verticalFov}
       data-working-near={ZIVID_M70_PROFILE.near}
@@ -542,6 +1312,25 @@ export default function ZividCameraPanel({
             <Cloud size={11} /> 点云
           </button>
         </div>
+        {hasEmbeddedMesh && (
+          <label
+            className={`zivid-camera-quality tone-${meshQualityPlan.effectiveId}`}
+            title={`主 3D 与相机同步：${meshQualityPlan.renderedFaceCount.toLocaleString('zh-CN')} / ${meshQualityPlan.faceCount.toLocaleString('zh-CN')} 面`}
+          >
+            <Gauge size={11} />
+            <select
+              aria-label="相机网格渲染质量"
+              value={meshQualityPlan.requestedId}
+              onChange={(event) => onMeshRenderQualityChange?.(event.target.value)}
+            >
+              {MESH_RENDER_QUALITY_OPTIONS.map((option) => (
+                <option key={option.id} value={option.id}>
+                  {option.label}{option.id === 'auto' ? '（推荐）' : ''}
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
       </div>
 
       <div
@@ -600,7 +1389,11 @@ export default function ZividCameraPanel({
         <div className="zivid-camera-corner bottom-left" aria-hidden="true" />
         <div className="zivid-camera-corner bottom-right" aria-hidden="true" />
         <div className="zivid-camera-frame-meta top">
-          <span>{renderMode === 'rgb' ? 'RGB MAP PROJECTION' : 'XYZ DEPTH CLOUD'}</span>
+          <span>
+            {renderMode === 'rgb'
+              ? hasEmbeddedMesh ? 'RGB NATIVE + LOCAL SURFACE' : 'RGB LOCAL SURFACE'
+              : 'XYZ DEPTH CLOUD'}
+          </span>
           <strong>{activeSide === 'left' ? 'CAM-L' : 'CAM-R'}</strong>
         </div>
         <div className="zivid-camera-frame-meta bottom">
@@ -616,11 +1409,23 @@ export default function ZividCameraPanel({
         {rendererStatus === 'context-lost' && (
           <div className="zivid-camera-empty"><Focus size={15} /> 相机显存正在恢复 · 主界面仍可操作</div>
         )}
-        {activePose && frustumStats.checked > 0 && frustumStats.estimated === 0 && (
+        {activePose
+          && frustumStats.checked > 0
+          && frustumStats.estimated === 0
+          && (renderMode === 'pointcloud' || !hasEmbeddedMesh) && (
           <div className="zivid-camera-empty is-quiet"><Focus size={15} /> 当前视锥内暂无地图回波</div>
         )}
         {renderMode === 'rgb' && !hasRgb && (
-          <div className="zivid-camera-rgb-warning">地图无 RGB 通道 · 灰度显示</div>
+          <div className="zivid-camera-rgb-warning">
+            地图无 RGB 通道 · 灰度显示
+          </div>
+        )}
+        {renderMode === 'rgb'
+          && activePose
+          && cameraMeshStats.candidateFaceCount === 0
+          && cameraMeshStats.surfaceTriangleCount === 0
+          && cameraMeshStats.surfacePointCount === 0 && (
+          <div className="zivid-camera-empty is-quiet"><Focus size={15} /> 当前视锥内暂无可渲染表面</div>
         )}
         {renderMode === 'pointcloud' && (
           <div className="zivid-depth-legend" aria-label="点云深度色标">
@@ -674,9 +1479,17 @@ export default function ZividCameraPanel({
         <span><small>WORKING DIST.</small>{ZIVID_M70_PROFILE.near.toFixed(2)}—{ZIVID_M70_PROFILE.far.toFixed(2)} m</span>
       </div>
       <footer className="zivid-camera-panel__footer">
-        <span><i /> 仿真视图 · 地图点云投影</span>
+        <span><i /> 仿真视图 · RGB 实体表面 / XYZ 点云</span>
         <span>FOV {ZIVID_M70_PROFILE.horizontalFov.toFixed(1)}° × {ZIVID_M70_PROFILE.verticalFov.toFixed(1)}°</span>
-        <strong>≈ {compactNumber(frustumStats.estimated)} PTS</strong>
+        <strong>
+          {renderMode === 'rgb'
+            ? cameraMeshStats.renderFaceCount + cameraMeshStats.surfaceTriangleCount > 0
+              ? `${compactNumber(cameraMeshStats.renderFaceCount + cameraMeshStats.surfaceTriangleCount)} TRI`
+              : cameraMeshStats.surfacePointCount > 0
+                ? `${compactNumber(cameraMeshStats.surfacePointCount)} SURF`
+                : 'NO SURFACE'
+            : `≈ ${compactNumber(frustumStats.estimated)} PTS`}
+        </strong>
       </footer>
     </section>
   );

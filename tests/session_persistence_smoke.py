@@ -193,7 +193,10 @@ def run():
 
         three_box = three_canvas.bounding_box()
         assert three_box
-        page.get_by_role("button", name="旋转", exact=True).click()
+        assert page.get_by_role("button", name="旋转", exact=True).get_attribute(
+            "data-base-mode"
+        ) == "rotate"
+        three_canvas.focus()
         page.mouse.move(
             three_box["x"] + three_box["width"] * 0.38,
             three_box["y"] + three_box["height"] * 0.62,

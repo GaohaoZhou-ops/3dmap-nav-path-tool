@@ -17,26 +17,32 @@ import {
   X,
 } from 'lucide-react';
 import {
+  SPACEMOUSE_AXIS_GROUPS,
+  SPACEMOUSE_BUTTON_CALIBRATION,
   SPACEMOUSE_CALIBRATION_STEPS,
   SPACEMOUSE_CAPTURE_STRATEGY,
+  SPACEMOUSE_CONTROL_AXES,
+  SPACEMOUSE_DEFAULT_SELECTED_AXES,
   SPACEMOUSE_RAW_AXES,
   SPACEMOUSE_SUPPORTED_PRODUCT_IDS,
   SPACEMOUSE_VENDOR_ID,
   applySpaceMouseProfile,
   createSpaceMouseProfile,
+  isSpaceMouseProfileReady,
   isSupportedSpaceMouseDevice,
   loadSpaceMouseProfile,
   parseSpaceMouseInputReport,
   saveSpaceMouseProfile,
   spaceMouseConnectionLabel,
   validateSpaceMouseCalibration,
+  validateSpaceMouseButtons,
   zeroSpaceMouseAxes,
   zeroSpaceMouseControlAxes,
 } from '../lib/spaceMouse.js';
 
 const CENTER_THRESHOLD = 28;
 const MOTION_THRESHOLD = 62;
-const AUTO_ADVANCE_DELAY_MS = 1000;
+const AUTO_ADVANCE_DELAY_MS = 500;
 const CAPTURE_SAMPLE_LIMIT = 480;
 const PEAK_ENVELOPE_RATIO = 0.7;
 const PEAK_DIRECTION_COSINE = 0.72;
@@ -45,6 +51,22 @@ const RETURN_DIRECTION_COSINE = 0.28;
 const CENTER_SETTLE_MS = 160;
 const CONTROL_BUTTON_DOUBLE_PRESS_MIN_MS = 70;
 const CONTROL_BUTTON_DOUBLE_PRESS_MAX_MS = 460;
+const SPACEMOUSE_POINTER_ACTIVITY_THRESHOLD = 8;
+const SPACEMOUSE_POINTER_MOTION_GUARD_MS = 320;
+const SPACEMOUSE_POINTER_BUTTON_GUARD_MS = 560;
+const SPACEMOUSE_GUARDED_POINTER_EVENTS = Object.freeze([
+  'pointerdown',
+  'pointerup',
+  'pointercancel',
+  'mousedown',
+  'mouseup',
+  'click',
+  'dblclick',
+  'auxclick',
+  'contextmenu',
+  'wheel',
+  'dragstart',
+]);
 
 const hexId = (value) => `0x${Number(value || 0).toString(16).padStart(4, '0')}`;
 const rawAxisLabel = {
@@ -54,6 +76,14 @@ const rawAxisLabel = {
   rx: 'RX',
   ry: 'RY',
   rz: 'RZ',
+};
+const controlAxisMeta = {
+  x: { code: 'X', label: '前进 / 后退' },
+  y: { code: 'Y', label: '向左 / 向右' },
+  z: { code: 'Z', label: '向上 / 向下' },
+  roll: { code: 'ROLL', label: '左翻滚 / 右翻滚' },
+  pitch: { code: 'PITCH', label: '前倾 / 后仰' },
+  yaw: { code: 'YAW', label: '左偏航 / 右偏航' },
 };
 
 const statusCopy = {
@@ -71,10 +101,29 @@ const initialCalibration = () => ({
   stage: 'intro',
   stepIndex: 0,
   draft: {},
+  buttonDraft: { xyz: null, rpy: null },
   captured: null,
   captureMeta: null,
   issues: [],
 });
+
+const copySelectedAxes = (value) => ({
+  xyz: SPACEMOUSE_AXIS_GROUPS.xyz.includes(value?.xyz)
+    ? value.xyz
+    : SPACEMOUSE_DEFAULT_SELECTED_AXES.xyz,
+  rpy: SPACEMOUSE_AXIS_GROUPS.rpy.includes(value?.rpy)
+    ? value.rpy
+    : SPACEMOUSE_DEFAULT_SELECTED_AXES.rpy,
+});
+
+const selectedAxisOutput = (axes, selectedAxis) => Object.fromEntries(
+  SPACEMOUSE_CONTROL_AXES.map((axis) => [
+    axis,
+    axis === selectedAxis ? Number(axes?.[axis]) || 0 : 0,
+  ]),
+);
+
+const formatButtonMask = (value) => `0x${(Number(value) >>> 0).toString(16).padStart(2, '0')}`;
 
 const maxRawMagnitude = (axes) => Math.max(
   ...SPACEMOUSE_RAW_AXES.map((axis) => Math.abs(Number(axes?.[axis]) || 0)),
@@ -161,15 +210,25 @@ export default function SpaceMouseControl({ inputRef, onNotify }) {
   const inputHandlerRef = useRef(null);
   const profileRef = useRef(null);
   const modeRef = useRef('xyz');
+  const selectedAxesRef = useRef(copySelectedAxes(SPACEMOUSE_DEFAULT_SELECTED_AXES));
   const controlEnabledRef = useRef(true);
   const rawAxesRef = useRef(zeroSpaceMouseAxes());
   const buttonMaskRef = useRef(0);
-  const lastControlButtonPressRef = useRef({ button: 0, timestamp: -Infinity });
+  const lastControlButtonPressRef = useRef({ button: 0, timestamp: -Infinity, before: null });
   const displayFrameRef = useRef(null);
   const captureRef = useRef(null);
   const calibrationFrameRef = useRef(null);
   const pendingCalibrationAxesRef = useRef(zeroSpaceMouseAxes());
   const captureSettleTimerRef = useRef(null);
+  const pointerGuardUntilRef = useRef(0);
+  const pointerGuardTimerRef = useRef(null);
+  const pointerGuardActiveRef = useRef(false);
+  const pointerGuardReasonRef = useRef('');
+  const suppressedPointerEventsRef = useRef(0);
+  const pointerLockOwnedRef = useRef(false);
+  const pointerLockPrimedRef = useRef(false);
+  const pointerLockRequestPendingRef = useRef(false);
+  const pointerLockRetryAfterRef = useRef(0);
   const calibrationRef = useRef(initialCalibration());
   const mountedRef = useRef(true);
 
@@ -180,6 +239,9 @@ export default function SpaceMouseControl({ inputRef, onNotify }) {
   const [deviceInfo, setDeviceInfo] = useState(null);
   const [profile, setProfile] = useState(() => loadSpaceMouseProfile());
   const [mode, setMode] = useState('xyz');
+  const [selectedAxes, setSelectedAxes] = useState(() => (
+    copySelectedAxes(SPACEMOUSE_DEFAULT_SELECTED_AXES)
+  ));
   const [controlEnabled, setControlEnabled] = useState(true);
   const [rawDisplay, setRawDisplay] = useState(() => zeroSpaceMouseAxes());
   const [signalActive, setSignalActive] = useState(false);
@@ -188,67 +250,284 @@ export default function SpaceMouseControl({ inputRef, onNotify }) {
 
   profileRef.current = profile;
   modeRef.current = mode;
+  selectedAxesRef.current = copySelectedAxes(selectedAxes);
   calibrationRef.current = calibration;
 
   const publishInput = useCallback((patch = {}) => {
     if (!inputRef) return;
     const current = inputRef.current || {};
     const patchTimestamp = Number(patch.timestamp) || performance.now();
-    const rawMotionActive = patch.rawAxes
-      && maxRawMagnitude(patch.rawAxes) > CENTER_THRESHOLD;
+    const rawMagnitude = patch.rawAxes ? maxRawMagnitude(patch.rawAxes) : 0;
+    const rawMotionActive = Boolean(patch.rawAxes && rawMagnitude > CENTER_THRESHOLD);
+    const physicalMotionActive = Boolean(
+      patch.rawAxes && rawMagnitude > SPACEMOUSE_POINTER_ACTIVITY_THRESHOLD,
+    );
     inputRef.current = {
       ...current,
       ...patch,
+      motionActive: patch.rawAxes ? rawMotionActive : Boolean(patch.motionActive),
+      physicalMotionActive: patch.rawAxes
+        ? physicalMotionActive
+        : Boolean(patch.physicalMotionActive ?? current.physicalMotionActive),
       lastMotionTimestamp: rawMotionActive
         ? patchTimestamp
         : Number(current.lastMotionTimestamp || 0),
+      lastPhysicalMotionTimestamp: physicalMotionActive
+        ? patchTimestamp
+        : Number(current.lastPhysicalMotionTimestamp || 0),
       revision: Number(current.revision || 0) + 1,
     };
   }, [inputRef]);
+
+  const requestTransientPointerLock = useCallback(() => {
+    const lockTarget = document.documentElement;
+    if (
+      !lockTarget?.requestPointerLock
+      || document.pointerLockElement
+      || pointerLockRequestPendingRef.current
+      || performance.now() < pointerLockRetryAfterRef.current
+    ) return;
+    pointerLockRequestPendingRef.current = true;
+    if (rootRef.current) rootRef.current.dataset.spacemousePointerLock = 'requesting';
+    try {
+      const request = lockTarget.requestPointerLock();
+      if (request && typeof request.then === 'function') {
+        Promise.resolve(request).then(() => {
+          if (
+            !pointerGuardActiveRef.current
+            && document.pointerLockElement === document.documentElement
+          ) document.exitPointerLock?.();
+        }).catch(() => {
+          pointerLockRequestPendingRef.current = false;
+          pointerLockRetryAfterRef.current = performance.now() + 2000;
+          if (rootRef.current) rootRef.current.dataset.spacemousePointerLock = 'unavailable';
+        });
+      }
+    } catch {
+      pointerLockRequestPendingRef.current = false;
+      pointerLockRetryAfterRef.current = performance.now() + 2000;
+      if (rootRef.current) rootRef.current.dataset.spacemousePointerLock = 'unavailable';
+    }
+  }, []);
+
+  const clearPointerGuard = useCallback((force = false) => {
+    if (pointerGuardTimerRef.current) {
+      window.clearTimeout(pointerGuardTimerRef.current);
+      pointerGuardTimerRef.current = null;
+    }
+    const remaining = pointerGuardUntilRef.current - performance.now();
+    if (!force && remaining > 0) {
+      pointerGuardTimerRef.current = window.setTimeout(
+        () => clearPointerGuard(),
+        remaining + 20,
+      );
+      return;
+    }
+    pointerGuardUntilRef.current = 0;
+    pointerGuardActiveRef.current = false;
+    pointerGuardReasonRef.current = '';
+    document.documentElement.classList.remove('is-spacemouse-pointer-guarded');
+    if (pointerLockOwnedRef.current && document.pointerLockElement === document.documentElement) {
+      document.exitPointerLock?.();
+    }
+    pointerLockOwnedRef.current = false;
+    if (rootRef.current) {
+      rootRef.current.dataset.spacemousePointerGuard = 'idle';
+      rootRef.current.dataset.spacemousePointerGuardReason = '';
+      rootRef.current.dataset.spacemousePointerLock = pointerLockPrimedRef.current
+        ? 'primed'
+        : 'idle';
+    }
+    if (inputRef) {
+      const current = inputRef.current || {};
+      inputRef.current = {
+        ...current,
+        pointerGuardActive: false,
+        pointerGuardUntil: 0,
+        revision: Number(current.revision || 0) + 1,
+      };
+    }
+  }, [inputRef]);
+
+  const armPointerGuard = useCallback((reason, duration) => {
+    const now = performance.now();
+    const wasActive = pointerGuardActiveRef.current && now <= pointerGuardUntilRef.current;
+    pointerGuardUntilRef.current = Math.max(pointerGuardUntilRef.current, now + duration);
+    if (!wasActive || reason === 'physical-button') pointerGuardReasonRef.current = reason;
+
+    if (!wasActive) {
+      pointerGuardActiveRef.current = true;
+      document.documentElement.classList.add('is-spacemouse-pointer-guarded');
+      if (rootRef.current) rootRef.current.dataset.spacemousePointerGuard = 'active';
+      if (inputRef) {
+        const current = inputRef.current || {};
+        inputRef.current = {
+          ...current,
+          pointerGuardActive: true,
+          pointerGuardUntil: pointerGuardUntilRef.current,
+          pointerGuardReason: reason,
+          revision: Number(current.revision || 0) + 1,
+        };
+      }
+    }
+    if (rootRef.current && (!wasActive || reason === 'physical-button')) {
+      rootRef.current.dataset.spacemousePointerGuardReason = pointerGuardReasonRef.current;
+    }
+    // After the first trusted mapped click has granted Pointer Lock once, the
+    // specification permits reacquiring it after our own exitPointerLock().
+    if (pointerLockPrimedRef.current) requestTransientPointerLock();
+    if (!pointerGuardTimerRef.current) {
+      pointerGuardTimerRef.current = window.setTimeout(
+        () => clearPointerGuard(),
+        duration + 20,
+      );
+    }
+  }, [clearPointerGuard, inputRef, requestTransientPointerLock]);
+
+  useEffect(() => {
+    if (rootRef.current) {
+      rootRef.current.dataset.spacemousePointerGuard = 'idle';
+      rootRef.current.dataset.spacemousePointerGuardReason = '';
+      rootRef.current.dataset.spacemousePointerLock = document.documentElement.requestPointerLock
+        ? 'idle'
+        : 'unsupported';
+      rootRef.current.dataset.spacemouseSuppressedPointerEvents = String(
+        suppressedPointerEventsRef.current,
+      );
+    }
+    const onPointerLockChange = () => {
+      const requested = pointerLockRequestPendingRef.current;
+      pointerLockRequestPendingRef.current = false;
+      if (requested && document.pointerLockElement === document.documentElement) {
+        pointerLockOwnedRef.current = true;
+        pointerLockPrimedRef.current = true;
+        if (!pointerGuardActiveRef.current) document.exitPointerLock?.();
+      } else if (!document.pointerLockElement) {
+        pointerLockOwnedRef.current = false;
+      }
+      if (rootRef.current) {
+        rootRef.current.dataset.spacemousePointerLock = pointerLockOwnedRef.current
+          ? 'locked'
+          : pointerLockPrimedRef.current ? 'primed' : 'idle';
+      }
+    };
+    const onPointerLockError = () => {
+      pointerLockRequestPendingRef.current = false;
+      pointerLockRetryAfterRef.current = performance.now() + 2000;
+      if (rootRef.current) rootRef.current.dataset.spacemousePointerLock = 'unavailable';
+    };
+    const suppressMappedPointerEvent = (event) => {
+      if (performance.now() > pointerGuardUntilRef.current) return;
+      if ((event.type === 'pointerdown' || event.type === 'mousedown') && event.isTrusted) {
+        requestTransientPointerLock();
+      }
+      event.preventDefault();
+      event.stopPropagation();
+      event.stopImmediatePropagation?.();
+      suppressedPointerEventsRef.current += 1;
+      if (rootRef.current) {
+        rootRef.current.dataset.spacemouseSuppressedPointerEvents = String(
+          suppressedPointerEventsRef.current,
+        );
+        rootRef.current.dataset.spacemouseLastSuppressedEvent = event.type;
+      }
+      if (inputRef) {
+        const current = inputRef.current || {};
+        inputRef.current = {
+          ...current,
+          suppressedPointerEvents: suppressedPointerEventsRef.current,
+          lastSuppressedPointerEvent: event.type,
+          revision: Number(current.revision || 0) + 1,
+        };
+      }
+    };
+    document.addEventListener('pointerlockchange', onPointerLockChange);
+    document.addEventListener('pointerlockerror', onPointerLockError);
+    SPACEMOUSE_GUARDED_POINTER_EVENTS.forEach((type) => {
+      window.addEventListener(type, suppressMappedPointerEvent, { capture: true, passive: false });
+    });
+    return () => {
+      document.removeEventListener('pointerlockchange', onPointerLockChange);
+      document.removeEventListener('pointerlockerror', onPointerLockError);
+      SPACEMOUSE_GUARDED_POINTER_EVENTS.forEach((type) => {
+        window.removeEventListener(type, suppressMappedPointerEvent, true);
+      });
+      clearPointerGuard(true);
+    };
+  }, [clearPointerGuard, inputRef, requestTransientPointerLock]);
 
   useEffect(() => {
     publishInput({ calibrating: calibration.open });
   }, [calibration.open, publishInput]);
 
   const publishStopped = useCallback((connected = false) => {
+    const profileReady = isSpaceMouseProfileReady(profileRef.current);
     publishInput({
       connected,
-      calibrated: Boolean(profileRef.current),
+      calibrated: profileReady,
       controlEnabled: controlEnabledRef.current,
       mode: modeRef.current,
+      selectedAxis: selectedAxesRef.current[modeRef.current],
+      selectedAxes: copySelectedAxes(selectedAxesRef.current),
+      motionActive: false,
       axes: zeroSpaceMouseControlAxes(),
       rawAxes: copyAxes(rawAxesRef.current),
       timestamp: performance.now(),
     });
   }, [publishInput]);
 
-  const setControlMode = useCallback((nextMode, source = 'ui') => {
+  const activateControlAxis = useCallback((nextMode, requestedAxis, source = 'ui') => {
     const normalized = nextMode === 'rpy' ? 'rpy' : 'xyz';
+    const groupAxes = SPACEMOUSE_AXIS_GROUPS[normalized];
+    const axis = groupAxes.includes(requestedAxis)
+      ? requestedAxis
+      : selectedAxesRef.current[normalized];
+    const nextSelectedAxes = {
+      ...selectedAxesRef.current,
+      [normalized]: axis,
+    };
     const wasPaused = !controlEnabledRef.current;
     controlEnabledRef.current = true;
     modeRef.current = normalized;
+    selectedAxesRef.current = nextSelectedAxes;
     setControlEnabled(true);
     setMode(normalized);
-    const axes = profileRef.current
+    setSelectedAxes(nextSelectedAxes);
+    const profileReady = isSpaceMouseProfileReady(profileRef.current);
+    const decodedAxes = profileReady
       ? applySpaceMouseProfile(rawAxesRef.current, profileRef.current)
       : zeroSpaceMouseControlAxes();
     publishInput({
       connected: Boolean(deviceRef.current?.opened),
-      calibrated: Boolean(profileRef.current),
+      calibrated: profileReady,
       controlEnabled: true,
       mode: normalized,
+      selectedAxis: axis,
+      selectedAxes: nextSelectedAxes,
       modeSource: source,
-      axes,
+      axes: selectedAxisOutput(decodedAxes, axis),
       rawAxes: copyAxes(rawAxesRef.current),
       timestamp: performance.now(),
     });
     if (wasPaused && source !== 'calibration') {
       onNotify?.(
-        `SpaceMouse 控制已恢复 · ${normalized === 'rpy' ? 'RPY' : 'XYZ'}`,
+        `SpaceMouse 控制已恢复 · ${controlAxisMeta[axis].code} 单轴`,
         'success',
       );
     }
   }, [onNotify, publishInput]);
+
+  const cycleControlAxis = useCallback((nextMode, source = 'ui') => {
+    const normalized = nextMode === 'rpy' ? 'rpy' : 'xyz';
+    const groupAxes = SPACEMOUSE_AXIS_GROUPS[normalized];
+    const currentAxis = selectedAxesRef.current[normalized];
+    const shouldAdvance = controlEnabledRef.current && modeRef.current === normalized;
+    const currentIndex = Math.max(0, groupAxes.indexOf(currentAxis));
+    const nextAxis = shouldAdvance
+      ? groupAxes[(currentIndex + 1) % groupAxes.length]
+      : currentAxis;
+    activateControlAxis(normalized, nextAxis, source);
+  }, [activateControlAxis]);
 
   const pauseControl = useCallback((source = 'physical-button-double-press') => {
     if (!controlEnabledRef.current) return;
@@ -256,9 +535,11 @@ export default function SpaceMouseControl({ inputRef, onNotify }) {
     setControlEnabled(false);
     publishInput({
       connected: Boolean(deviceRef.current?.opened),
-      calibrated: Boolean(profileRef.current),
+      calibrated: isSpaceMouseProfileReady(profileRef.current),
       controlEnabled: false,
       mode: modeRef.current,
+      selectedAxis: selectedAxesRef.current[modeRef.current],
+      selectedAxes: copySelectedAxes(selectedAxesRef.current),
       modeSource: source,
       axes: zeroSpaceMouseControlAxes(),
       rawAxes: copyAxes(rawAxesRef.current),
@@ -276,22 +557,44 @@ export default function SpaceMouseControl({ inputRef, onNotify }) {
       && elapsed >= CONTROL_BUTTON_DOUBLE_PRESS_MIN_MS
       && elapsed <= CONTROL_BUTTON_DOUBLE_PRESS_MAX_MS
     );
-    lastControlButtonPressRef.current = isDoublePress
-      ? { button: 0, timestamp: -Infinity }
-      : { button, timestamp: now };
     if (isDoublePress) {
+      if (previous.before) {
+        modeRef.current = previous.before.mode;
+        selectedAxesRef.current = copySelectedAxes(previous.before.selectedAxes);
+        setMode(previous.before.mode);
+        setSelectedAxes(selectedAxesRef.current);
+      }
+      lastControlButtonPressRef.current = { button: 0, timestamp: -Infinity, before: null };
       pauseControl(`${source}-double-press`);
       return;
     }
-    setControlMode(nextMode, source);
-  }, [pauseControl, setControlMode]);
+    lastControlButtonPressRef.current = {
+      button,
+      timestamp: now,
+      before: {
+        mode: modeRef.current,
+        selectedAxes: copySelectedAxes(selectedAxesRef.current),
+      },
+    };
+    cycleControlAxis(nextMode, source);
+  }, [cycleControlAxis, pauseControl]);
 
-  const scheduleDisplay = useCallback((axes) => {
-    if (displayFrameRef.current) return;
+  const clearScheduledDisplay = useCallback(() => {
+    if (displayFrameRef.current !== null) {
+      cancelAnimationFrame(displayFrameRef.current);
+      displayFrameRef.current = null;
+    }
+  }, []);
+
+  const scheduleDisplay = useCallback(() => {
+    if (displayFrameRef.current !== null) return;
     displayFrameRef.current = requestAnimationFrame(() => {
       displayFrameRef.current = null;
       if (!mountedRef.current) return;
-      const nextAxes = copyAxes(axes);
+      // Wireless/USB devices commonly emit translation and rotation as two
+      // reports inside the same render frame. Read the shared accumulator at
+      // paint time so the panel receives the complete T + R snapshot.
+      const nextAxes = copyAxes(rawAxesRef.current);
       setRawDisplay(nextAxes);
       setSignalActive(maxRawMagnitude(nextAxes) > CENTER_THRESHOLD);
     });
@@ -394,7 +697,7 @@ export default function SpaceMouseControl({ inputRef, onNotify }) {
 
   const processCalibrationInput = useCallback((rawAxes) => {
     const capture = captureRef.current;
-    if (!capture) return;
+    if (!capture || capture.kind === 'button') return;
     const magnitude = maxRawMagnitude(rawAxes);
 
     if (capture.phase === 'centering') {
@@ -497,6 +800,47 @@ export default function SpaceMouseControl({ inputRef, onNotify }) {
     });
   }, [processCalibrationInput]);
 
+  const captureCalibrationButton = useCallback((pressedMask) => {
+    const capture = captureRef.current;
+    const current = calibrationRef.current;
+    const step = SPACEMOUSE_CALIBRATION_STEPS[capture?.stepIndex];
+    if (!current.open || !capture || step?.type !== 'button') return false;
+
+    const mask = Number(pressedMask) >>> 0;
+    const singleButton = mask > 0 && (mask & (mask - 1)) === 0;
+    const otherRole = step.role === 'xyz' ? 'rpy' : 'xyz';
+    const duplicate = Number(current.buttonDraft?.[otherRole]) === mask;
+    if (!singleButton || duplicate) {
+      captureRef.current = null;
+      setCalibration((value) => ({
+        ...value,
+        stage: 'capture-error',
+        captured: null,
+        issues: [duplicate
+          ? '这个实体键已分配给另一组，请按下另一侧按钮'
+          : '检测到多个按键同时触发，请仅单击一个实体键'],
+      }));
+      return true;
+    }
+
+    captureRef.current = null;
+    const captured = {
+      kind: 'button',
+      role: step.role,
+      mask,
+      capturedAt: new Date().toISOString(),
+    };
+    setCalibration((value) => ({
+      ...value,
+      stage: 'captured',
+      buttonDraft: { ...value.buttonDraft, [step.role]: mask },
+      captured,
+      captureMeta: null,
+      issues: [],
+    }));
+    return true;
+  }, []);
+
   const handleInputReport = useCallback((event) => {
     const report = parseSpaceMouseInputReport(event.reportId, event.data);
     if (report.translation) Object.assign(rawAxesRef.current, report.translation);
@@ -506,27 +850,56 @@ export default function SpaceMouseControl({ inputRef, onNotify }) {
       const previous = buttonMaskRef.current;
       const pressed = report.buttons & ~previous;
       buttonMaskRef.current = report.buttons;
-      if (pressed & 0x1) handleControlButtonPress(0x1, 'xyz', 'left-button');
-      else if (pressed & 0x2) handleControlButtonPress(0x2, 'rpy', 'right-button');
+      if (pressed) {
+        armPointerGuard('physical-button', SPACEMOUSE_POINTER_BUTTON_GUARD_MS);
+        if (calibrationRef.current.open) {
+          captureCalibrationButton(pressed);
+        } else if (isSpaceMouseProfileReady(profileRef.current)) {
+          const buttons = validateSpaceMouseButtons(profileRef.current.buttons).buttons;
+          if (pressed & buttons.xyz) {
+            handleControlButtonPress(buttons.xyz, 'xyz', 'xyz-button');
+          } else if (pressed & buttons.rpy) {
+            handleControlButtonPress(buttons.rpy, 'rpy', 'rpy-button');
+          }
+        }
+      }
     }
 
     if (!report.translation && !report.rotation) return;
     const rawAxes = copyAxes(rawAxesRef.current);
-    scheduleDisplay(rawAxes);
+    // Keep the pointer firewall alive through the spring return. The viewport
+    // uses a wider dead zone, but tiny physical cap values may still be mapped
+    // to the operating-system cursor by 3DxWare.
+    if (maxRawMagnitude(rawAxes) > SPACEMOUSE_POINTER_ACTIVITY_THRESHOLD) {
+      armPointerGuard('cap-motion', SPACEMOUSE_POINTER_MOTION_GUARD_MS);
+    }
+    scheduleDisplay();
     scheduleCalibrationInput(rawAxes);
     const currentProfile = profileRef.current;
+    const profileReady = isSpaceMouseProfileReady(currentProfile);
+    const selectedAxis = selectedAxesRef.current[modeRef.current];
+    const decodedAxes = profileReady && controlEnabledRef.current
+      ? applySpaceMouseProfile(rawAxes, currentProfile)
+      : zeroSpaceMouseControlAxes();
     publishInput({
       connected: true,
-      calibrated: Boolean(currentProfile),
+      calibrated: profileReady,
       controlEnabled: controlEnabledRef.current,
       mode: modeRef.current,
-      axes: currentProfile && controlEnabledRef.current
-        ? applySpaceMouseProfile(rawAxes, currentProfile)
-        : zeroSpaceMouseControlAxes(),
+      selectedAxis,
+      selectedAxes: copySelectedAxes(selectedAxesRef.current),
+      axes: selectedAxisOutput(decodedAxes, selectedAxis),
       rawAxes,
       timestamp: performance.now(),
     });
-  }, [handleControlButtonPress, publishInput, scheduleCalibrationInput, scheduleDisplay]);
+  }, [
+    armPointerGuard,
+    captureCalibrationButton,
+    handleControlButtonPress,
+    publishInput,
+    scheduleCalibrationInput,
+    scheduleDisplay,
+  ]);
 
   const detachDevice = useCallback(async ({ close = false, disconnected = false } = {}) => {
     const device = deviceRef.current;
@@ -537,8 +910,10 @@ export default function SpaceMouseControl({ inputRef, onNotify }) {
     deviceRef.current = null;
     rawAxesRef.current = zeroSpaceMouseAxes();
     buttonMaskRef.current = 0;
-    lastControlButtonPressRef.current = { button: 0, timestamp: -Infinity };
+    lastControlButtonPressRef.current = { button: 0, timestamp: -Infinity, before: null };
     controlEnabledRef.current = true;
+    clearScheduledDisplay();
+    clearPointerGuard(true);
     clearScheduledCalibrationInput();
     clearCaptureSettleTimer();
     captureRef.current = null;
@@ -554,7 +929,13 @@ export default function SpaceMouseControl({ inputRef, onNotify }) {
       }
     }
     if (mountedRef.current) setStatus(disconnected ? 'disconnected' : 'idle');
-  }, [clearCaptureSettleTimer, clearScheduledCalibrationInput, publishStopped]);
+  }, [
+    clearCaptureSettleTimer,
+    clearPointerGuard,
+    clearScheduledDisplay,
+    clearScheduledCalibrationInput,
+    publishStopped,
+  ]);
 
   const attachDevice = useCallback(async (device, { announce = true } = {}) => {
     if (!isSupportedSpaceMouseDevice(device)) {
@@ -567,7 +948,7 @@ export default function SpaceMouseControl({ inputRef, onNotify }) {
     if (!device.opened) await device.open();
     deviceRef.current = device;
     controlEnabledRef.current = true;
-    lastControlButtonPressRef.current = { button: 0, timestamp: -Infinity };
+    lastControlButtonPressRef.current = { button: 0, timestamp: -Infinity, before: null };
     setControlEnabled(true);
     inputHandlerRef.current = handleInputReport;
     device.addEventListener('inputreport', handleInputReport);
@@ -582,25 +963,26 @@ export default function SpaceMouseControl({ inputRef, onNotify }) {
     setLastError('');
     publishInput({
       connected: true,
-      calibrated: Boolean(profileRef.current),
+      calibrated: isSpaceMouseProfileReady(profileRef.current),
       controlEnabled: true,
       mode: modeRef.current,
+      selectedAxis: selectedAxesRef.current[modeRef.current],
+      selectedAxes: copySelectedAxes(selectedAxesRef.current),
       axes: zeroSpaceMouseControlAxes(),
       rawAxes: zeroSpaceMouseAxes(),
       timestamp: performance.now(),
       device: info,
     });
-    const needsPeakCaptureRefresh = profileRef.current
-      && profileRef.current.captureStrategy !== SPACEMOUSE_CAPTURE_STRATEGY;
-    if (!profileRef.current || needsPeakCaptureRefresh) {
+    const needsCalibration = !isSpaceMouseProfileReady(profileRef.current);
+    if (needsCalibration) {
       setCalibration({ ...initialCalibration(), open: true });
     }
     if (announce) {
       onNotify?.(
-        needsPeakCaptureRefresh
-          ? 'SpaceMouse 采集策略已升级，请重新标定以过滤松手回弹'
+        needsCalibration
+          ? 'SpaceMouse 控制已升级，请标定左右切换键与六轴动作'
           : 'SpaceMouse 已连接，普通鼠标与键盘仍可同时使用',
-        needsPeakCaptureRefresh ? 'warning' : 'success',
+        needsCalibration ? 'warning' : 'success',
       );
     }
   }, [detachDevice, handleInputReport, onNotify, publishInput]);
@@ -639,6 +1021,9 @@ export default function SpaceMouseControl({ inputRef, onNotify }) {
 
   useEffect(() => {
     mountedRef.current = true;
+    // Fast Refresh can run the cleanup from an older module version whose
+    // cancelled RAF id was not cleared. Always re-arm live telemetry here.
+    displayFrameRef.current = null;
     if (!navigator.hid) return () => { mountedRef.current = false; };
     let cancelled = false;
     navigator.hid.getDevices()
@@ -672,7 +1057,7 @@ export default function SpaceMouseControl({ inputRef, onNotify }) {
       mountedRef.current = false;
       navigator.hid.removeEventListener('connect', onConnect);
       navigator.hid.removeEventListener('disconnect', onDisconnect);
-      if (displayFrameRef.current) cancelAnimationFrame(displayFrameRef.current);
+      clearScheduledDisplay();
       clearScheduledCalibrationInput();
       clearCaptureSettleTimer();
       const device = deviceRef.current;
@@ -683,6 +1068,7 @@ export default function SpaceMouseControl({ inputRef, onNotify }) {
   }, [
     attachDevice,
     clearCaptureSettleTimer,
+    clearScheduledDisplay,
     clearScheduledCalibrationInput,
     detachDevice,
     onNotify,
@@ -709,10 +1095,13 @@ export default function SpaceMouseControl({ inputRef, onNotify }) {
   const armCalibrationStep = useCallback((stepIndex, { reset = false } = {}) => {
     clearScheduledCalibrationInput();
     clearCaptureSettleTimer();
+    const step = SPACEMOUSE_CALIBRATION_STEPS[stepIndex];
+    const buttonStep = step?.type === 'button';
     const centered = maxRawMagnitude(rawAxesRef.current) <= CENTER_THRESHOLD;
     captureRef.current = {
       stepIndex,
-      phase: centered ? 'armed' : 'centering',
+      kind: buttonStep ? 'button' : 'motion',
+      phase: buttonStep || centered ? 'armed' : 'centering',
       samples: [],
       peakMagnitude: 0,
       peakVector: null,
@@ -723,8 +1112,11 @@ export default function SpaceMouseControl({ inputRef, onNotify }) {
       ...(reset ? initialCalibration() : current),
       open: true,
       stepIndex,
-      stage: centered ? 'armed' : 'centering',
+      stage: buttonStep || centered ? 'armed' : 'centering',
       draft: reset ? {} : current.draft,
+      buttonDraft: reset
+        ? { xyz: null, rpy: null }
+        : { ...current.buttonDraft },
       captured: null,
       captureMeta: null,
       issues: [],
@@ -746,17 +1138,23 @@ export default function SpaceMouseControl({ inputRef, onNotify }) {
   }, [armCalibrationStep]);
 
   const finishCalibration = useCallback((current) => {
-    const validation = validateSpaceMouseCalibration(current.draft);
-    if (!validation.valid) {
-      setCalibration({ ...current, stage: 'review-error', issues: validation.issues });
+    const motionValidation = validateSpaceMouseCalibration(current.draft);
+    const buttonValidation = validateSpaceMouseButtons(current.buttonDraft);
+    const issues = [...buttonValidation.issues, ...motionValidation.issues];
+    if (issues.length) {
+      setCalibration({ ...current, stage: 'review-error', issues });
       return;
     }
     try {
-      const nextProfile = createSpaceMouseProfile(current.draft, deviceInfo);
+      const nextProfile = createSpaceMouseProfile(
+        current.draft,
+        deviceInfo,
+        buttonValidation.buttons,
+      );
       const persisted = saveSpaceMouseProfile(nextProfile);
       profileRef.current = nextProfile;
       setProfile(nextProfile);
-      setControlMode('xyz', 'calibration');
+      activateControlAxis('xyz', SPACEMOUSE_DEFAULT_SELECTED_AXES.xyz, 'calibration');
       setCalibration({ ...current, stage: 'complete', issues: [] });
       onNotify?.(
         persisted ? 'SpaceMouse 用户习惯已保存到本地' : '校准已生效，但浏览器阻止了本地保存',
@@ -769,7 +1167,7 @@ export default function SpaceMouseControl({ inputRef, onNotify }) {
         issues: [error?.message || '校准数据验证失败'],
       });
     }
-  }, [deviceInfo, onNotify, setControlMode]);
+  }, [activateControlAxis, deviceInfo, onNotify]);
 
   useEffect(() => {
     if (!calibration.open || calibration.stage !== 'captured') return undefined;
@@ -811,8 +1209,11 @@ export default function SpaceMouseControl({ inputRef, onNotify }) {
   const liveRawMaximum = maxRawMagnitude(rawDisplay);
   const liveAxisThreshold = Math.max(12, liveRawMaximum * 0.12);
   const connected = status === 'connected';
-  const calibrated = Boolean(profile);
-  const peakCaptureReady = profile?.captureStrategy === SPACEMOUSE_CAPTURE_STRATEGY;
+  const hasProfile = Boolean(profile);
+  const calibrated = isSpaceMouseProfileReady(profile);
+  const peakCaptureReady = calibrated;
+  const selectedAxis = selectedAxes[mode] || SPACEMOUSE_DEFAULT_SELECTED_AXES[mode];
+  const selectedAxisMeta = controlAxisMeta[selectedAxis];
   const StatusIcon = status === 'requesting' || status === 'connecting'
     ? LoaderCircle
     : status === 'error' || status === 'unsupported'
@@ -826,13 +1227,26 @@ export default function SpaceMouseControl({ inputRef, onNotify }) {
       data-spacemouse-state={status}
       data-spacemouse-calibrated={calibrated ? 'true' : 'false'}
       data-spacemouse-mode={mode}
+      data-spacemouse-selected-axis={selectedAxis}
+      data-spacemouse-selected-xyz={selectedAxes.xyz}
+      data-spacemouse-selected-rpy={selectedAxes.rpy}
       data-spacemouse-control-enabled={controlEnabled ? 'true' : 'false'}
-      data-spacemouse-button-gesture="single-enable,same-button-double-pause"
+      data-spacemouse-button-gesture="left-cycle-xyz,right-cycle-rpy,same-button-double-pause"
       data-spacemouse-double-press-window={`${CONTROL_BUTTON_DOUBLE_PRESS_MIN_MS}-${CONTROL_BUTTON_DOUBLE_PRESS_MAX_MS}ms`}
       data-spacemouse-signal={signalActive ? 'active' : 'idle'}
       data-spacemouse-product-id={deviceInfo ? hexId(deviceInfo.productId) : ''}
       data-spacemouse-calibration-model={profile?.calibrationModel || ''}
       data-spacemouse-capture-strategy={profile?.captureStrategy || ''}
+      data-spacemouse-button-calibration-model={SPACEMOUSE_BUTTON_CALIBRATION}
+      data-spacemouse-button-calibration={profile?.buttonCalibration || ''}
+      data-spacemouse-xyz-button={profile?.buttons?.xyz ? formatButtonMask(profile.buttons.xyz) : ''}
+      data-spacemouse-rpy-button={profile?.buttons?.rpy ? formatButtonMask(profile.buttons.rpy) : ''}
+      data-spacemouse-pointer-motion-guard-ms={SPACEMOUSE_POINTER_MOTION_GUARD_MS}
+      data-spacemouse-pointer-button-guard-ms={SPACEMOUSE_POINTER_BUTTON_GUARD_MS}
+      data-spacemouse-pointer-activity-threshold={SPACEMOUSE_POINTER_ACTIVITY_THRESHOLD}
+      data-spacemouse-pointer-move-policy="native-unintercepted"
+      data-spacemouse-pointer-guard-timer="deadline-coalesced"
+      data-spacemouse-pointer-lock-strategy="gesture-primed-transient"
     >
       <button
         type="button"
@@ -843,7 +1257,13 @@ export default function SpaceMouseControl({ inputRef, onNotify }) {
         title="检测或配置 3DConnexion SpaceMouse Wireless Bluetooth Edition"
         disabled={status === 'requesting' || status === 'connecting'}
         onClick={() => {
-          if (connected) setOpen((current) => !current);
+          if (connected) {
+            // Prime Pointer Lock from an explicit browser gesture, then release
+            // it immediately. Later cap motion can reacquire it without making
+            // ordinary mouse use permanently locked.
+            requestTransientPointerLock();
+            setOpen((current) => !current);
+          }
           else requestDevice();
         }}
       >
@@ -852,7 +1272,7 @@ export default function SpaceMouseControl({ inputRef, onNotify }) {
           size={15}
         />
         <span>3D 鼠标</span>
-        {connected && <i>{controlEnabled ? mode.toUpperCase() : 'PAUSE'}</i>}
+        {connected && <i>{controlEnabled ? selectedAxisMeta.code : 'PAUSE'}</i>}
       </button>
 
       {open && (
@@ -883,19 +1303,25 @@ export default function SpaceMouseControl({ inputRef, onNotify }) {
                   type="button"
                   className={mode === 'xyz' ? (controlEnabled ? 'is-active' : 'is-standby') : ''}
                   aria-pressed={mode === 'xyz'}
-                  onClick={() => setControlMode('xyz', 'panel')}
+                  onClick={() => cycleControlAxis('xyz', 'panel')}
                 >
                   <Move3D size={14} />
-                  <span><b>左键 · XYZ</b><small>前后穿行 / 左右 / 上下</small></span>
+                  <span>
+                    <b>左键 · XYZ <em>{controlAxisMeta[selectedAxes.xyz].code}</em></b>
+                    <small>X → Y → Z 单轴循环</small>
+                  </span>
                 </button>
                 <button
                   type="button"
                   className={mode === 'rpy' ? (controlEnabled ? 'is-active' : 'is-standby') : ''}
                   aria-pressed={mode === 'rpy'}
-                  onClick={() => setControlMode('rpy', 'panel')}
+                  onClick={() => cycleControlAxis('rpy', 'panel')}
                 >
                   <Rotate3D size={14} />
-                  <span><b>右键 · RPY</b><small>翻滚 / 俯仰 / 偏航</small></span>
+                  <span>
+                    <b>右键 · RPY <em>{controlAxisMeta[selectedAxes.rpy].code}</em></b>
+                    <small>YAW → PITCH → ROLL 单轴循环</small>
+                  </span>
                 </button>
               </div>
 
@@ -920,27 +1346,27 @@ export default function SpaceMouseControl({ inputRef, onNotify }) {
                   <strong>{!controlEnabled
                     ? 'SpaceMouse 控制已暂停'
                     : peakCaptureReady
-                      ? '用户习惯已加载'
-                      : calibrated ? '采集策略已升级，请重新标定' : '首次使用需要校准'}</strong>
+                      ? `${selectedAxisMeta.code} 单轴通道已启用`
+                      : hasProfile ? '控制逻辑已升级，请重新标定' : '首次使用需要校准'}</strong>
                   <span>{!controlEnabled
                     ? '设备与校准保持在线 · 单击任意实体键立即恢复'
                     : peakCaptureReady
-                      ? `峰值锁定 · 单主轴输出 · 六维解算 · 平均 ${Number(profile?.activeAxisAverage || 1).toFixed(1)} 轴/动作`
-                      : calibrated
-                        ? '旧配置可能包含松手回弹，完成一次标定即可替换'
-                        : '采集完整六维动作指纹后即可驱动 3D 视角'}</span>
+                      ? `${selectedAxisMeta.label} · 仅该语义轴可输出 · 左 ${formatButtonMask(profile.buttons.xyz)} / 右 ${formatButtonMask(profile.buttons.rpy)}`
+                      : hasProfile
+                        ? '旧配置没有实体键映射，完成一次 14 项标定即可替换'
+                        : '先记录左右实体键，再采集完整六维动作指纹'}</span>
                 </div>
               </div>
 
               <div className="spacemouse-menu__actions">
                 <button type="button" onClick={() => setCalibration({ ...initialCalibration(), open: true })}>
-                  <RefreshCw size={12} />{calibrated ? '重新标定' : '开始标定'}
+                  <RefreshCw size={12} />{hasProfile ? '重新标定' : '开始标定'}
                 </button>
                 <button type="button" onClick={() => detachDevice({ close: true })}>
                   <Unplug size={12} />断开
                 </button>
               </div>
-              <p className="spacemouse-coexist-note">实体键单击立即启用对应模式，双击同一实体键暂停；SpaceMouse 只执行最强语义轴，缩放始终由鼠标滚轮控制。</p>
+              <p className="spacemouse-coexist-note">左键循环 X / Y / Z，右键循环 YAW / PITCH / ROLL；推动空间球时只执行当前轴，双击同一实体键暂停。输入期间会低开销屏蔽驱动映射出的点击，并在浏览器允许时临时锁住光标；普通鼠标随后自动恢复，缩放始终由鼠标滚轮控制。</p>
             </>
           ) : (
             <div className="spacemouse-empty-state">
@@ -968,6 +1394,7 @@ export default function SpaceMouseControl({ inputRef, onNotify }) {
             aria-label="SpaceMouse 首次校准"
             data-calibration-stage={calibration.stage}
             data-calibration-step={calibration.stepIndex + 1}
+            data-auto-advance-ms={AUTO_ADVANCE_DELAY_MS}
           >
             <header>
               <div>
@@ -985,16 +1412,16 @@ export default function SpaceMouseControl({ inputRef, onNotify }) {
                   <span><i /><b /><em /></span>
                   <div><Move3D size={16} /><Rotate3D size={16} /></div>
                 </div>
-                <small>12-DIRECTION CALIBRATION</small>
-                <h2>按你的手感定义每个方向</h2>
-                <p>采用 +X 前进、+Y 向左、+Z 向上的坐标语义，分别记录 XYZ 与 RPY 六个方向。每次只表达当前目标意图，系统只锁定外推动作的峰值平台；一旦检测到回程便冻结记录，松手回弹不会参与语义计算。空间球联动多个原始传感轴是正常现象，整个标定期间 3D 视角会保持静止。</p>
+                <small>14-STEP CONTROL CALIBRATION</small>
+                <h2>先认按键，再定义每个方向</h2>
+                <p>前两项分别记录用于循环 X / Y / Z 与 YAW / PITCH / ROLL 的左右实体键，随后按 +X 前进、+Y 向左、+Z 向上的语义采集 12 个动作。运行时只放行由按键选中的一个轴；标定仍会读取完整六维指纹，以消除手部耦合与松手回弹。</p>
                 <div className="spacemouse-calibration__rules">
-                  <span><b>01</b>平稳推至舒适峰值</span>
-                  <span><b>02</b>完成动作后自然松手</span>
-                  <span><b>03</b>回弹信号自动丢弃</span>
+                  <span><b>01</b>左右键分别单击一次</span>
+                  <span><b>02</b>空间球推至舒适峰值</span>
+                  <span><b>03</b>每项确认 0.5 秒后继续</span>
                 </div>
                 <button type="button" className="spacemouse-calibration__primary" onClick={startCalibration}>
-                  开始 12 项标定 <ChevronRight size={15} />
+                  开始 14 项标定 <ChevronRight size={15} />
                 </button>
               </div>
             )}
@@ -1002,8 +1429,8 @@ export default function SpaceMouseControl({ inputRef, onNotify }) {
             {!['intro', 'complete', 'review-error'].includes(calibration.stage) && currentStep && (
               <div className="spacemouse-calibration__workbench">
                 <div className="spacemouse-calibration__progress">
-                  <span>{String(calibration.stepIndex + 1).padStart(2, '0')} / 12</span>
-                  <i><b style={{ width: `${((calibration.stepIndex + 1) / 12) * 100}%` }} /></i>
+                  <span>{String(calibration.stepIndex + 1).padStart(2, '0')} / {SPACEMOUSE_CALIBRATION_STEPS.length}</span>
+                  <i><b style={{ width: `${((calibration.stepIndex + 1) / SPACEMOUSE_CALIBRATION_STEPS.length) * 100}%` }} /></i>
                   <em>{currentStep.group}</em>
                 </div>
                 <div className="spacemouse-calibration__target">
@@ -1017,6 +1444,7 @@ export default function SpaceMouseControl({ inputRef, onNotify }) {
                   aria-live="polite"
                   data-active-axis-count={calibration.captured?.activeAxes?.length || 0}
                   data-capture-strategy={SPACEMOUSE_CAPTURE_STRATEGY}
+                  data-calibration-kind={currentStep.type}
                   data-capture-phase={captureRef.current?.phase || calibration.stage}
                   data-peak-sample-count={
                     calibration.captureMeta?.peakSampleCount
@@ -1037,18 +1465,29 @@ export default function SpaceMouseControl({ inputRef, onNotify }) {
                     <strong>
                       {calibration.stage === 'ready' && '准备采集'}
                       {calibration.stage === 'centering' && '请先松手，让空间球回中'}
-                      {calibration.stage === 'armed' && '已就绪，请执行上方动作'}
+                      {calibration.stage === 'armed' && (
+                        currentStep.type === 'button'
+                          ? '已就绪，请单击指定实体键'
+                          : '已就绪，请执行上方动作'
+                      )}
                       {calibration.stage === 'sampling' && '正在锁定外推动作峰值'}
                       {calibration.stage === 'returning' && '峰值已冻结，请松手回中'}
                       {calibration.stage === 'settling' && '正在过滤回弹，请保持松手'}
                       {calibration.stage === 'captured' && (
                         calibration.stepIndex === SPACEMOUSE_CALIBRATION_STEPS.length - 1
-                          ? '全部方向已捕获 · 即将校验保存'
-                          : '方向已捕获 · 即将采集下一项'
+                          ? '全部配置已捕获 · 即将校验保存'
+                          : currentStep.type === 'button'
+                            ? '实体键已捕获 · 即将标定下一项'
+                            : '方向已捕获 · 即将采集下一项'
                       )}
                       {calibration.stage === 'capture-error' && '有效动作信号不足'}
                     </strong>
-                    {calibration.captured && (
+                    {calibration.captured?.kind === 'button' && (
+                      <span>
+                        {calibration.captured.role.toUpperCase()} SWITCH · {formatButtonMask(calibration.captured.mask)}
+                      </span>
+                    )}
+                    {calibration.captured && calibration.captured.kind !== 'button' && (
                       <span>
                         融合 {calibration.captured.activeAxes
                           .map((axis) => rawAxisLabel[axis])
@@ -1062,7 +1501,7 @@ export default function SpaceMouseControl({ inputRef, onNotify }) {
                     )}
                     {calibration.stage === 'captured' && (
                       <span className="is-auto-advance">
-                        1.0 SEC · {calibration.stepIndex === SPACEMOUSE_CALIBRATION_STEPS.length - 1
+                        0.5 SEC · {calibration.stepIndex === SPACEMOUSE_CALIBRATION_STEPS.length - 1
                           ? 'AUTO SAVE'
                           : 'AUTO NEXT CAPTURE'}
                       </span>
@@ -1071,22 +1510,39 @@ export default function SpaceMouseControl({ inputRef, onNotify }) {
                   </div>
                 </div>
 
-                <div className="spacemouse-calibration__axis-grid" aria-label="校准实时轴信号">
-                  {SPACEMOUSE_RAW_AXES.map((axis) => (
-                    <div
-                      key={axis}
-                      className={
-                        liveRawMaximum > CENTER_THRESHOLD
-                        && Math.abs(rawDisplay[axis] || 0) >= liveAxisThreshold
-                          ? 'is-live'
-                          : ''
-                      }
-                    >
-                      <span>{rawAxisLabel[axis]}</span>
-                      <strong>{Math.round(rawDisplay[axis] || 0)}</strong>
-                    </div>
-                  ))}
-                </div>
+                {currentStep.type === 'button' ? (
+                  <div className="spacemouse-calibration__button-grid" aria-label="实体键标定状态">
+                    {['xyz', 'rpy'].map((group) => (
+                      <div
+                        key={group}
+                        className={calibration.buttonDraft[group] ? 'is-captured' : ''}
+                        data-button-role={group}
+                      >
+                        <span>{group === 'xyz' ? 'LEFT / XYZ' : 'RIGHT / RPY'}</span>
+                        <strong>{calibration.buttonDraft[group]
+                          ? formatButtonMask(calibration.buttonDraft[group])
+                          : 'WAITING'}</strong>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="spacemouse-calibration__axis-grid" aria-label="校准实时轴信号">
+                    {SPACEMOUSE_RAW_AXES.map((axis) => (
+                      <div
+                        key={axis}
+                        className={
+                          liveRawMaximum > CENTER_THRESHOLD
+                          && Math.abs(rawDisplay[axis] || 0) >= liveAxisThreshold
+                            ? 'is-live'
+                            : ''
+                        }
+                      >
+                        <span>{rawAxisLabel[axis]}</span>
+                        <strong>{Math.round(rawDisplay[axis] || 0)}</strong>
+                      </div>
+                    ))}
+                  </div>
+                )}
 
                 <footer>
                   <div className="spacemouse-calibration__manual-actions">
@@ -1108,7 +1564,7 @@ export default function SpaceMouseControl({ inputRef, onNotify }) {
                       <i><b /></i>
                       <span>{calibration.stepIndex === SPACEMOUSE_CALIBRATION_STEPS.length - 1
                         ? '自动校验保存'
-                        : '自动进入下一方向'}</span>
+                        : '自动进入下一项'}</span>
                     </div>
                   )}
                 </footer>
@@ -1132,9 +1588,16 @@ export default function SpaceMouseControl({ inputRef, onNotify }) {
                 <Check size={30} />
                 <small>PROFILE READY</small>
                 <h2>你的 SpaceMouse 已就绪</h2>
-                <p>12 个外推峰值动作指纹及解耦矩阵已保存到浏览器本地，松手回程与回弹信号已排除。左键选择 XYZ，右键选择 RPY；双击同一实体键可暂停，暂停后单击任意实体键立即恢复。</p>
+                <p>左右实体键映射、12 个外推峰值动作指纹及解耦矩阵已保存到浏览器本地。左键循环 X / Y / Z，右键循环 YAW / PITCH / ROLL；空间球永远只驱动当前选中轴，双击同一实体键可暂停。</p>
                 <div><span>XYZ</span><i /><span>RPY</span></div>
-                <button type="button" className="spacemouse-calibration__primary" onClick={closeCalibration}>
+                <button
+                  type="button"
+                  className="spacemouse-calibration__primary"
+                  onClick={() => {
+                    requestTransientPointerLock();
+                    closeCalibration();
+                  }}
+                >
                   进入 3D 场景 <ChevronRight size={14} />
                 </button>
               </div>

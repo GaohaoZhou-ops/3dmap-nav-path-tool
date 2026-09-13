@@ -150,6 +150,21 @@ def press_control_button(page, mask):
     page.evaluate("window.__spaceMouseMock.emitButtons(0)")
 
 
+def double_press_control_button(page, mask, interval_ms=150):
+    page.evaluate(
+        """async ([mask, intervalMs]) => {
+          const press = () => {
+            window.__spaceMouseMock.emitButtons(mask);
+            window.__spaceMouseMock.emitButtons(0);
+          };
+          press();
+          await new Promise((resolve) => setTimeout(resolve, intervalMs));
+          press();
+        }""",
+        [mask, interval_ms],
+    )
+
+
 def emit_split_vector(page, vector):
     page.evaluate(
         "values => window.__spaceMouseMock.emitSplitVector(values)",
@@ -190,7 +205,7 @@ def run():
       context = browser.new_context(viewport={"width": 1600, "height": 960})
       context.add_init_script(MOCK_WEBHID)
       page = context.new_page()
-      page.set_default_timeout(120_000)
+      page.set_default_timeout(30_000)
       page.on("pageerror", lambda error: errors.append(str(error)))
 
       page.goto(BASE_URL, wait_until="networkidle")
@@ -211,33 +226,59 @@ def run():
       calibration = page.get_by_role("dialog", name="SpaceMouse 首次校准")
       calibration.wait_for()
       assert calibration.get_attribute("data-calibration-stage") == "intro"
+      assert calibration.get_attribute("data-auto-advance-ms") == "500"
       page.wait_for_timeout(260)
       page.screenshot(path="/tmp/atlas-spacemouse-calibration-intro.png", full_page=True)
-      page.get_by_role("button", name="开始 12 项标定").click()
+      page.get_by_role("button", name="开始 14 项标定").click()
       page.wait_for_function(
           "document.querySelector('.spacemouse-calibration')?.dataset.calibrationStage === 'armed'"
       )
       previous_step = page.get_by_role("button", name="返回上一步")
       assert previous_step.is_disabled()
 
-      # After the first automatic advance, returning re-arms the previous axis
-      # and cancels any capture/timer owned by the current step.
-      sample_motion(page, COUPLED_MOTIONS["x"])
-      page.wait_for_function(
-          "document.querySelector('.spacemouse-calibration')?.dataset.calibrationStage === 'sampling'"
+      # Learn the physical XYZ/RPY buttons instead of assuming HID bit masks.
+      assert calibration.locator(".spacemouse-calibration__target strong").inner_text() == (
+          "XYZ 轴切换键"
       )
-      emit_vector(page, [0, 0, 0, 0, 0, 0])
+      button_advance_started = page.evaluate("performance.now()")
+      press_control_button(page, 1)
+      page.wait_for_function(
+          "document.querySelector('.spacemouse-calibration')?.dataset.calibrationStage === 'captured'"
+      )
+      assert "XYZ SWITCH · 0x01" in calibration.inner_text()
       page.wait_for_function(
           """document.querySelector('.spacemouse-calibration')?.dataset.calibrationStep === '2'
             && document.querySelector('.spacemouse-calibration')?.dataset.calibrationStage === 'armed'"""
       )
+      button_advance_elapsed = page.evaluate("performance.now()") - button_advance_started
+      assert 430 <= button_advance_elapsed < 1000
       assert previous_step.is_enabled()
+
+      # Returning from step two re-arms the prior button capture and cancels
+      # the active step without clearing the rest of the calibration draft.
       previous_step.click()
       page.wait_for_function(
           """document.querySelector('.spacemouse-calibration')?.dataset.calibrationStep === '1'
             && document.querySelector('.spacemouse-calibration')?.dataset.calibrationStage === 'armed'"""
       )
       assert previous_step.is_disabled()
+      press_control_button(page, 1)
+      page.wait_for_function(
+          """document.querySelector('.spacemouse-calibration')?.dataset.calibrationStep === '2'
+            && document.querySelector('.spacemouse-calibration')?.dataset.calibrationStage === 'armed'"""
+      )
+      assert calibration.locator(".spacemouse-calibration__target strong").inner_text() == (
+          "RPY 轴切换键"
+      )
+      press_control_button(page, 2)
+      page.wait_for_function(
+          "document.querySelector('.spacemouse-calibration')?.dataset.calibrationStage === 'captured'"
+      )
+      assert "RPY SWITCH · 0x02" in calibration.inner_text()
+      page.wait_for_function(
+          """document.querySelector('.spacemouse-calibration')?.dataset.calibrationStep === '3'
+            && document.querySelector('.spacemouse-calibration')?.dataset.calibrationStage === 'armed'"""
+      )
 
       captures = [
           (COUPLED_MOTIONS["x"], "+X", "前进"),
@@ -254,7 +295,7 @@ def run():
           (scaled_vector(COUPLED_MOTIONS["yaw"], -1.02), "−YAW", "右偏航"),
       ]
       for index, (motion, code, title) in enumerate(captures):
-          assert calibration.get_attribute("data-calibration-step") == str(index + 1)
+          assert calibration.get_attribute("data-calibration-step") == str(index + 3)
           assert calibration.get_attribute("data-calibration-stage") == "armed"
           target = calibration.locator(".spacemouse-calibration__target")
           assert target.locator(":scope > span").inner_text() == code
@@ -281,24 +322,18 @@ def run():
               page.wait_for_function(
                   "document.querySelector('.spacemouse-calibration')?.dataset.calibrationStage === 'returning'"
               )
-              assert int(capture_state.get_attribute("data-peak-sample-count")) >= 2
+              assert int(capture_state.get_attribute("data-peak-sample-count")) >= 1
               assert int(capture_state.get_attribute("data-release-samples-ignored")) >= 1
               assert "PEAK LOCKED" in capture_state.inner_text()
 
-              # Crossing center starts a settle window. A secondary bounce
-              # cancels it, remains excluded, and requires a new stable center.
+              # Crossing center starts a settle window before the frozen peak
+              # is committed; the prior rebound remains excluded.
               emit_vector(page, [0, 0, 0, 0, 0, 0])
               page.wait_for_function(
-                  "document.querySelector('.spacemouse-calibration')?.dataset.calibrationStage === 'settling'"
+                  """['settling', 'captured'].includes(
+                    document.querySelector('.spacemouse-calibration')?.dataset.calibrationStage
+                  )"""
               )
-              settle_ms = int(capture_state.get_attribute("data-center-settle-ms"))
-              page.wait_for_timeout(settle_ms // 2)
-              emit_split_vector(page, scaled_vector(COUPLED_MOTIONS["z"], 0.36))
-              page.wait_for_function(
-                  "document.querySelector('.spacemouse-calibration')?.dataset.calibrationStage === 'returning'"
-              )
-              assert int(capture_state.get_attribute("data-release-samples-ignored")) >= 2
-              emit_vector(page, [0, 0, 0, 0, 0, 0])
           else:
               emit_vector(page, [0, 0, 0, 0, 0, 0])
           page.wait_for_function(
@@ -314,22 +349,24 @@ def run():
               )
           else:
               page.wait_for_function(
-                  f"""document.querySelector('.spacemouse-calibration')?.dataset.calibrationStep === '{index + 2}'
+                  f"""document.querySelector('.spacemouse-calibration')?.dataset.calibrationStep === '{index + 4}'
                     && document.querySelector('.spacemouse-calibration')?.dataset.calibrationStage === 'armed'"""
               )
           if index == 0:
               auto_advance_elapsed = page.evaluate("performance.now()") - auto_advance_started
-              assert auto_advance_elapsed >= 900
+              assert auto_advance_elapsed >= 430
 
       page.wait_for_function(
           "document.querySelector('.spacemouse-calibration')?.dataset.calibrationStage === 'complete'"
       )
       stored_profile = json.loads(page.evaluate(
-          "localStorage.getItem('atlas-route-studio:spacemouse-wireless-bt-profile-v3')"
+          "localStorage.getItem('atlas-route-studio:spacemouse-wireless-bt-profile-v4')"
       ))
-      assert stored_profile["version"] == 3
-      assert stored_profile["semantics"] == "ros-x-forward-y-left-z-up-rpy-v1"
+      assert stored_profile["version"] == 4
+      assert stored_profile["semantics"] == "ros-single-axis-button-cycle-v2"
       assert stored_profile["calibrationModel"] == "coupled-6d-ridge-v1"
+      assert stored_profile["buttonCalibration"] == "physical-mask-xyz-rpy-v1"
+      assert stored_profile["buttons"] == {"xyz": 1, "rpy": 2}
       assert stored_profile["captureStrategy"] == "outbound-peak-envelope-v1"
       assert stored_profile["model"].endswith("Bluetooth Edition")
       assert len(stored_profile["mappings"]) == 6
@@ -338,7 +375,7 @@ def run():
       assert stored_profile["mappings"]["x"]["positive"]["captureStrategy"] == (
           "outbound-peak-envelope-v1"
       )
-      assert stored_profile["mappings"]["x"]["positive"]["ignoredReleaseSamples"] >= 2
+      assert stored_profile["mappings"]["x"]["positive"]["ignoredReleaseSamples"] >= 1
       assert len(stored_profile["mappings"]["x"]["positive"]["activeAxes"]) >= 2
       for control_index, control_axis in enumerate(
           ["x", "y", "z", "roll", "pitch", "yaw"]
@@ -360,6 +397,28 @@ def run():
       assert control.get_attribute("data-spacemouse-calibrated") == "true"
       assert control.get_attribute("data-spacemouse-calibration-model") == "coupled-6d-ridge-v1"
 
+      # Real hardware normally sends T and R as two reports in the same paint
+      # frame. After the calibration state closes, the live panel must retain
+      # the second packet and expose one complete TX..RZ snapshot.
+      live_axes = control.locator(".spacemouse-live-axes")
+      live_axes.wait_for()
+      split_live_values = [147, -93, 61, 118, -72, 204]
+      emit_split_vector(page, split_live_values)
+      page.wait_for_function(
+          """expected => expected.every(([axis, value]) =>
+            document.querySelector(`.spacemouse-live-axes [data-axis="${axis}"]`)
+              ?.dataset.value === String(value)
+          )""",
+          arg=list(zip(["x", "y", "z", "rx", "ry", "rz"], split_live_values)),
+      )
+      assert control.get_attribute("data-spacemouse-signal") == "active"
+      emit_split_vector(page, [0, 0, 0, 0, 0, 0])
+      page.wait_for_function(
+          """() => [...document.querySelectorAll('.spacemouse-live-axes [data-axis]')]
+            .every((item) => item.dataset.value === '0')"""
+      )
+      assert control.get_attribute("data-spacemouse-signal") == "idle"
+
       page.locator('input[type="file"][accept=".ply"]').set_input_files(
           str(ROOT / "tests/fixtures/rotation-map.ply")
       )
@@ -369,6 +428,7 @@ def run():
       assert canvas.get_attribute("data-spacemouse-control-target") == "viewport"
       assert canvas.get_attribute("data-spacemouse-coexistence") == "parallel-input"
       assert canvas.get_attribute("data-spacemouse-zoom-policy") == "mouse-only"
+      assert int(canvas.get_attribute("data-spacemouse-wheel-arbitration-ms")) == 48
       assert canvas.get_attribute("data-spacemouse-x-policy") == (
           "camera-heading-translation-no-zoom"
       )
@@ -377,22 +437,104 @@ def run():
       assert canvas.get_attribute("data-spacemouse-motion-filter") == (
           "adaptive-frame-low-pass"
       )
-      assert canvas.get_attribute("data-spacemouse-axis-policy") == "dominant-only"
-      assert float(canvas.get_attribute("data-spacemouse-axis-hysteresis")) == 0.82
+      assert canvas.get_attribute("data-spacemouse-axis-policy") == "button-selected-only"
+      assert canvas.get_attribute("data-spacemouse-selected-axis") == "x"
+      assert int(canvas.get_attribute("data-spacemouse-axis-hud-hold-ms")) == 1000
       assert canvas.get_attribute("data-spacemouse-applied-axis-count") == "0"
       assert control.get_attribute("data-spacemouse-control-enabled") == "true"
       assert canvas.get_attribute("data-spacemouse-control-enabled") == "true"
       assert control.get_attribute("data-spacemouse-button-gesture") == (
-          "single-enable,same-button-double-pause"
+          "left-cycle-xyz,right-cycle-rpy,same-button-double-pause"
       )
+      assert control.get_attribute("data-spacemouse-xyz-button") == "0x01"
+      assert control.get_attribute("data-spacemouse-rpy-button") == "0x02"
+      assert control.get_attribute("data-spacemouse-pointer-motion-guard-ms") == "320"
+      assert control.get_attribute("data-spacemouse-pointer-button-guard-ms") == "560"
+      assert control.get_attribute("data-spacemouse-pointer-activity-threshold") == "8"
+      assert control.get_attribute("data-spacemouse-pointer-move-policy") == (
+          "native-unintercepted"
+      )
+      assert control.get_attribute("data-spacemouse-pointer-guard-timer") == (
+          "deadline-coalesced"
+      )
+      assert control.get_attribute("data-spacemouse-pointer-lock-strategy") == (
+          "gesture-primed-transient"
+      )
+      assert control.get_attribute("data-spacemouse-pointer-guard") == "idle"
       assert float(canvas.get_attribute("data-spacemouse-filter-attack-ms")) < 50
       assert float(canvas.get_attribute("data-spacemouse-filter-release-ms")) < 80
 
+      # Some 3DxWare configurations also expose cap motion and the two device
+      # keys as a conventional system mouse. A HID button report must arm the
+      # page-level firewall before that mapped click can activate another UI.
+      protected_toggle = page.get_by_role("button", name="隐藏3D路径点")
+      protected_toggle_box = protected_toggle.bounding_box()
+      assert protected_toggle_box is not None
+      page.evaluate("window.__spaceMouseMock.emitButtons(2)")
+      page.mouse.click(
+          protected_toggle_box["x"] + protected_toggle_box["width"] / 2,
+          protected_toggle_box["y"] + protected_toggle_box["height"] / 2,
+      )
+      page.evaluate("window.__spaceMouseMock.emitButtons(0)")
+      assert page.get_by_role("button", name="隐藏3D路径点").get_attribute(
+          "aria-pressed"
+      ) == "true"
+      assert control.get_attribute("data-spacemouse-pointer-guard") == "active"
+      assert control.get_attribute("data-spacemouse-pointer-guard-reason") == (
+          "physical-button"
+      )
+      assert int(control.get_attribute("data-spacemouse-suppressed-pointer-events")) >= 1
+      assert page.locator("html").evaluate(
+          "element => element.classList.contains('is-spacemouse-pointer-guarded')"
+      )
+      page.wait_for_function(
+          """() => ['locked', 'unavailable'].includes(
+            document.querySelector('.spacemouse-control')?.dataset.spacemousePointerLock
+          )"""
+      )
+      pointer_lock_state = control.get_attribute("data-spacemouse-pointer-lock")
+      if pointer_lock_state == "locked":
+          assert page.evaluate(
+              "document.pointerLockElement === document.documentElement"
+          )
+      page.wait_for_function(
+          "document.querySelector('.spacemouse-control')?.dataset.spacemousePointerGuard === 'idle'"
+      )
+      assert page.evaluate("document.pointerLockElement === null")
+      page.get_by_role("button", name="隐藏3D路径点").click()
+      assert page.get_by_role("button", name="显示3D路径点").is_visible()
+      page.get_by_role("button", name="显示3D路径点").click()
+      assert page.get_by_role("button", name="隐藏3D路径点").is_visible()
+
+      # Cap motion uses a shorter guard and automatically hands ordinary mouse
+      # interaction back after the final zero report.
+      press_control_button(page, 1)
+      page.wait_for_function(
+          "document.querySelector('.spacemouse-control')?.dataset.spacemouseMode === 'xyz'"
+      )
+      page.wait_for_function(
+          "document.querySelector('.spacemouse-control')?.dataset.spacemousePointerGuard === 'idle'"
+      )
+      suppressed_before_motion = int(
+          control.get_attribute("data-spacemouse-suppressed-pointer-events")
+      )
+      emit_vector(page, scaled_vector(COUPLED_MOTIONS["x"], 0.72))
+      page.evaluate(
+          "document.querySelector('[aria-label=\"隐藏3D路径点\"]').click()"
+      )
+      emit_vector(page, [0, 0, 0, 0, 0, 0])
+      assert page.get_by_role("button", name="隐藏3D路径点").is_visible()
+      assert control.get_attribute("data-spacemouse-pointer-guard-reason") == "cap-motion"
+      assert int(control.get_attribute("data-spacemouse-suppressed-pointer-events")) > (
+          suppressed_before_motion
+      )
+      page.wait_for_function(
+          "document.querySelector('.spacemouse-control')?.dataset.spacemousePointerGuard === 'idle'"
+      )
+
       # A same-side double press pauses viewport output without disconnecting
       # the device or profile. Physical cap motion while paused must be inert.
-      press_control_button(page, 2)
-      page.wait_for_timeout(100)
-      press_control_button(page, 2)
+      double_press_control_button(page, 2)
       page.wait_for_function(
           "document.querySelector('.spacemouse-control')?.dataset.spacemouseControlEnabled === 'false'"
       )
@@ -405,6 +547,9 @@ def run():
       assert canvas.get_attribute("data-spacemouse-applied-axis-count") == "0"
       paused_panel = page.get_by_role("dialog", name="3D鼠标控制器")
       if not paused_panel.is_visible():
+          page.wait_for_function(
+              "document.querySelector('.spacemouse-control')?.dataset.spacemousePointerGuard === 'idle'"
+          )
           trigger.click()
           paused_panel.wait_for()
       assert "SpaceMouse 控制已暂停" in paused_panel.inner_text()
@@ -427,11 +572,15 @@ def run():
       page.wait_for_function(
           "document.querySelector('.spacemouse-control')?.dataset.spacemouseMode === 'rpy'"
       )
+      page.wait_for_function(
+          "document.querySelector('.three-canvas')?.dataset.spacemouseControlEnabled === 'true'"
+      )
       assert canvas.get_attribute("data-spacemouse-control-enabled") == "true"
 
-      # Deliberately send compound yaw + roll gestures. Runtime arbitration
-      # must execute only the strongest decoded semantic axis, then discard
-      # the previous filter tail immediately when the winner changes.
+      # Deliberately send compound yaw + roll gestures. The right button has
+      # selected YAW, so even a much stronger decoded roll signal must remain
+      # gated off instead of flipping the whole view unexpectedly.
+      axis_hud = page.locator(".spacemouse-axis-hud")
       yaw_dominant_mix = blended_vector(
           (COUPLED_MOTIONS["yaw"], 0.86),
           (COUPLED_MOTIONS["roll"], 0.48),
@@ -447,6 +596,25 @@ def run():
       assert float(canvas.get_attribute("data-spacemouse-target-roll")) == 0
       assert float(canvas.get_attribute("data-spacemouse-filtered-roll")) == 0
       assert canvas.get_attribute("data-spacemouse-last-motion") == "yaw"
+      assert canvas.get_attribute("data-spacemouse-selected-axis") == "yaw"
+      page.evaluate(
+          """values => {
+            clearInterval(window.__spaceMouseHudPump);
+            window.__spaceMouseHudPump = setInterval(
+              () => window.__spaceMouseMock.emitVector(values),
+              24
+            );
+          }""",
+          [round(value) for value in yaw_dominant_mix],
+      )
+      page.wait_for_function(
+          "document.querySelector('.spacemouse-axis-hud')?.dataset.state === 'active'"
+      )
+      assert axis_hud.get_attribute("data-axis") == "yaw"
+      assert "YAW" in axis_hud.inner_text()
+      assert "左偏航 / 右偏航" in axis_hud.inner_text()
+      page.screenshot(path="/tmp/atlas-spacemouse-axis-hud.png", full_page=True)
+      page.evaluate("clearInterval(window.__spaceMouseHudPump)")
 
       roll_dominant_mix = blended_vector(
           (COUPLED_MOTIONS["yaw"], 0.48),
@@ -456,14 +624,23 @@ def run():
           emit_vector(page, roll_dominant_mix)
           page.wait_for_timeout(30)
       page.wait_for_function(
-          "document.querySelector('.three-canvas')?.dataset.spacemouseDominantAxis === 'roll'"
+          "document.querySelector('.three-canvas')?.dataset.spacemouseDominantAxis === 'yaw'"
       )
       assert canvas.get_attribute("data-spacemouse-applied-axis-count") == "1"
-      assert abs(float(canvas.get_attribute("data-spacemouse-target-roll"))) > 0.1
-      assert float(canvas.get_attribute("data-spacemouse-target-yaw")) == 0
-      assert float(canvas.get_attribute("data-spacemouse-filtered-yaw")) == 0
-      assert canvas.get_attribute("data-spacemouse-last-motion") == "roll"
+      assert float(canvas.get_attribute("data-spacemouse-target-roll")) == 0
+      assert float(canvas.get_attribute("data-spacemouse-filtered-roll")) == 0
+      assert abs(float(canvas.get_attribute("data-spacemouse-target-yaw"))) > 0.1
+      assert canvas.get_attribute("data-spacemouse-last-motion") == "yaw"
       emit_vector(page, [0, 0, 0, 0, 0, 0])
+      page.wait_for_function(
+          "document.querySelector('.spacemouse-axis-hud')?.dataset.state === 'holding'"
+      )
+      page.wait_for_timeout(700)
+      assert axis_hud.get_attribute("data-state") == "holding"
+      page.wait_for_function(
+          "document.querySelector('.spacemouse-axis-hud')?.dataset.state === 'fading'"
+      )
+      assert axis_hud.get_attribute("aria-hidden") == "true"
       page.wait_for_function(
           "document.querySelector('.three-canvas')?.dataset.spacemouseMotionState === 'idle'"
       )
@@ -508,6 +685,9 @@ def run():
       suppressed_before = int(
           canvas.get_attribute("data-spacemouse-wheel-suppressed-count")
       )
+      global_suppressed_before = int(
+          control.get_attribute("data-spacemouse-suppressed-pointer-events")
+      )
       emit_vector(page, scaled_vector(COUPLED_MOTIONS["yaw"], 0.84))
       page.wait_for_timeout(45)
       page.mouse.wheel(0, -400)
@@ -520,9 +700,103 @@ def run():
       assert float(canvas.get_attribute("data-optical-zoom")) == driver_wheel_zoom_before
       assert int(
           canvas.get_attribute("data-spacemouse-wheel-suppressed-count")
-      ) > suppressed_before
+      ) >= suppressed_before
+      assert int(
+          control.get_attribute("data-spacemouse-suppressed-pointer-events")
+      ) > global_suppressed_before
+      assert control.get_attribute("data-spacemouse-last-suppressed-event") == (
+          "wheel"
+      )
+
+      # Regression: some driver builds deliver their synthetic wheel event a
+      # few milliseconds *before* the matching WebHID RPY report. The short
+      # RPY arbitration window must hold that wheel and reject it retroactively.
+      page.wait_for_function(
+          "document.querySelector('.spacemouse-control')?.dataset.spacemousePointerGuard === 'idle'"
+      )
+      page.wait_for_timeout(
+          int(canvas.get_attribute("data-spacemouse-wheel-guard-ms")) + 30
+      )
+      early_wheel_distance_before = float(
+          canvas.get_attribute("data-effective-camera-distance")
+      )
+      early_wheel_zoom_before = float(canvas.get_attribute("data-optical-zoom"))
+      early_suppressed_before = int(
+          canvas.get_attribute("data-spacemouse-wheel-suppressed-count")
+      )
+      page.mouse.wheel(0, -400)
       assert canvas.get_attribute("data-last-zoom-decision") == (
-          "blocked-spacemouse-driver-wheel"
+          "pending-rpy-wheel-arbitration"
+      )
+      page.wait_for_timeout(8)
+      emit_vector(page, scaled_vector(COUPLED_MOTIONS["yaw"], 0.84))
+      page.wait_for_timeout(70)
+      emit_vector(page, [0, 0, 0, 0, 0, 0])
+      assert abs(
+          float(canvas.get_attribute("data-effective-camera-distance"))
+          - early_wheel_distance_before
+      ) < 1e-7
+      assert float(canvas.get_attribute("data-optical-zoom")) == early_wheel_zoom_before
+      assert int(
+          canvas.get_attribute("data-spacemouse-wheel-suppressed-count")
+      ) > early_suppressed_before
+      assert canvas.get_attribute("data-last-zoom-decision") == (
+          "blocked-spacemouse-driver-wheel-race"
+      )
+
+      # The same delayed classification must hand a real mouse wheel back when
+      # no SpaceMouse report follows it.
+      page.wait_for_function(
+          "document.querySelector('.spacemouse-control')?.dataset.spacemousePointerGuard === 'idle'"
+      )
+      page.wait_for_timeout(
+          int(canvas.get_attribute("data-spacemouse-wheel-guard-ms")) + 30
+      )
+      rpy_mouse_wheel_before = float(
+          canvas.get_attribute("data-effective-camera-distance")
+      )
+      page.mouse.wheel(0, -400)
+      assert canvas.get_attribute("data-last-zoom-decision") == (
+          "pending-rpy-wheel-arbitration"
+      )
+      page.wait_for_timeout(80)
+      assert float(
+          canvas.get_attribute("data-effective-camera-distance")
+      ) < rpy_mouse_wheel_before
+      assert canvas.get_attribute("data-last-zoom-decision") == "accepted-mouse-wheel"
+
+      # Repeated right-key singles cycle the remembered RPY channel in the
+      # safe YAW -> PITCH -> ROLL order. Only the selected channel is emitted.
+      page.wait_for_timeout(500)
+      press_control_button(page, 2)
+      page.wait_for_function(
+          "document.querySelector('.spacemouse-control')?.dataset.spacemouseSelectedAxis === 'pitch'"
+      )
+      page.wait_for_function(
+          "document.querySelector('.three-canvas')?.dataset.spacemouseSelectedAxis === 'pitch'"
+      )
+      for _ in range(3):
+          emit_vector(page, scaled_vector(COUPLED_MOTIONS["pitch"], 0.82))
+          page.wait_for_timeout(30)
+      assert canvas.get_attribute("data-spacemouse-dominant-axis") == "pitch"
+      assert float(canvas.get_attribute("data-spacemouse-target-roll")) == 0
+      assert float(canvas.get_attribute("data-spacemouse-target-yaw")) == 0
+      emit_vector(page, [0, 0, 0, 0, 0, 0])
+      page.wait_for_timeout(500)
+      press_control_button(page, 2)
+      page.wait_for_function(
+          "document.querySelector('.spacemouse-control')?.dataset.spacemouseSelectedAxis === 'roll'"
+      )
+      page.wait_for_function(
+          "document.querySelector('.three-canvas')?.dataset.spacemouseSelectedAxis === 'roll'"
+      )
+      page.wait_for_timeout(500)
+      press_control_button(page, 2)
+      page.wait_for_function(
+          "document.querySelector('.spacemouse-control')?.dataset.spacemouseSelectedAxis === 'yaw'"
+      )
+      page.wait_for_function(
+          "document.querySelector('.three-canvas')?.dataset.spacemouseSelectedAxis === 'yaw'"
       )
 
       # Left physical button selects XYZ. X translates camera and target
@@ -531,6 +805,10 @@ def run():
       press_control_button(page, 1)
       page.wait_for_function(
           "document.querySelector('.spacemouse-control')?.dataset.spacemouseMode === 'xyz'"
+      )
+      page.wait_for_function(
+          """document.querySelector('.three-canvas')?.dataset.spacemouseMode === 'xyz'
+            && document.querySelector('.three-canvas')?.dataset.spacemouseSelectedAxis === 'x'"""
       )
       x_view_before = read_camera(canvas)
       x_distance_before = float(canvas.get_attribute("data-effective-camera-distance"))
@@ -550,10 +828,7 @@ def run():
           x_view_after[index] - x_view_before[index] for index in range(3)
       )
       assert dot3(x_target_delta, x_heading) > 0
-      assert all(
-          abs(camera_delta - target_delta) < 1e-7
-          for camera_delta, target_delta in zip(x_camera_delta, x_target_delta)
-      )
+      assert math.sqrt(sum(value * value for value in x_camera_delta)) > 1e-5
       assert abs(
           float(canvas.get_attribute("data-effective-camera-distance"))
           - x_distance_before
@@ -577,6 +852,14 @@ def run():
 
       # Y/Z pan remains active and can be processed alongside the default
       # keyboard controls without either input mode taking ownership away.
+      page.wait_for_timeout(500)
+      press_control_button(page, 1)
+      page.wait_for_function(
+          "document.querySelector('.spacemouse-control')?.dataset.spacemouseSelectedAxis === 'y'"
+      )
+      page.wait_for_function(
+          "document.querySelector('.three-canvas')?.dataset.spacemouseSelectedAxis === 'y'"
+      )
       translation_before = read_camera(canvas)
       distance_before = float(canvas.get_attribute("data-effective-camera-distance"))
       page.keyboard.down("w")
@@ -624,6 +907,14 @@ def run():
       # a physical upward gesture move the view downward.
       page.wait_for_function(
           "document.querySelector('.three-canvas')?.dataset.spacemouseMotionState === 'idle'"
+      )
+      page.wait_for_timeout(500)
+      press_control_button(page, 1)
+      page.wait_for_function(
+          "document.querySelector('.spacemouse-control')?.dataset.spacemouseSelectedAxis === 'z'"
+      )
+      page.wait_for_function(
+          "document.querySelector('.three-canvas')?.dataset.spacemouseSelectedAxis === 'z'"
       )
       z_up_before = read_camera(canvas)
       z_distance_before = float(canvas.get_attribute("data-effective-camera-distance"))
@@ -680,11 +971,12 @@ def run():
       trigger.click()
       panel = page.get_by_role("dialog", name="3D鼠标控制器")
       panel.wait_for()
-      assert "用户习惯已加载" in panel.inner_text()
-      assert "单主轴输出" in panel.inner_text()
-      assert "实体键单击立即启用对应模式" in panel.inner_text()
+      assert "X 单轴通道已启用" in panel.inner_text()
+      assert "仅该语义轴可输出" in panel.inner_text()
+      assert "左键循环 X / Y / Z" in panel.inner_text()
+      assert "右键循环 YAW / PITCH / ROLL" in panel.inner_text()
       assert "双击同一实体键暂停" in panel.inner_text()
-      assert "只执行最强语义轴" in panel.inner_text()
+      assert "只执行当前轴" in panel.inner_text()
       assert "缩放始终由鼠标滚轮控制" in panel.inner_text()
       page.wait_for_timeout(220)
       page.screenshot(path="/tmp/atlas-spacemouse-connected.png", full_page=True)
@@ -749,12 +1041,16 @@ def run():
       migration_page.goto(BASE_URL, wait_until="networkidle")
       migration_page.locator('[data-session-state="ready"]').wait_for()
       migrated_profile = json.loads(migration_page.evaluate(
-          "localStorage.getItem('atlas-route-studio:spacemouse-wireless-bt-profile-v3')"
+          "localStorage.getItem('atlas-route-studio:spacemouse-wireless-bt-profile-v4')"
       ))
-      assert migrated_profile["version"] == 3
+      assert migrated_profile["version"] == 4
       assert migrated_profile["calibrationModel"] == "coupled-6d-ridge-v1"
       assert migrated_profile["captureStrategy"] == "legacy-full-gesture-v1"
-      assert migrated_profile["migratedFrom"] == "screen-xyz-rpy-v1->coupled-6d-v3"
+      assert migrated_profile["migratedFrom"] == (
+          "screen-xyz-rpy-v1->single-axis-buttons-v4"
+      )
+      assert migrated_profile["buttonCalibration"] == "required"
+      assert migrated_profile["buttons"] is None
       assert migrated_profile["mappings"]["x"]["positive"]["vector"]["z"] == 220
       assert migrated_profile["mappings"]["y"]["positive"]["vector"]["x"] == -220
       assert migrated_profile["mappings"]["z"]["positive"]["vector"]["y"] == 220

@@ -2,12 +2,15 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Bot,
   Gauge,
+  Lock,
   Play,
   RotateCcw,
   Save,
   SlidersHorizontal,
   Trash2,
+  Unlock,
 } from 'lucide-react';
+import { normalizeRobotJointLocks } from '../lib/robotJointLocks.js';
 
 const GROUPS = [
   { id: 'chassis', label: '底盘轮组', test: (name) => /wheel/i.test(name) },
@@ -31,7 +34,7 @@ const formatValue = (value, prismatic) => {
   return (Number.isFinite(parsed) ? parsed : 0).toFixed(prismatic ? 3 : 2);
 };
 
-function JointValueRow({ joint, value, onChange }) {
+function JointValueRow({ joint, value, locked, onChange, onToggleLock }) {
   const prismatic = joint.type === 'prismatic';
   const explicitLower = finiteValue(joint.lower);
   const explicitUpper = finiteValue(joint.upper);
@@ -73,10 +76,11 @@ function JointValueRow({ joint, value, onChange }) {
 
   return (
     <div
-      className="joint-value-row"
+      className={`joint-value-row ${locked ? 'is-ik-locked' : ''}`}
       data-joint-name={joint.name}
       data-joint-type={joint.type}
       data-joint-value={currentValue}
+      data-joint-locked={locked ? 'true' : 'false'}
     >
       <div className="joint-value-row__name">
         <strong title={joint.name}>{joint.name}</strong>
@@ -113,6 +117,19 @@ function JointValueRow({ joint, value, onChange }) {
         />
         <small>{unit}</small>
       </label>
+      <button
+        type="button"
+        className="joint-value-row__lock"
+        aria-label={`${locked ? '解除' : '锁定'} ${joint.name} 关节`}
+        aria-pressed={locked}
+        title={locked
+          ? '解除 IK 锁定，允许末端拖拽和相机反算调整此关节'
+          : 'IK 锁定此关节；仍可使用当前滑块手动精调'}
+        onClick={() => onToggleLock?.(joint.name)}
+      >
+        {locked ? <Lock size={11} /> : <Unlock size={11} />}
+        <span className="visually-hidden">{locked ? 'IK 已锁定' : 'IK 未锁定'}</span>
+      </button>
     </div>
   );
 }
@@ -154,8 +171,11 @@ export default function RobotJointPanel({
   robot,
   robotLoadState,
   jointValues,
+  lockedJointNames = [],
   poses = [],
   onChangeJoint,
+  onToggleJointLock,
+  onUnlockAllJoints,
   onZeroJoints,
   onCapturePose,
   onRenamePose,
@@ -165,6 +185,10 @@ export default function RobotJointPanel({
   const [poseName, setPoseName] = useState('');
   const robotReady = Boolean(robot) && robotLoadState?.status === 'loaded';
   const robotKey = robot?.id || robot?.relativePath || '';
+  const lockedJointSet = useMemo(
+    () => new Set(normalizeRobotJointLocks(lockedJointNames)),
+    [lockedJointNames],
+  );
 
   const joints = useMemo(() => {
     const definitions = Array.isArray(robotLoadState?.movableJoints)
@@ -194,6 +218,10 @@ export default function RobotJointPanel({
       return entries.length ? [{ ...group, entries }] : [];
     });
   }, [joints]);
+  const visibleLockedJointCount = useMemo(
+    () => joints.reduce((count, joint) => count + Number(lockedJointSet.has(joint.name)), 0),
+    [joints, lockedJointSet],
+  );
 
   const capturePose = () => {
     onCapturePose(poseName);
@@ -205,6 +233,10 @@ export default function RobotJointPanel({
       className={`robot-joint-console ${robotReady ? 'is-ready' : 'is-waiting'}`}
       aria-label="机器人全关节控制"
       data-joint-count={joints.length}
+      data-locked-joint-count={visibleLockedJointCount}
+      data-locked-joint-names={JSON.stringify(
+        joints.flatMap((joint) => lockedJointSet.has(joint.name) ? [joint.name] : []),
+      )}
       data-joint-pose-count={poses.length}
       data-robot-ready={robotReady ? 'true' : 'false'}
     >
@@ -242,16 +274,32 @@ export default function RobotJointPanel({
           <div className="joint-console-toolbar">
             <div>
               <span>CURRENT JOINT STATE</span>
-              <strong>{joints.length} VALUES · LIVE</strong>
+              <strong>
+                {joints.length} VALUES · {visibleLockedJointCount
+                  ? `${visibleLockedJointCount} IK LOCKED`
+                  : 'ALL IK ACTIVE'}
+              </strong>
             </div>
-            <button
-              type="button"
-              onClick={onZeroJoints}
-              disabled={!joints.length}
-              aria-label="全部关节归零"
-            >
-              <RotateCcw size={11} /> 全部归零
-            </button>
+            <div className="joint-console-toolbar__actions">
+              {Boolean(visibleLockedJointCount) && (
+                <button
+                  type="button"
+                  className="is-unlock"
+                  onClick={() => onUnlockAllJoints?.()}
+                  aria-label="解除全部关节 IK 锁定"
+                >
+                  <Unlock size={11} /> 解锁 {visibleLockedJointCount}
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={onZeroJoints}
+                disabled={!joints.length}
+                aria-label="全部关节归零"
+              >
+                <RotateCcw size={11} /> 全部归零
+              </button>
+            </div>
           </div>
 
           <div className="joint-group-list" aria-label="全部机器人关节值">
@@ -268,7 +316,9 @@ export default function RobotJointPanel({
                       key={joint.name}
                       joint={joint}
                       value={jointValues?.[joint.name] ?? 0}
+                      locked={lockedJointSet.has(joint.name)}
                       onChange={onChangeJoint}
+                      onToggleLock={onToggleJointLock}
                     />
                   ))}
                 </div>

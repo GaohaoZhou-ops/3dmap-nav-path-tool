@@ -42,10 +42,54 @@ def run():
         page.locator('[data-session-state="ready"]').wait_for()
         page.get_by_role("tab", name="虚拟示教与相机").click()
 
+        floating_window = page.get_by_label("全关节控制浮动窗口", exact=True)
+        floating_window.wait_for()
+        assert floating_window.is_visible()
+        assert floating_window.get_attribute("data-floating-window") == "robot-joints"
+        assert floating_window.get_attribute("data-window-state") == "open"
+        assert page.get_by_role("button", name="隐藏全关节浮动窗口").get_attribute("aria-pressed") == "true"
         panel = page.get_by_label("机器人全关节控制", exact=True)
         assert panel.is_visible()
+        assert panel.evaluate(
+            "node => node.closest('[data-floating-window]')?.dataset.floatingWindow"
+        ) == "robot-joints"
         assert panel.get_attribute("data-robot-ready") == "false"
         assert page.locator(".joint-value-row").count() == 0
+
+        titlebar = floating_window.locator(".joint-float-window__titlebar")
+        initial_x = float(floating_window.get_attribute("data-window-x"))
+        initial_y = float(floating_window.get_attribute("data-window-y"))
+        titlebar_box = titlebar.bounding_box()
+        assert titlebar_box
+        page.mouse.move(titlebar_box["x"] + 70, titlebar_box["y"] + 20)
+        page.mouse.down()
+        page.mouse.move(titlebar_box["x"] + 145, titlebar_box["y"] + 65, steps=6)
+        page.mouse.up()
+        assert float(floating_window.get_attribute("data-window-x")) > initial_x + 60
+        assert float(floating_window.get_attribute("data-window-y")) > initial_y + 30
+        titlebar.dblclick(position={"x": 70, "y": 20})
+        assert abs(float(floating_window.get_attribute("data-window-x")) - initial_x) < 2
+        assert abs(float(floating_window.get_attribute("data-window-y")) - initial_y) < 2
+
+        floating_window.get_by_role("button", name="最小化全关节浮动窗口").click()
+        assert floating_window.get_attribute("data-window-state") == "minimized"
+        assert not panel.is_visible()
+        floating_window.get_by_role("button", name="展开全关节浮动窗口").click()
+        assert floating_window.get_attribute("data-window-state") == "open"
+        assert panel.is_visible()
+
+        floating_window.get_by_role("button", name="关闭全关节浮动窗口").click()
+        floating_window.wait_for(state="detached")
+        page.get_by_role("button", name="打开全关节浮动窗口").click()
+        floating_window = page.get_by_label("全关节控制浮动窗口", exact=True)
+        floating_window.wait_for()
+        panel = page.get_by_label("机器人全关节控制", exact=True)
+        assert panel.is_visible()
+
+        page.get_by_role("tab", name="工程配置").click()
+        assert floating_window.is_visible()
+        assert panel.is_visible()
+        page.get_by_role("tab", name="虚拟示教与相机").click()
 
         page.locator('input[type="file"][accept=".ply"]').set_input_files(
             str(map_file)
@@ -80,6 +124,9 @@ def run():
         assert camera_teach.is_visible()
         zivid_panel = page.get_by_label("Zivid 2 M70 相机视图", exact=True)
         assert zivid_panel.is_visible()
+        assert floating_window.is_visible()
+        assert panel.is_visible()
+        assert page.locator(".three-canvas").is_visible()
         camera_canvas = zivid_panel.get_by_label("Zivid 2 M70 仿真相机画面", exact=True)
         assert camera_canvas.get_attribute("data-gpu-buffer-strategy") == "dedicated-downsample"
         assert camera_canvas.get_attribute("data-source-buffer-reused") == "false"
@@ -199,6 +246,10 @@ def run():
         zivid_panel.get_by_role("button", name="放大 Zivid 相机视图").click()
         camera_modal = page.get_by_label("Zivid 2 M70 相机大图", exact=True)
         camera_modal.wait_for()
+        assert floating_window.is_visible()
+        assert int(floating_window.evaluate("node => getComputedStyle(node).zIndex")) > int(
+            camera_modal.evaluate("node => getComputedStyle(node).zIndex")
+        )
         expanded_viewport_box = camera_viewport.bounding_box()
         expanded_controls_box = camera_teach.bounding_box()
         assert expanded_viewport_box and expanded_controls_box
@@ -397,7 +448,7 @@ def run():
         page.locator(".three-canvas").evaluate(
             "element => { element.style.visibility = 'hidden'; }"
         )
-        panel.screenshot(path="/tmp/atlas-joint-control.png", timeout=30_000)
+        floating_window.screenshot(path="/tmp/atlas-joint-control.png", timeout=30_000)
 
         print("joint_count=", panel.get_attribute("data-joint-count"))
         print("joint_pose=", joint_poses[0]["name"])

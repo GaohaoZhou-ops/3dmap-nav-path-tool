@@ -13,11 +13,13 @@ import {
   ScanLine,
   ScanSearch,
   Search,
+  SlidersHorizontal,
   Trash2,
   TriangleAlert,
 } from 'lucide-react';
 import { calculatePathDistances } from '../lib/pathMetrics.js';
-import RobotJointPanel from './RobotJointPanel.jsx';
+import { resolveMeshRenderQuality } from '../lib/mapGeometry.js';
+import FloatingRobotJointPanel from './FloatingRobotJointPanel.jsx';
 import VirtualTeachingPanel from './VirtualTeachingPanel.jsx';
 import ZividCameraPanel from './ZividCameraPanel.jsx';
 
@@ -72,7 +74,10 @@ export default function Inspector({
   robotLoadState,
   robotPose,
   robotJointValues,
+  lockedRobotJointNames = [],
   robotControlEnabled,
+  meshRenderQuality = 'auto',
+  onMeshRenderQualityChange,
   teachingTasks = [],
   activeTeachingTaskId,
   jointPoses = [],
@@ -96,6 +101,8 @@ export default function Inspector({
   onDeleteTeachingPoint,
   onApplyTeachingPoint,
   onUpdateRobotJointValue,
+  onToggleRobotJointLock,
+  onUnlockAllRobotJoints,
   onZeroRobotJoints,
   onCaptureJointPose,
   onRenameJointPose,
@@ -107,10 +114,12 @@ export default function Inspector({
   const [activePage, setActivePage] = useState('project');
   const [activeTeachingCameraSide, setActiveTeachingCameraSide] = useState('left');
   const [teachingMode, setTeachingMode] = useState('pose');
+  const [jointWindowOpen, setJointWindowOpen] = useState(false);
   const scrollRef = useRef(null);
   const cameraTeachingWorkspaceRef = useRef(null);
   const selectedWaypoint = waypoints.find((point) => point.id === selectedWaypointId);
   const selectedEdge = edges.find((edge) => edge.id === selectedEdgeId);
+  const meshQualityPlan = resolveMeshRenderQuality(meshRenderQuality, mapData?.faceCount);
   const pointById = useMemo(() => new Map(waypoints.map((point) => [point.id, point])), [waypoints]);
   const activeTeachingTask = teachingTasks.find((task) => task.id === activeTeachingTaskId)
     || teachingTasks[0]
@@ -236,6 +245,11 @@ export default function Inspector({
     }
   };
 
+  const activateInspectorPage = (pageId) => {
+    setActivePage(pageId);
+    if (pageId === 'teaching') setJointWindowOpen(true);
+  };
+
   const handleTabKeyDown = (event, pageIndex) => {
     if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
     event.preventDefault();
@@ -246,18 +260,32 @@ export default function Inspector({
         : (pageIndex + (event.key === 'ArrowRight' ? 1 : -1) + inspectorPages.length)
           % inspectorPages.length;
     const nextPage = inspectorPages[nextIndex];
-    setActivePage(nextPage.id);
+    activateInspectorPage(nextPage.id);
     requestAnimationFrame(() => document.getElementById(`inspector-tab-${nextPage.id}`)?.focus());
   };
 
   return (
-    <aside className="inspector-panel" data-active-page={activePage}>
+    <>
+      <aside className="inspector-panel" data-active-page={activePage}>
       <div className="inspector-heading">
         <div>
           <span className="eyebrow">CONTROL DECK / {activePageMeta.index}</span>
           <h2>图谱控制台</h2>
         </div>
-        <div className="graph-count"><ActivePageIcon size={14} /> {activePageMeta.summary}</div>
+        <div className="inspector-heading__tools">
+          <button
+            type="button"
+            className={`joint-float-toggle ${jointWindowOpen ? 'is-active' : ''}`}
+            aria-label={jointWindowOpen ? '隐藏全关节浮动窗口' : '打开全关节浮动窗口'}
+            aria-pressed={jointWindowOpen}
+            title="浮动显示全部机器人关节，不遮断地图与相机操作"
+            onClick={() => setJointWindowOpen((current) => !current)}
+          >
+            <SlidersHorizontal size={12} />
+            <span>关节</span>
+          </button>
+          <div className="graph-count"><ActivePageIcon size={14} /> {activePageMeta.summary}</div>
+        </div>
       </div>
 
       <nav className="inspector-pagination" role="tablist" aria-label="控制台子页">
@@ -276,7 +304,7 @@ export default function Inspector({
               aria-controls={`inspector-page-${page.id}`}
               tabIndex={selected ? 0 : -1}
               data-page={page.id}
-              onClick={() => setActivePage(page.id)}
+              onClick={() => activateInspectorPage(page.id)}
               onKeyDown={(event) => handleTabKeyDown(event, pageIndex)}
             >
               <i>{page.index}</i>
@@ -617,6 +645,10 @@ export default function Inspector({
                 <div><dt>地图文件</dt><dd title={mapData?.name}>{mapData?.name || '尚未加载'}</dd></div>
                 <div><dt>点云数量</dt><dd>{mapData?.pointCount ? mapData.pointCount.toLocaleString('zh-CN') : '—'}</dd></div>
                 <div><dt>网格三角面</dt><dd>{mapData?.faceCount ? mapData.faceCount.toLocaleString('zh-CN') : '—'}</dd></div>
+                <div>
+                  <dt>网格质量</dt>
+                  <dd>{mapData?.faceCount ? `${meshQualityPlan.requestedLabel} · ${meshQualityPlan.renderedFaceCount.toLocaleString('zh-CN')} 面` : '—'}</dd>
+                </div>
                 <div className={robot ? `robot-config-row is-${robotLoadState?.status || 'pending'}` : ''}>
                   <dt><Bot size={11} />机器人模型</dt>
                   <dd title={robot?.relativePath}>
@@ -699,26 +731,35 @@ export default function Inspector({
                 teachingMode={teachingMode}
                 cameraTeachingEnabled={cameraTeachingEnabled}
                 cameraTeachingResult={cameraTeachingResult}
+                meshRenderQuality={meshRenderQuality}
+                onMeshRenderQualityChange={onMeshRenderQualityChange}
                 onCameraTeachingMove={onCameraTeachingMove}
               />
             </div>
 
-            <RobotJointPanel
-              robot={robot}
-              robotLoadState={robotLoadState}
-              jointValues={robotJointValues}
-              poses={jointPoses}
-              onChangeJoint={onUpdateRobotJointValue}
-              onZeroJoints={onZeroRobotJoints}
-              onCapturePose={onCaptureJointPose}
-              onRenamePose={onRenameJointPose}
-              onDeletePose={onDeleteJointPose}
-              onApplyPose={onApplyJointPose}
-            />
           </div>
         )}
       </div>
-    </aside>
+      </aside>
+
+      <FloatingRobotJointPanel
+        open={jointWindowOpen}
+        onClose={() => setJointWindowOpen(false)}
+        robot={robot}
+        robotLoadState={robotLoadState}
+        jointValues={robotJointValues}
+        lockedJointNames={lockedRobotJointNames}
+        poses={jointPoses}
+        onChangeJoint={onUpdateRobotJointValue}
+        onToggleJointLock={onToggleRobotJointLock}
+        onUnlockAllJoints={onUnlockAllRobotJoints}
+        onZeroJoints={onZeroRobotJoints}
+        onCapturePose={onCaptureJointPose}
+        onRenamePose={onRenameJointPose}
+        onDeletePose={onDeleteJointPose}
+        onApplyPose={onApplyJointPose}
+      />
+    </>
   );
 }
 

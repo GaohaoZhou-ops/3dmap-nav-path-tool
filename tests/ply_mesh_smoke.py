@@ -35,7 +35,7 @@ def read_map_cache(page):
     )
 
 
-def assert_hybrid_geometry(page, canvas, source):
+def assert_hybrid_geometry(page, canvas, source, quality="auto"):
     assert canvas.get_attribute("data-geometry-source") == source
     assert canvas.get_attribute("data-map-render-mode") == "hybrid-mesh-points"
     assert canvas.get_attribute("data-map-point-cloud-visible") == "true"
@@ -48,6 +48,8 @@ def assert_hybrid_geometry(page, canvas, source):
     assert canvas.get_attribute("data-ply-mesh-render-strategy") == (
         "indexed-mesh+unreferenced-points"
     )
+    assert canvas.get_attribute("data-mesh-render-quality") == quality
+    assert canvas.get_attribute("data-render-mesh-face-count") == "2"
     assert page.get_by_role("button", name="切换地图显示模式").count() == 0
     mesh_status = page.get_by_role(
         "status",
@@ -84,6 +86,13 @@ def run():
         page.locator(".loading-curtain").wait_for(state="hidden")
         assert_hybrid_geometry(page, canvas, "ply-parse")
         assert canvas.get_attribute("data-ply-mesh-color-mode") == "height"
+        quality_select = page.get_by_label("网格渲染质量", exact=True)
+        assert quality_select.input_value() == "auto"
+        quality_select.select_option("performance")
+        page.wait_for_function(
+            "document.querySelector('.three-canvas')?.dataset.meshRenderQuality === 'performance'"
+        )
+        assert canvas.get_attribute("data-mesh-face-budget") == "180000"
 
         color_button = page.get_by_role("button", name="切换点云颜色模式")
         color_button.click()
@@ -104,7 +113,8 @@ def run():
         canvas = page.get_by_label("三维点云交互画布")
         canvas.wait_for()
         page.locator(".loading-curtain").wait_for(state="hidden")
-        assert_hybrid_geometry(page, canvas, "session-cache")
+        assert_hybrid_geometry(page, canvas, "session-cache", "performance")
+        assert page.get_by_label("网格渲染质量", exact=True).input_value() == "performance"
 
         print("hybrid_cache=", cache)
         print("page_errors=", page_errors)

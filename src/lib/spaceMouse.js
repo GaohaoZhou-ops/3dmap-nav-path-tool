@@ -12,31 +12,41 @@ export const SPACEMOUSE_SUPPORTED_PRODUCT_IDS = Object.freeze([
 ]);
 
 export const SPACEMOUSE_PROFILE_STORAGE_KEY =
+  'atlas-route-studio:spacemouse-wireless-bt-profile-v4';
+const SPACEMOUSE_LEGACY_V3_PROFILE_STORAGE_KEY =
   'atlas-route-studio:spacemouse-wireless-bt-profile-v3';
 const SPACEMOUSE_LEGACY_PROFILE_STORAGE_KEY =
   'atlas-route-studio:spacemouse-wireless-bt-profile-v2';
 const SPACEMOUSE_OLDER_PROFILE_STORAGE_KEY =
   'atlas-route-studio:spacemouse-wireless-bt-profile-v1';
-export const SPACEMOUSE_PROFILE_SEMANTICS = 'ros-x-forward-y-left-z-up-rpy-v1';
+export const SPACEMOUSE_PROFILE_SEMANTICS = 'ros-single-axis-button-cycle-v2';
 export const SPACEMOUSE_CALIBRATION_MODEL = 'coupled-6d-ridge-v1';
 export const SPACEMOUSE_CAPTURE_STRATEGY = 'outbound-peak-envelope-v1';
+export const SPACEMOUSE_BUTTON_CALIBRATION = 'physical-mask-xyz-rpy-v1';
 
 export const SPACEMOUSE_RAW_AXES = Object.freeze(['x', 'y', 'z', 'rx', 'ry', 'rz']);
 export const SPACEMOUSE_CONTROL_AXES = Object.freeze(['x', 'y', 'z', 'roll', 'pitch', 'yaw']);
+export const SPACEMOUSE_AXIS_GROUPS = Object.freeze({
+  xyz: Object.freeze(['x', 'y', 'z']),
+  rpy: Object.freeze(['yaw', 'pitch', 'roll']),
+});
+export const SPACEMOUSE_DEFAULT_SELECTED_AXES = Object.freeze({ xyz: 'x', rpy: 'yaw' });
 
 export const SPACEMOUSE_CALIBRATION_STEPS = Object.freeze([
-  { axis: 'x', direction: 'positive', code: '+X', title: '前进', action: '将空间球向前平推到舒适最大幅度，再松手回中', group: 'XYZ' },
-  { axis: 'x', direction: 'negative', code: '−X', title: '后退', action: '将空间球向后平拉到舒适最大幅度，再松手回中', group: 'XYZ' },
-  { axis: 'y', direction: 'positive', code: '+Y', title: '向左', action: '将空间球向左平推到舒适最大幅度，再松手回中', group: 'XYZ' },
-  { axis: 'y', direction: 'negative', code: '−Y', title: '向右', action: '将空间球向右平推到舒适最大幅度，再松手回中', group: 'XYZ' },
-  { axis: 'z', direction: 'positive', code: '+Z', title: '向上', action: '将空间球向上提到舒适最大幅度，再松手回中', group: 'XYZ' },
-  { axis: 'z', direction: 'negative', code: '−Z', title: '向下', action: '将空间球向下压到舒适最大幅度，再松手回中', group: 'XYZ' },
-  { axis: 'roll', direction: 'positive', code: '+R', title: '左翻滚', action: '将空间球向左翻滚到舒适最大角度，再松手回中', group: 'RPY' },
-  { axis: 'roll', direction: 'negative', code: '−R', title: '右翻滚', action: '将空间球向右翻滚到舒适最大角度，再松手回中', group: 'RPY' },
-  { axis: 'pitch', direction: 'positive', code: '+P', title: '前倾', action: '将空间球向前倾到舒适最大角度，再松手回中', group: 'RPY' },
-  { axis: 'pitch', direction: 'negative', code: '−P', title: '后仰', action: '将空间球向后仰到舒适最大角度，再松手回中', group: 'RPY' },
-  { axis: 'yaw', direction: 'positive', code: '+YAW', title: '左偏航', action: '将空间球向左偏航到舒适最大角度，再松手回中', group: 'RPY' },
-  { axis: 'yaw', direction: 'negative', code: '−YAW', title: '右偏航', action: '将空间球向右偏航到舒适最大角度，再松手回中', group: 'RPY' },
+  { type: 'button', role: 'xyz', code: 'L KEY', title: 'XYZ 轴切换键', action: '仅单击一次 SpaceMouse 左侧实体按钮，系统将记录它的 HID 键位', group: 'BUTTON' },
+  { type: 'button', role: 'rpy', code: 'R KEY', title: 'RPY 轴切换键', action: '仅单击一次 SpaceMouse 右侧实体按钮，系统将记录它的 HID 键位', group: 'BUTTON' },
+  { type: 'motion', axis: 'x', direction: 'positive', code: '+X', title: '前进', action: '将空间球向前平推到舒适最大幅度，再松手回中', group: 'XYZ' },
+  { type: 'motion', axis: 'x', direction: 'negative', code: '−X', title: '后退', action: '将空间球向后平拉到舒适最大幅度，再松手回中', group: 'XYZ' },
+  { type: 'motion', axis: 'y', direction: 'positive', code: '+Y', title: '向左', action: '将空间球向左平推到舒适最大幅度，再松手回中', group: 'XYZ' },
+  { type: 'motion', axis: 'y', direction: 'negative', code: '−Y', title: '向右', action: '将空间球向右平推到舒适最大幅度，再松手回中', group: 'XYZ' },
+  { type: 'motion', axis: 'z', direction: 'positive', code: '+Z', title: '向上', action: '将空间球向上提到舒适最大幅度，再松手回中', group: 'XYZ' },
+  { type: 'motion', axis: 'z', direction: 'negative', code: '−Z', title: '向下', action: '将空间球向下压到舒适最大幅度，再松手回中', group: 'XYZ' },
+  { type: 'motion', axis: 'roll', direction: 'positive', code: '+R', title: '左翻滚', action: '将空间球向左翻滚到舒适最大角度，再松手回中', group: 'RPY' },
+  { type: 'motion', axis: 'roll', direction: 'negative', code: '−R', title: '右翻滚', action: '将空间球向右翻滚到舒适最大角度，再松手回中', group: 'RPY' },
+  { type: 'motion', axis: 'pitch', direction: 'positive', code: '+P', title: '前倾', action: '将空间球向前倾到舒适最大角度，再松手回中', group: 'RPY' },
+  { type: 'motion', axis: 'pitch', direction: 'negative', code: '−P', title: '后仰', action: '将空间球向后仰到舒适最大角度，再松手回中', group: 'RPY' },
+  { type: 'motion', axis: 'yaw', direction: 'positive', code: '+YAW', title: '左偏航', action: '将空间球向左偏航到舒适最大角度，再松手回中', group: 'RPY' },
+  { type: 'motion', axis: 'yaw', direction: 'negative', code: '−YAW', title: '右偏航', action: '将空间球向右偏航到舒适最大角度，再松手回中', group: 'RPY' },
 ]);
 
 const emptyAxes = () => Object.fromEntries(SPACEMOUSE_RAW_AXES.map((axis) => [axis, 0]));
@@ -51,10 +61,19 @@ export function createSpaceMouseInputState() {
     calibrating: false,
     controlEnabled: true,
     mode: 'xyz',
+    selectedAxis: SPACEMOUSE_DEFAULT_SELECTED_AXES.xyz,
+    selectedAxes: { ...SPACEMOUSE_DEFAULT_SELECTED_AXES },
+    motionActive: false,
+    physicalMotionActive: false,
+    pointerGuardActive: false,
+    pointerGuardUntil: 0,
+    pointerGuardReason: '',
+    suppressedPointerEvents: 0,
     axes: emptyControlAxes(),
     rawAxes: emptyAxes(),
     timestamp: 0,
     lastMotionTimestamp: 0,
+    lastPhysicalMotionTimestamp: 0,
     revision: 0,
   };
 }
@@ -223,6 +242,17 @@ export function validateSpaceMouseCalibration(records) {
   return { valid: issues.length === 0, issues };
 }
 
+export function validateSpaceMouseButtons(buttons) {
+  const xyz = Number(buttons?.xyz) >>> 0;
+  const rpy = Number(buttons?.rpy) >>> 0;
+  const singleBit = (value) => value > 0 && (value & (value - 1)) === 0;
+  const issues = [];
+  if (!singleBit(xyz)) issues.push('XYZ 切换键尚未完成有效标定');
+  if (!singleBit(rpy)) issues.push('RPY 切换键尚未完成有效标定');
+  if (xyz && xyz === rpy) issues.push('XYZ 与 RPY 必须标定为两个不同的实体键');
+  return { valid: issues.length === 0, issues, buttons: { xyz, rpy } };
+}
+
 const zeroMatrix = (rows, columns) => Array.from(
   { length: rows },
   () => Array(columns).fill(0),
@@ -331,7 +361,7 @@ const buildCoupledCalibrationModel = (records) => {
   };
 };
 
-export function createSpaceMouseProfile(records, device) {
+const createSpaceMouseMotionProfile = (records, device) => {
   const validation = validateSpaceMouseCalibration(records);
   if (!validation.valid) {
     throw new Error(validation.issues.join('；'));
@@ -344,7 +374,7 @@ export function createSpaceMouseProfile(records, device) {
     ))
   )) ? SPACEMOUSE_CAPTURE_STRATEGY : 'legacy-full-gesture-v1';
   return {
-    version: 3,
+    version: 4,
     semantics: SPACEMOUSE_PROFILE_SEMANTICS,
     calibrationModel: SPACEMOUSE_CALIBRATION_MODEL,
     captureStrategy,
@@ -362,6 +392,17 @@ export function createSpaceMouseProfile(records, device) {
     responseCurve: 1.35,
     deadzoneRatio: 0.075,
     calibratedAt: new Date().toISOString(),
+  };
+};
+
+export function createSpaceMouseProfile(records, device, buttons) {
+  const profile = createSpaceMouseMotionProfile(records, device);
+  const buttonValidation = validateSpaceMouseButtons(buttons);
+  if (!buttonValidation.valid) throw new Error(buttonValidation.issues.join('；'));
+  return {
+    ...profile,
+    buttons: buttonValidation.buttons,
+    buttonCalibration: SPACEMOUSE_BUTTON_CALIBRATION,
   };
 }
 
@@ -399,15 +440,17 @@ const migrateV1SpaceMouseProfile = (legacy) => {
 const migrateSingleAxisProfile = (legacy) => {
   if (!legacy || !validateSpaceMouseCalibration(legacy.mappings).valid) return null;
   try {
-    const migrated = createSpaceMouseProfile(legacy.mappings, legacy.device);
+    const migrated = createSpaceMouseMotionProfile(legacy.mappings, legacy.device);
     return {
       ...migrated,
       responseCurve: Number(legacy.responseCurve) || migrated.responseCurve,
       deadzoneRatio: Number(legacy.deadzoneRatio) || migrated.deadzoneRatio,
       calibratedAt: legacy.calibratedAt || migrated.calibratedAt,
+      buttons: null,
+      buttonCalibration: 'required',
       migratedFrom: legacy.migratedFrom
-        ? `${legacy.migratedFrom}->coupled-6d-v3`
-        : `single-axis-v${legacy.version}->coupled-6d-v3`,
+        ? `${legacy.migratedFrom}->single-axis-buttons-v4`
+        : `single-axis-v${legacy.version}->single-axis-buttons-v4`,
       migratedAt: new Date().toISOString(),
     };
   } catch {
@@ -415,11 +458,47 @@ const migrateSingleAxisProfile = (legacy) => {
   }
 };
 
+const migrateV3SpaceMouseProfile = (legacy) => {
+  if (
+    legacy?.version !== 3
+    || legacy.calibrationModel !== SPACEMOUSE_CALIBRATION_MODEL
+    || !validateSpaceMouseCalibration(legacy.mappings).valid
+  ) return null;
+  try {
+    const migrated = createSpaceMouseMotionProfile(legacy.mappings, legacy.device);
+    return {
+      ...migrated,
+      responseCurve: Number(legacy.responseCurve) || migrated.responseCurve,
+      deadzoneRatio: Number(legacy.deadzoneRatio) || migrated.deadzoneRatio,
+      captureStrategy: legacy.captureStrategy || migrated.captureStrategy,
+      calibratedAt: legacy.calibratedAt || migrated.calibratedAt,
+      buttons: null,
+      buttonCalibration: 'required',
+      migratedFrom: 'coupled-6d-v3->single-axis-buttons-v4',
+      migratedAt: new Date().toISOString(),
+    };
+  } catch {
+    return null;
+  }
+};
+
+export function isSpaceMouseProfileReady(profile) {
+  return Boolean(
+    profile?.version === 4
+    && profile.semantics === SPACEMOUSE_PROFILE_SEMANTICS
+    && profile.calibrationModel === SPACEMOUSE_CALIBRATION_MODEL
+    && profile.captureStrategy === SPACEMOUSE_CAPTURE_STRATEGY
+    && profile.buttonCalibration === SPACEMOUSE_BUTTON_CALIBRATION
+    && validateSpaceMouseCalibration(profile.mappings).valid
+    && validateSpaceMouseButtons(profile.buttons).valid
+  );
+}
+
 export function loadSpaceMouseProfile(storage = globalThis.localStorage) {
   try {
     const profile = JSON.parse(storage?.getItem(SPACEMOUSE_PROFILE_STORAGE_KEY) || 'null');
     if (
-      profile?.version === 3
+      profile?.version === 4
       && profile.semantics === SPACEMOUSE_PROFILE_SEMANTICS
       && profile.calibrationModel === SPACEMOUSE_CALIBRATION_MODEL
       && validateSpaceMouseCalibration(profile.mappings).valid
@@ -433,16 +512,23 @@ export function loadSpaceMouseProfile(storage = globalThis.localStorage) {
         rawScale: calibration.rawScale,
         fitError: calibration.fitError,
         activeAxisAverage: calibration.activeAxisAverage,
+        buttons: validateSpaceMouseButtons(profile.buttons).valid
+          ? validateSpaceMouseButtons(profile.buttons).buttons
+          : null,
       };
     }
 
+    const legacyV3 = JSON.parse(
+      storage?.getItem(SPACEMOUSE_LEGACY_V3_PROFILE_STORAGE_KEY) || 'null',
+    );
     const legacyV2 = JSON.parse(
       storage?.getItem(SPACEMOUSE_LEGACY_PROFILE_STORAGE_KEY) || 'null',
     );
     const legacyV1 = JSON.parse(
       storage?.getItem(SPACEMOUSE_OLDER_PROFILE_STORAGE_KEY) || 'null',
     );
-    const migrated = migrateSingleAxisProfile(legacyV2)
+    const migrated = migrateV3SpaceMouseProfile(legacyV3)
+      || migrateSingleAxisProfile(legacyV2)
       || migrateSingleAxisProfile(migrateV1SpaceMouseProfile(legacyV1));
     if (!migrated) return null;
     saveSpaceMouseProfile(migrated, storage);
@@ -455,6 +541,7 @@ export function loadSpaceMouseProfile(storage = globalThis.localStorage) {
 export function saveSpaceMouseProfile(profile, storage = globalThis.localStorage) {
   try {
     storage?.setItem(SPACEMOUSE_PROFILE_STORAGE_KEY, JSON.stringify(profile));
+    storage?.removeItem?.(SPACEMOUSE_LEGACY_V3_PROFILE_STORAGE_KEY);
     storage?.removeItem?.(SPACEMOUSE_LEGACY_PROFILE_STORAGE_KEY);
     storage?.removeItem?.(SPACEMOUSE_OLDER_PROFILE_STORAGE_KEY);
     return true;

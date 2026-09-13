@@ -1,4 +1,5 @@
 import { calculatePathDistances } from './pathMetrics.js';
+import { normalizeRobotJointLocks } from './robotJointLocks.js';
 import { getSliceControlBounds } from './sliceRange.js';
 
 const numberOr = (value, fallback = 0) => {
@@ -295,6 +296,9 @@ export function normalizeProject(payload) {
               }),
             )
           : {},
+        lockedJoints: normalizeRobotJointLocks(
+          rawRobot.lockedJoints ?? rawRobot.jointLocks ?? rawRobot.lockedJointNames,
+        ),
         origin: {
           position: {
             x: numberOr(rawRobot.origin?.position?.x ?? rawRobot.origin?.x),
@@ -322,6 +326,7 @@ export function normalizeProject(payload) {
     map: payload.map || null,
     view2d: payload.view2d || null,
     view3d: payload.view3d || null,
+    rendering: payload.rendering || null,
     robot: robot?.relativePath ? robot : null,
     teachingTasks,
     jointPoses,
@@ -338,8 +343,10 @@ export function buildExport({
   robot,
   robotPose,
   robotJointValues,
+  lockedRobotJointNames = [],
   teachingTasks = [],
   jointPoses = [],
+  meshRenderQuality = 'auto',
 }) {
   const pointById = new Map(waypoints.map((point) => [point.id, point]));
   const exportedRobotPose = robotPose || robot?.origin || {};
@@ -351,6 +358,9 @@ export function buildExport({
       verticalAxis: 'Z',
       angleUnit: 'degree',
       distanceUnit: 'meter',
+    },
+    rendering: {
+      meshQuality: meshRenderQuality,
     },
     map: {
       fileName: mapData?.name || null,
@@ -388,6 +398,7 @@ export function buildExport({
               return name && Number.isFinite(parsed) ? [[name, parsed]] : [];
             }),
           ),
+          lockedJoints: normalizeRobotJointLocks(lockedRobotJointNames),
           origin: {
             position: {
               x: numberOr(exportedRobotPose.position?.x ?? exportedRobotPose.x),

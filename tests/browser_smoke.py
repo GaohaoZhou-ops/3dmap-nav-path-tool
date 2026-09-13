@@ -136,6 +136,61 @@ def run():
         assert interaction_button.inner_text().strip() == "旋转"
         assert three_canvas.get_attribute("data-interaction-mode") == "rotate"
 
+        # The same toolbar control is also a persistent rotate/pan toggle.
+        persistent_pan_target_before = {
+            axis: float(three_canvas.get_attribute(f"data-target-{axis}"))
+            for axis in ("x", "y", "z")
+        }
+        persistent_pan_camera_before = {
+            axis: float(three_canvas.get_attribute(f"data-camera-{axis}"))
+            for axis in ("x", "y", "z")
+        }
+        interaction_button.click()
+        page.wait_for_function(
+            "document.querySelector('.three-canvas')?.dataset.interactionMode === 'pan'"
+        )
+        assert interaction_button.get_attribute("data-base-mode") == "pan"
+        assert interaction_button.get_attribute("data-mode") == "pan"
+        assert interaction_button.inner_text().strip() == "平移"
+        assert "is-pan-mode" in (interaction_button.get_attribute("class") or "")
+        assert "lucide-move3d" in interaction_button.locator("svg").get_attribute("class")
+        assert three_canvas.get_attribute("data-effective-interaction-mode") == "pan"
+        page.mouse.move(
+            three_box["x"] + three_box["width"] * 0.41,
+            three_box["y"] + three_box["height"] * 0.47,
+        )
+        page.mouse.down()
+        page.mouse.move(
+            three_box["x"] + three_box["width"] * 0.57,
+            three_box["y"] + three_box["height"] * 0.58,
+            steps=3,
+        )
+        page.mouse.up()
+        persistent_pan_target_after = {
+            axis: float(three_canvas.get_attribute(f"data-target-{axis}"))
+            for axis in ("x", "y", "z")
+        }
+        persistent_pan_camera_after = {
+            axis: float(three_canvas.get_attribute(f"data-camera-{axis}"))
+            for axis in ("x", "y", "z")
+        }
+        assert three_canvas.get_attribute("data-last-pointer-gesture") == "mode-pan"
+        assert any(
+            abs(persistent_pan_target_after[axis] - persistent_pan_target_before[axis]) > 1e-5
+            for axis in ("x", "y", "z")
+        )
+        for axis in ("x", "y", "z"):
+            assert abs(
+                (persistent_pan_camera_after[axis] - persistent_pan_camera_before[axis])
+                - (persistent_pan_target_after[axis] - persistent_pan_target_before[axis])
+            ) < 1e-6
+        interaction_button.click()
+        page.wait_for_function(
+            "document.querySelector('.three-canvas')?.dataset.interactionMode === 'rotate'"
+        )
+        assert interaction_button.inner_text().strip() == "旋转"
+        assert "lucide-rotate3d" in interaction_button.locator("svg").get_attribute("class")
+
         height_bar = page.get_by_role("slider", name="截面中心高度")
         span_bar = page.get_by_role("slider", name="截面高度跨度")
         assert page.get_by_role("slider", name="截面中心高度").count() == 1

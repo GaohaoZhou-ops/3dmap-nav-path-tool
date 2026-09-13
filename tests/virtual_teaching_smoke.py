@@ -34,6 +34,7 @@ def run():
         teaching_tab = page.get_by_role("tab", name="虚拟示教与相机")
         teaching_tab.click()
         assert teaching_tab.get_attribute("aria-selected") == "true"
+        page.get_by_role("button", name="隐藏全关节浮动窗口").click()
         teaching_panel = page.get_by_label("虚拟示教", exact=True)
         new_task = page.get_by_role("button", name="新建任务", exact=True)
         assert new_task.is_disabled()
@@ -177,7 +178,8 @@ def run():
             "document.querySelector('.three-canvas')?.dataset.robotModelState === 'loaded'",
             timeout=180_000,
         )
-        page.get_by_role("tab", name="虚拟示教与相机").click()
+        page.locator(".loading-curtain").wait_for(state="hidden")
+        page.get_by_role("tab", name="虚拟示教与相机").click(force=True)
         teaching_panel = page.get_by_label("虚拟示教", exact=True)
         assert teaching_panel.get_attribute("data-teaching-task-count") == "1"
         assert teaching_panel.get_attribute("data-teaching-context-match") == "true"

@@ -45,8 +45,12 @@ import {
   normalizeRobotJointValues,
   normalizeRobotPose,
 } from './lib/robotLoader.js';
+import { normalizeRobotJointLocks } from './lib/robotJointLocks.js';
 import { sha256ArrayBuffer } from './lib/hash.js';
-import { prepareMapGeometryTopology } from './lib/mapGeometry.js';
+import {
+  normalizeMeshRenderQuality,
+  prepareMapGeometryTopology,
+} from './lib/mapGeometry.js';
 import { createSpaceMouseInputState } from './lib/spaceMouse.js';
 import {
   fetchServiceSession,
@@ -285,6 +289,7 @@ export default function App() {
   const [restoredView2d, setRestoredView2d] = useState(null);
   const [restoredView3d, setRestoredView3d] = useState(null);
   const [pointColorMode, setPointColorMode] = useState('height');
+  const [meshRenderQuality, setMeshRenderQuality] = useState('auto');
   const [showWaypoints3D, setShowWaypoints3D] = useState(true);
   const [collapsedPanel, setCollapsedPanel] = useState(null);
   const [synchronizedFocus, setSynchronizedFocus] = useState(null);
@@ -293,6 +298,7 @@ export default function App() {
   const [robotLoadState, setRobotLoadState] = useState({ status: 'idle' });
   const [robotPose, setRobotPose] = useState(() => normalizeRobotPose(null));
   const [robotJointValues, setRobotJointValues] = useState({});
+  const [lockedRobotJointNames, setLockedRobotJointNames] = useState([]);
   const [robotControlEnabled, setRobotControlEnabled] = useState(false);
   const [teachingTasks, setTeachingTasks] = useState([]);
   const [activeTeachingTaskId, setActiveTeachingTaskId] = useState(null);
@@ -323,11 +329,13 @@ export default function App() {
     selectedEdgeId,
     validation,
     pointColorMode,
+    meshRenderQuality,
     showWaypoints3D,
     collapsedPanel,
     selectedRobot,
     robotPose,
     robotJointValues,
+    lockedRobotJointNames,
     teachingTasks,
     activeTeachingTaskId,
     jointPoses,
@@ -387,8 +395,10 @@ export default function App() {
           robot: current.selectedRobot,
           robotPose: current.robotPose,
           robotJointValues: current.robotJointValues,
+          lockedRobotJointNames: current.lockedRobotJointNames,
           teachingTasks: current.teachingTasks,
           jointPoses: current.jointPoses,
+          meshRenderQuality: current.meshRenderQuality,
         })
       : null;
     const snapshot = {
@@ -402,6 +412,7 @@ export default function App() {
         activeTeachingTaskId: current.activeTeachingTaskId,
         validation: current.validation,
         pointColorMode: current.pointColorMode,
+        meshRenderQuality: current.meshRenderQuality,
         showWaypoints3D: current.showWaypoints3D,
         collapsedPanel: current.collapsedPanel,
         selectedRobot: current.selectedRobot
@@ -409,6 +420,7 @@ export default function App() {
               ...current.selectedRobot,
               origin: current.robotPose,
               joints: current.robotJointValues,
+              lockedJoints: current.lockedRobotJointNames,
             }
           : null,
       },
@@ -498,6 +510,7 @@ export default function App() {
         setValidation(initialValidation);
         setRobotPose(normalizeRobotPose(null));
         setRobotJointValues({});
+        setLockedRobotJointNames([]);
         setRobotControlEnabled(false);
         setTeachingTasks([]);
         setActiveTeachingTaskId(null);
@@ -643,6 +656,9 @@ export default function App() {
               ? snapshot.ui.collapsedPanel
               : null,
           );
+          setMeshRenderQuality(normalizeMeshRenderQuality(
+            snapshot?.ui?.meshRenderQuality ?? project?.rendering?.meshQuality,
+          ));
           setShowWaypoints3D(snapshot?.ui?.showWaypoints3D !== false);
           setSelectedRobot(restoredRobot);
           setRobotPose(
@@ -652,6 +668,14 @@ export default function App() {
           );
           setRobotJointValues(
             restoredRobot ? normalizeRobotJointValues(project?.robot?.joints || restoredRobot.joints) : {},
+          );
+          setLockedRobotJointNames(
+            restoredRobot
+              ? normalizeRobotJointLocks(
+                  project?.robot?.lockedJoints
+                  ?? snapshot?.ui?.selectedRobot?.lockedJoints,
+                )
+              : [],
           );
           setRobotControlEnabled(false);
           setRobotLoadState({ status: restoredRobot ? 'pending' : 'idle' });
@@ -814,11 +838,13 @@ export default function App() {
           setEdges([]);
           setHeightRange([0, 1]);
           setPointColorMode('height');
+          setMeshRenderQuality('auto');
           setShowWaypoints3D(true);
           setCollapsedPanel(null);
           setSelectedRobot(null);
           setRobotPose(normalizeRobotPose(null));
           setRobotJointValues({});
+          setLockedRobotJointNames([]);
           setRobotControlEnabled(false);
           setTeachingTasks([]);
           setActiveTeachingTaskId(null);
@@ -864,6 +890,7 @@ export default function App() {
     edges,
     heightRange,
     mapData?.mapId,
+    meshRenderQuality,
     mode,
     pointColorMode,
     queueWorkspaceSave,
@@ -872,6 +899,7 @@ export default function App() {
     selectedRobot,
     robotPose,
     robotJointValues,
+    lockedRobotJointNames,
     teachingTasks,
     activeTeachingTaskId,
     jointPoses,
@@ -967,6 +995,7 @@ export default function App() {
       setSelectedEdgeId(null);
       setConnectionSourceId(null);
       setMode('select');
+      setMeshRenderQuality(normalizeMeshRenderQuality(project.rendering?.meshQuality));
       const importedRobot = normalizeRobotDescriptor(project.robot);
       setSelectedRobot(importedRobot);
       setZividCameraPoses({});
@@ -977,6 +1006,9 @@ export default function App() {
       );
       setRobotJointValues(
         importedRobot ? normalizeRobotJointValues(project.robot?.joints) : {},
+      );
+      setLockedRobotJointNames(
+        importedRobot ? normalizeRobotJointLocks(project.robot?.lockedJoints) : [],
       );
       setRobotControlEnabled(false);
       setRobotLoadState({ status: importedRobot ? 'pending' : 'idle' });
@@ -1443,6 +1475,22 @@ export default function App() {
     [robotLoadState.movableJoints, robotLoadState.status],
   );
 
+  const toggleRobotJointLock = useCallback((name) => {
+    const jointName = String(name || '').trim();
+    if (!jointName || robotLoadState.status !== 'loaded') return;
+    setLockedRobotJointNames((current) => {
+      const normalized = normalizeRobotJointLocks(current);
+      return normalized.includes(jointName)
+        ? normalized.filter((candidate) => candidate !== jointName)
+        : [...normalized, jointName];
+    });
+  }, [robotLoadState.status]);
+
+  const unlockAllRobotJoints = useCallback(() => {
+    setLockedRobotJointNames([]);
+    notify('已解除全部关节 IK 锁定', 'info');
+  }, [notify]);
+
   const zeroRobotJoints = useCallback(() => {
     if (robotLoadState.status !== 'loaded') {
       notify('机器人尚未完成装配，无法归零关节', 'warning');
@@ -1571,8 +1619,10 @@ export default function App() {
       robot: selectedRobot,
       robotPose,
       robotJointValues,
+      lockedRobotJointNames,
       teachingTasks,
       jointPoses,
+      meshRenderQuality,
     });
     const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
     downloadJson(payload, `virtual-teaching-${stamp}.json`);
@@ -1596,6 +1646,7 @@ export default function App() {
       setSelectedRobot(robot);
       setRobotPose(normalizeRobotPose(null));
       setRobotJointValues({});
+      setLockedRobotJointNames([]);
       setRobotControlEnabled(false);
       setZividCameraPoses({});
       setCameraTeachingCommand(null);
@@ -1621,6 +1672,19 @@ export default function App() {
     if (nextState.status !== 'loaded') {
       setRobotControlEnabled(false);
       setZividCameraPoses({});
+    } else {
+      const availableJointNames = new Set(
+        (nextState.movableJoints || []).flatMap((joint) => joint?.name ? [joint.name] : []),
+      );
+      setLockedRobotJointNames((current) => {
+        const next = normalizeRobotJointLocks(current).filter(
+          (name) => availableJointNames.has(name),
+        );
+        return next.length === current.length
+          && next.every((name, index) => name === current[index])
+          ? current
+          : next;
+      });
     }
   }, []);
   const handleRobotPoseChange = useCallback((nextPose) => {
@@ -1870,6 +1934,8 @@ export default function App() {
                 selectedEdgeId={selectedEdgeId}
                 colorMode={pointColorMode}
                 onColorModeChange={setPointColorMode}
+                meshRenderQuality={meshRenderQuality}
+                onMeshRenderQualityChange={setMeshRenderQuality}
                 showWaypoints={showWaypoints3D}
                 onShowWaypointsChange={setShowWaypoints3D}
                 onSelectWaypoint={selectWaypoint}
@@ -1883,6 +1949,7 @@ export default function App() {
                 robotLoadState={robotLoadState}
                 robotPose={robotPose}
                 robotJointValues={robotJointValues}
+                lockedRobotJointNames={lockedRobotJointNames}
                 robotControlEnabled={robotControlEnabled}
                 spaceMouseInputRef={spaceMouseInputRef}
                 cameraTeachingCommand={cameraTeachingCommand}
@@ -1992,7 +2059,10 @@ export default function App() {
           robotLoadState={robotLoadState}
           robotPose={robotPose}
           robotJointValues={robotJointValues}
+          lockedRobotJointNames={lockedRobotJointNames}
           robotControlEnabled={robotControlEnabled}
+          meshRenderQuality={meshRenderQuality}
+          onMeshRenderQualityChange={setMeshRenderQuality}
           teachingTasks={teachingTasks}
           activeTeachingTaskId={activeTeachingTaskId}
           jointPoses={jointPoses}
@@ -2016,6 +2086,8 @@ export default function App() {
           onDeleteTeachingPoint={deleteTeachingPoint}
           onApplyTeachingPoint={applyTeachingPoint}
           onUpdateRobotJointValue={updateRobotJointValue}
+          onToggleRobotJointLock={toggleRobotJointLock}
+          onUnlockAllRobotJoints={unlockAllRobotJoints}
           onZeroRobotJoints={zeroRobotJoints}
           onCaptureJointPose={captureJointPose}
           onRenameJointPose={renameJointPose}

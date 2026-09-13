@@ -28,6 +28,12 @@ const formatCapturedAt = (value) => {
   }).format(date);
 };
 
+const formatValue = (value, digits = 3) => {
+  const parsed = Number(value);
+  const precision = Number.isInteger(digits) && digits >= 0 ? digits : 3;
+  return Number.isFinite(parsed) ? parsed.toFixed(precision) : '--';
+};
+
 export default function VirtualTeachingPanel({
   tasks,
   activeTaskId,

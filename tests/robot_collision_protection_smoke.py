@@ -63,13 +63,13 @@ def run():
 
         panel = page.get_by_label("虚拟示教", exact=True)
         guard = page.get_by_label("自碰撞保护", exact=True)
-        toggle = page.get_by_role("button", name="开启自碰撞保护")
         assert guard.is_visible()
         assert guard.get_attribute("data-protection-default") == "off"
         assert guard.get_attribute("data-bottom-structure-policy") == "excluded"
         assert panel.get_attribute("data-collision-protection-enabled") == "false"
         assert panel.get_attribute("data-collision-safety-threshold") == "0.1"
-        assert toggle.is_disabled()
+        assert guard.get_by_role("button", name="开启自碰撞保护").count() == 0
+        assert "3D 工具栏" in guard.inner_text()
 
         map_input = page.locator('input[type="file"][accept=".ply"]')
         map_input.set_input_files(
@@ -79,6 +79,9 @@ def run():
             )
         )
         page.locator(".loading-curtain").wait_for(state="hidden")
+        toggle = page.get_by_role("button", name="开启自碰撞保护")
+        assert toggle.is_visible()
+        assert toggle.is_disabled()
         page.get_by_role("button", name="加载机器人", exact=True).click()
         page.get_by_role("option", name="加载机器人 botx_abx_zivid_m70").click()
         wait_for_robot(page)
@@ -87,6 +90,12 @@ def run():
         toggle = page.get_by_role("button", name="开启自碰撞保护")
         assert not toggle.is_disabled()
         assert toggle.get_attribute("aria-pressed") == "false"
+        assert toggle.locator("xpath=following-sibling::button[1]").get_attribute(
+            "aria-label"
+        ) == "重置3D视角"
+        assert toggle.locator("xpath=preceding-sibling::button[1]").get_attribute(
+            "aria-label"
+        ) == "定位机器人模型"
         assert canvas.get_attribute("data-collision-protection-enabled") == "false"
         assert canvas.get_attribute("data-collision-worker") == "inactive"
         assert page.locator(".robot-collision-alert").count() == 0
@@ -160,36 +169,15 @@ def run():
         page.wait_for_function(
             "document.querySelector('.three-canvas')?.dataset.robotControlEnabled === 'true'"
         )
+        canvas.focus()
         observed_near = False
         observed_safe_after_near = False
         for _ in range(80):
-            previous = page.evaluate(
-                """() => {
-                  const data = document.querySelector('.three-canvas')?.dataset;
-                  return { count: Number(data?.collisionCheckCount), x: Number(data?.robotX) };
-                }"""
-            )
-            page.keyboard.press("w")
-            page.wait_for_function(
-                "previous => Number(document.querySelector('.three-canvas')?.dataset.robotX) > previous + 0.04",
-                arg=previous["x"],
-                timeout=5_000,
-            )
-            try:
-                page.wait_for_function(
-                    "previous => Number(document.querySelector('.three-canvas')?.dataset.collisionCheckCount) > previous",
-                    arg=previous["count"],
-                    timeout=5_000,
-                )
-            except Exception:
-                print(
-                    "collision_check_stall=",
-                    page.evaluate(
-                        """() => ({ ...document.querySelector('.three-canvas')?.dataset })"""
-                    ),
-                    flush=True,
-                )
-                raise
+            page.keyboard.press("w", delay=120)
+            # The detector intentionally coalesces rapid scene updates. Sample
+            # at a little over its 160 ms cadence instead of requiring one
+            # worker response for every individual keyboard step.
+            page.wait_for_timeout(260)
             snapshot = page.evaluate(
                 """() => ({ ...document.querySelector('.three-canvas')?.dataset })"""
             )

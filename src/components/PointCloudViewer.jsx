@@ -1026,6 +1026,7 @@ export default function PointCloudViewer({
   onRobotControlChange,
   onZividCameraPoseChange,
   onCameraTeachingResult,
+  onCollisionProtectionChange,
   onCollisionProtectionStatus,
 }) {
   const mountRef = useRef(null);
@@ -5003,6 +5004,22 @@ export default function PointCloudViewer({
   const collisionDistanceMillimeters = Number.isFinite(robotCollisionStatus?.minimumDistance)
     ? Math.max(0, robotCollisionStatus.minimumDistance * 1000)
     : null;
+  const collisionControlReady = Boolean(
+    robotDescriptor && robotLoadState?.status === 'loaded',
+  );
+  const collisionButtonState = collisionProtectionEnabled
+    ? collisionStatusState
+    : 'disabled';
+  const collisionButtonLabel = collisionProtectionEnabled
+    ? {
+        building: '建立索引',
+        waiting: '等待检测',
+        safe: '保护开启',
+        near: '距离过近',
+        collision: '环境干涉',
+        error: '检测异常',
+      }[collisionStatusState] || '保护开启'
+    : '碰撞保护';
 
   return (
     <div
@@ -5113,6 +5130,25 @@ export default function PointCloudViewer({
                   <Bot size={13} /> 机器人
                 </button>
               )}
+              <button
+                type="button"
+                className={`collision-protection-toggle is-${collisionButtonState} ${collisionProtectionEnabled ? 'is-active' : ''}`}
+                aria-label={collisionProtectionEnabled ? '关闭自碰撞保护' : '开启自碰撞保护'}
+                aria-pressed={collisionProtectionEnabled}
+                data-collision-control-state={collisionButtonState}
+                disabled={!collisionProtectionEnabled && !collisionControlReady}
+                onClick={() => onCollisionProtectionChange?.(!collisionProtectionEnabled)}
+                title={!collisionControlReady && !collisionProtectionEnabled
+                  ? '请先加载机器人；模型装配完成后即可开启碰撞保护'
+                  : collisionProtectionEnabled
+                    ? '关闭碰撞保护并释放环境空间索引'
+                    : '开启非底盘结构的环境干涉与 10 cm 安全距离检测'}
+              >
+                {collisionProtectionEnabled && collisionStatusState === 'safe'
+                  ? <ShieldCheck size={13} />
+                  : <ShieldAlert size={13} />}
+                {collisionButtonLabel}
+              </button>
               <button
                 type="button"
                 onClick={resetView}

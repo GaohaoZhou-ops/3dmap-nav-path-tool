@@ -115,7 +115,6 @@ export default function Inspector({
   onApplyJointPose,
   onCameraTeachingMove,
   onZividCaptureProviderChange,
-  onRobotCollisionProtectionChange,
   onExportTeachingProject,
 }) {
   const [activePage, setActivePage] = useState('project');
@@ -736,7 +735,6 @@ export default function Inspector({
               onDeletePoint={onDeleteTeachingPoint}
               onApplyPoint={onApplyTeachingPoint}
               onTeachingModeChange={handleTeachingModeChange}
-              onCollisionProtectionChange={onRobotCollisionProtectionChange}
               onExportProject={onExportTeachingProject}
               onOpenDataPage={() => activateInspectorPage('teaching-data')}
             />

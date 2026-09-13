@@ -2074,6 +2074,7 @@ export default function App() {
                 onRobotControlChange={handleRobotControlChange}
                 onZividCameraPoseChange={handleZividCameraPoseChange}
                 onCameraTeachingResult={handleCameraTeachingResult}
+                onCollisionProtectionChange={handleRobotCollisionProtectionChange}
                 onCollisionProtectionStatus={handleRobotCollisionProtectionStatus}
               />
               <HeightRange
@@ -2215,7 +2216,6 @@ export default function App() {
           onApplyJointPose={applyJointPose}
           onCameraTeachingMove={requestCameraTeachingMove}
           onZividCaptureProviderChange={handleZividCaptureProviderChange}
-          onRobotCollisionProtectionChange={handleRobotCollisionProtectionChange}
           onExportTeachingProject={exportProject}
         />
       </main>

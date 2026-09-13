@@ -2604,6 +2604,38 @@ code {
   animation: robot-control-ready 1.4s ease-in-out infinite;
 }
 
+.viewer-tool-switch button.collision-protection-toggle {
+  min-width: 88px;
+  font-family: "SFMono-Regular", Menlo, monospace;
+  white-space: nowrap;
+}
+
+.viewer-tool-switch button.collision-protection-toggle.is-building,
+.viewer-tool-switch button.collision-protection-toggle.is-waiting {
+  color: var(--cyan);
+  background: rgba(89, 219, 232, 0.1);
+  box-shadow: inset 0 -2px 0 rgba(89, 219, 232, 0.72);
+}
+
+.viewer-tool-switch button.collision-protection-toggle.is-safe {
+  color: #9af5bd;
+  background: rgba(94, 229, 154, 0.11);
+  box-shadow: inset 0 -2px 0 var(--green);
+}
+
+.viewer-tool-switch button.collision-protection-toggle.is-near {
+  color: #ffe08a;
+  background: rgba(244, 201, 93, 0.13);
+  box-shadow: inset 0 -2px 0 var(--amber);
+}
+
+.viewer-tool-switch button.collision-protection-toggle.is-collision,
+.viewer-tool-switch button.collision-protection-toggle.is-error {
+  color: #ff9d9b;
+  background: rgba(255, 112, 110, 0.13);
+  box-shadow: inset 0 -2px 0 var(--red);
+}
+
 @keyframes robot-control-ready {
   0%, 100% { filter: brightness(0.94); }
   50% { filter: brightness(1.14); }
@@ -7128,72 +7160,35 @@ input[type="number"]::-webkit-inner-spin-button {
   font-weight: 590;
 }
 
-.teaching-collision-toggle {
+.teaching-collision-source {
   display: inline-flex;
   align-items: center;
-  gap: 5px;
+  gap: 6px;
   height: 25px;
-  padding: 0 6px;
+  padding: 0 7px;
   border: 1px solid rgba(137, 177, 179, 0.18);
   color: #718988;
   background: rgba(1, 8, 10, 0.66);
-  cursor: pointer;
 }
 
-.teaching-collision-toggle > i {
-  position: relative;
-  display: block;
-  width: 23px;
-  height: 11px;
-  border: 1px solid rgba(137, 177, 179, 0.25);
-  background: rgba(137, 177, 179, 0.06);
-}
-
-.teaching-collision-toggle > i > span {
-  position: absolute;
-  top: 2px;
-  left: 2px;
-  width: 5px;
-  height: 5px;
-  background: #718988;
-  transition: transform 140ms ease, background 140ms ease;
-}
-
-.teaching-collision-toggle > em {
+.teaching-collision-source > i {
   font: normal 6px "SFMono-Regular", Menlo, monospace;
   letter-spacing: .08em;
+  white-space: nowrap;
 }
 
-.teaching-collision-toggle.is-on {
+.teaching-collision-source > b {
+  min-width: 17px;
+  color: inherit;
+  font: 650 6px "SFMono-Regular", Menlo, monospace;
+  letter-spacing: .08em;
+  text-align: right;
+}
+
+.teaching-collision-source.is-on {
   border-color: rgba(89, 219, 232, 0.42);
   color: var(--cyan);
   background: rgba(89, 219, 232, 0.08);
-}
-
-.teaching-collision-toggle.is-on > i {
-  border-color: rgba(89, 219, 232, 0.48);
-  background: rgba(89, 219, 232, 0.1);
-}
-
-.teaching-collision-toggle.is-on > i > span {
-  background: var(--cyan);
-  box-shadow: 0 0 7px rgba(89, 219, 232, 0.58);
-  transform: translateX(12px);
-}
-
-.teaching-collision-toggle:hover:not(:disabled) {
-  border-color: rgba(89, 219, 232, 0.58);
-  color: #b9f4f6;
-}
-
-.teaching-collision-toggle:focus-visible {
-  outline: 1px solid var(--cyan);
-  outline-offset: 2px;
-}
-
-.teaching-collision-toggle:disabled {
-  cursor: not-allowed;
-  opacity: .42;
 }
 
 .teaching-collision-guard__status {

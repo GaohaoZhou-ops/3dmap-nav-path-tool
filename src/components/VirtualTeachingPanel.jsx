@@ -69,7 +69,6 @@ export default function VirtualTeachingPanel({
   onDeletePoint,
   onApplyPoint,
   onTeachingModeChange,
-  onCollisionProtectionChange,
   onExportProject,
   onOpenDataPage,
   onOpenCapturePage,
@@ -145,7 +144,6 @@ export default function VirtualTeachingPanel({
     ? Math.max(0, collisionProtectionStatus.minimumDistance * 1000)
     : null;
   const CollisionIcon = collisionState === 'safe' ? ShieldCheck : ShieldAlert;
-  const collisionToggleDisabled = !collisionProtectionEnabled && !canCreate;
 
   const commitTaskName = () => {
     if (!activeTask) return;
@@ -275,22 +273,13 @@ export default function VirtualTeachingPanel({
               <small>ENVIRONMENT CLEARANCE / 100 MM</small>
               <strong>自碰撞保护</strong>
             </div>
-            <button
-              type="button"
-              className={`teaching-collision-toggle ${collisionProtectionEnabled ? 'is-on' : ''}`}
-              aria-label={collisionProtectionEnabled ? '关闭自碰撞保护' : '开启自碰撞保护'}
-              aria-pressed={collisionProtectionEnabled}
-              disabled={collisionToggleDisabled}
-              onClick={() => onCollisionProtectionChange?.(!collisionProtectionEnabled)}
-              title={collisionToggleDisabled
-                ? '请先加载地图与机器人'
-                : collisionProtectionEnabled
-                  ? '关闭并释放环境空间索引'
-                  : '开启非底盘结构的环境干涉与 10 cm 安全距离检测'}
+            <span
+              className={`teaching-collision-source ${collisionProtectionEnabled ? 'is-on' : ''}`}
+              title="开关位于 3D 窗口工具栏的“机器人”与“重置视角”之间"
             >
-              <i><span /></i>
-              <em>{collisionProtectionEnabled ? 'ON' : 'OFF'}</em>
-            </button>
+              <i>3D 工具栏</i>
+              <b>{collisionProtectionEnabled ? 'ON' : 'OFF'}</b>
+            </span>
           </div>
           <div
             className="teaching-collision-guard__status"
@@ -304,8 +293,12 @@ export default function VirtualTeachingPanel({
                   || (collisionProtectionEnabled ? '检测准备中' : '保护已关闭')}
               </strong>
               <small>
-                {collisionProtectionStatus?.detail
-                  || '开启后将启动专用 Worker 进行高负载检测'}
+                {collisionState === 'disabled'
+                  ? canCreate
+                    ? '点击 3D 窗口工具栏中的“碰撞保护”开启'
+                    : '加载地图与机器人后，在 3D 工具栏开启'
+                  : collisionProtectionStatus?.detail
+                    || '检测已在专用 Worker 中运行'}
               </small>
             </div>
             <b>

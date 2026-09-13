@@ -60,6 +60,8 @@ export function createSpaceMouseInputState() {
     calibrated: false,
     calibrating: false,
     controlEnabled: true,
+    controlTarget: 'viewport',
+    controlTargetSide: null,
     mode: 'xyz',
     selectedAxis: SPACEMOUSE_DEFAULT_SELECTED_AXES.xyz,
     selectedAxes: { ...SPACEMOUSE_DEFAULT_SELECTED_AXES },

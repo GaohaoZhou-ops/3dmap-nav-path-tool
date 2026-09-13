@@ -1792,6 +1792,8 @@ export default function App() {
         action: String(request?.action || ''),
         linearStep: Number(request?.linearStep) || 0.025,
         angularStep: Number(request?.angularStep) || 3,
+        source: request?.source === 'spacemouse' ? 'spacemouse' : 'button',
+        inputMagnitude: Math.max(0, Math.min(1, Number(request?.inputMagnitude) || 0)),
       };
       setRobotControlEnabled(false);
       setCameraTeachingResult({
@@ -2120,6 +2122,7 @@ export default function App() {
           robotControlEnabled={robotControlEnabled}
           meshRenderQuality={meshRenderQuality}
           onMeshRenderQualityChange={setMeshRenderQuality}
+          spaceMouseInputRef={spaceMouseInputRef}
           teachingTasks={teachingTasks}
           activeTeachingTaskId={activeTeachingTaskId}
           jointPoses={jointPoses}

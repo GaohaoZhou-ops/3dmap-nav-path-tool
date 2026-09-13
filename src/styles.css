@@ -7429,6 +7429,136 @@ input[type="number"]::-webkit-inner-spin-button {
   background: rgba(89, 219, 232, 0.08);
 }
 
+.zivid-camera-spacemouse-toggle {
+  position: relative;
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 8px;
+  height: 32px;
+  margin-left: 12px;
+  padding: 0 8px 0 9px;
+  border: 1px solid rgba(137, 177, 179, 0.2);
+  outline: 0;
+  background:
+    linear-gradient(135deg, rgba(89, 219, 232, 0.035), transparent 58%),
+    rgba(2, 10, 13, 0.78);
+  color: #7f9b9b;
+  cursor: pointer;
+  transition: border-color 150ms ease, background 150ms ease, color 150ms ease, box-shadow 150ms ease;
+}
+
+.zivid-camera-spacemouse-toggle::before {
+  content: "";
+  position: absolute;
+  top: 5px;
+  bottom: 5px;
+  left: 0;
+  width: 2px;
+  background: rgba(137, 177, 179, 0.25);
+  transition: background 150ms ease, box-shadow 150ms ease;
+}
+
+.zivid-camera-spacemouse-toggle > svg {
+  flex: 0 0 auto;
+  color: #729190;
+}
+
+.zivid-camera-spacemouse-toggle > span {
+  display: flex;
+  min-width: 95px;
+  flex-direction: column;
+  align-items: flex-start;
+  line-height: 1;
+}
+
+.zivid-camera-spacemouse-toggle > span strong {
+  color: #b6c9c7;
+  font: 600 7px "SFMono-Regular", Menlo, monospace;
+  letter-spacing: 0.035em;
+}
+
+.zivid-camera-spacemouse-toggle > span small {
+  margin-top: 4px;
+  color: #607876;
+  font: 5px "SFMono-Regular", Menlo, monospace;
+  letter-spacing: 0.09em;
+}
+
+.zivid-camera-spacemouse-toggle > i {
+  position: relative;
+  width: 25px;
+  height: 13px;
+  border: 1px solid rgba(137, 177, 179, 0.28);
+  border-radius: 7px;
+  background: rgba(137, 177, 179, 0.08);
+  box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.44);
+}
+
+.zivid-camera-spacemouse-toggle > i b {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #657b7a;
+  transition: left 160ms cubic-bezier(.2, .8, .2, 1), background 160ms ease, box-shadow 160ms ease;
+}
+
+.zivid-camera-spacemouse-toggle:hover:not(:disabled) {
+  border-color: rgba(89, 219, 232, 0.42);
+  color: var(--cyan);
+  background: rgba(89, 219, 232, 0.075);
+}
+
+.zivid-camera-spacemouse-toggle.is-active {
+  border-color: rgba(94, 229, 154, 0.46);
+  color: var(--green);
+  background:
+    linear-gradient(135deg, rgba(94, 229, 154, 0.13), transparent 64%),
+    rgba(3, 18, 16, 0.9);
+  box-shadow: inset 0 0 18px rgba(94, 229, 154, 0.035), 0 0 14px rgba(94, 229, 154, 0.055);
+}
+
+.zivid-camera-spacemouse-toggle.is-active::before {
+  background: var(--green);
+  box-shadow: 0 0 9px rgba(94, 229, 154, 0.66);
+}
+
+.zivid-camera-spacemouse-toggle.is-active > svg,
+.zivid-camera-spacemouse-toggle.is-active > span strong,
+.zivid-camera-spacemouse-toggle.is-active > span small {
+  color: var(--green);
+}
+
+.zivid-camera-spacemouse-toggle.is-active > i {
+  border-color: rgba(94, 229, 154, 0.55);
+  background: rgba(94, 229, 154, 0.16);
+}
+
+.zivid-camera-spacemouse-toggle.is-active > i b {
+  left: 14px;
+  background: #b8ffda;
+  box-shadow: 0 0 7px rgba(94, 229, 154, 0.88);
+}
+
+.zivid-camera-spacemouse-toggle.is-paused.is-active {
+  border-color: rgba(244, 201, 93, 0.42);
+  background: rgba(244, 201, 93, 0.065);
+}
+
+.zivid-camera-spacemouse-toggle.is-paused.is-active::before,
+.zivid-camera-spacemouse-toggle.is-paused.is-active > i b {
+  background: var(--amber);
+  box-shadow: 0 0 8px rgba(244, 201, 93, 0.58);
+}
+
+.zivid-camera-spacemouse-toggle:disabled {
+  cursor: not-allowed;
+  opacity: 0.42;
+}
+
 .zivid-camera-toolbar {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto auto;
@@ -7561,6 +7691,170 @@ input[type="number"]::-webkit-inner-spin-button {
     linear-gradient(90deg, rgba(89, 219, 232, 0.035) 1px, transparent 1px);
   background-size: 34px 34px;
   box-shadow: inset 0 0 42px rgba(0, 0, 0, 0.68);
+}
+
+.zivid-camera-spacemouse-route {
+  position: absolute;
+  top: 44px;
+  left: 18px;
+  z-index: 8;
+  display: grid;
+  grid-template-columns: 25px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  min-width: 215px;
+  min-height: 39px;
+  padding: 5px 7px;
+  border: 1px solid rgba(94, 229, 154, 0.28);
+  border-left: 2px solid var(--green);
+  background:
+    linear-gradient(100deg, rgba(94, 229, 154, 0.1), transparent 62%),
+    rgba(2, 10, 12, 0.8);
+  color: #9cefc1;
+  pointer-events: none;
+  box-shadow: 0 8px 26px rgba(0, 0, 0, 0.3), 0 0 18px rgba(94, 229, 154, 0.06);
+  backdrop-filter: blur(7px);
+}
+
+.zivid-camera-spacemouse-route > svg {
+  justify-self: center;
+  filter: drop-shadow(0 0 5px rgba(94, 229, 154, 0.38));
+}
+
+.zivid-camera-spacemouse-route > span {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+}
+
+.zivid-camera-spacemouse-route small {
+  color: rgba(168, 219, 200, 0.56);
+  font: 5px "SFMono-Regular", Menlo, monospace;
+  letter-spacing: 0.12em;
+}
+
+.zivid-camera-spacemouse-route strong {
+  margin-top: 3px;
+  color: #d5f9e5;
+  font: 600 7px "SFMono-Regular", Menlo, monospace;
+  letter-spacing: 0.07em;
+}
+
+.zivid-camera-spacemouse-route > b {
+  min-width: 40px;
+  padding: 4px 5px;
+  border: 1px solid rgba(94, 229, 154, 0.26);
+  color: var(--green);
+  background: rgba(94, 229, 154, 0.07);
+  font: 600 7px "SFMono-Regular", Menlo, monospace;
+  text-align: center;
+}
+
+.zivid-camera-spacemouse-route.is-paused {
+  border-color: rgba(244, 201, 93, 0.28);
+  border-left-color: var(--amber);
+  color: var(--amber);
+  background: rgba(20, 17, 7, 0.8);
+}
+
+.zivid-camera-spacemouse-route.is-paused > b {
+  border-color: rgba(244, 201, 93, 0.28);
+  color: var(--amber);
+  background: rgba(244, 201, 93, 0.07);
+}
+
+.zivid-camera-spacemouse-hud {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  z-index: 9;
+  display: grid;
+  grid-template-columns: auto auto minmax(112px, 1fr);
+  align-items: center;
+  gap: 12px;
+  min-width: 285px;
+  padding: 10px 14px 10px 10px;
+  border: 1px solid rgba(89, 219, 232, 0.26);
+  border-left: 2px solid rgba(89, 219, 232, 0.72);
+  opacity: 0;
+  background:
+    linear-gradient(105deg, rgba(89, 219, 232, 0.13), transparent 66%),
+    rgba(1, 8, 11, 0.77);
+  color: #ddfbfb;
+  transform: translate(-50%, -42%) scale(0.96);
+  transition: opacity 170ms ease, transform 190ms cubic-bezier(.2, .8, .2, 1), border-color 170ms ease;
+  pointer-events: none;
+  box-shadow: 0 12px 38px rgba(0, 0, 0, 0.38), inset 0 0 24px rgba(89, 219, 232, 0.03);
+  backdrop-filter: blur(8px);
+}
+
+.zivid-camera-spacemouse-hud.is-visible {
+  opacity: 0.76;
+  transform: translate(-50%, -50%) scale(1);
+}
+
+.zivid-camera-spacemouse-hud.is-active {
+  border-color: rgba(94, 229, 154, 0.55);
+  border-left-color: var(--green);
+  opacity: 0.92;
+}
+
+.zivid-camera-spacemouse-hud > span {
+  align-self: stretch;
+  display: grid;
+  place-items: center;
+  width: 38px;
+  border: 1px solid rgba(89, 219, 232, 0.2);
+  color: rgba(141, 204, 207, 0.7);
+  background: rgba(89, 219, 232, 0.045);
+  font: 6px "SFMono-Regular", Menlo, monospace;
+  letter-spacing: 0.09em;
+  writing-mode: vertical-rl;
+}
+
+.zivid-camera-spacemouse-hud > strong {
+  min-width: 56px;
+  color: #efffff;
+  font: 650 20px "SFMono-Regular", Menlo, monospace;
+  letter-spacing: -0.04em;
+  text-align: center;
+  text-shadow: 0 0 13px rgba(89, 219, 232, 0.34);
+}
+
+.zivid-camera-spacemouse-hud > div {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+}
+
+.zivid-camera-spacemouse-hud > div > b {
+  overflow: hidden;
+  color: #c9e6e4;
+  font: 600 8px "SFMono-Regular", Menlo, monospace;
+  letter-spacing: 0.04em;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.zivid-camera-spacemouse-hud > div > i {
+  position: relative;
+  height: 3px;
+  margin-top: 8px;
+  overflow: hidden;
+  background: rgba(137, 177, 179, 0.13);
+}
+
+.zivid-camera-spacemouse-hud > div > i em {
+  position: absolute;
+  inset: 0 auto 0 0;
+  min-width: 4px;
+  background: linear-gradient(90deg, var(--cyan), var(--green));
+  box-shadow: 0 0 8px rgba(94, 229, 154, 0.62);
+  transition: width 80ms linear;
+}
+
+.zivid-camera-panel[data-spacemouse-view-enabled="true"] .zivid-camera-viewport {
+  box-shadow: inset 0 0 0 1px rgba(94, 229, 154, 0.12), inset 0 0 52px rgba(94, 229, 154, 0.025);
 }
 
 .zivid-camera-reticle {
@@ -7853,7 +8147,12 @@ input[type="number"]::-webkit-inner-spin-button {
 
 @media (prefers-reduced-motion: reduce) {
   .zivid-camera-panel__live i,
-  .zivid-camera-panel__footer i {
+  .zivid-camera-panel__footer i,
+  .zivid-camera-spacemouse-toggle,
+  .zivid-camera-spacemouse-toggle > i b,
+  .zivid-camera-spacemouse-hud,
+  .zivid-camera-spacemouse-hud > div > i em {
     box-shadow: none;
+    transition: none;
   }
 }

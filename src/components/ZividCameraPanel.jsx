@@ -8,6 +8,7 @@ import {
   Gauge,
   Maximize2,
   Minus,
+  Move3D,
   Plus,
   RotateCcw,
   X,
@@ -47,6 +48,32 @@ const CAMERA_POINT_NEIGHBORHOOD_RADIUS = 2.15;
 const CAMERA_FACE_NEIGHBORHOOD_RADIUS = 2.65;
 const CAMERA_NEIGHBORHOOD_CACHE_LIMIT = 4;
 const CAMERA_SURFACE_FOV_MARGIN = 0.08;
+const ZIVID_SPACEMOUSE_COMMAND_INTERVAL_MS = 85;
+const ZIVID_SPACEMOUSE_INPUT_STALE_MS = 180;
+const ZIVID_SPACEMOUSE_LINEAR_SPEED = 0.2;
+const ZIVID_SPACEMOUSE_ANGULAR_SPEED = 48;
+const ZIVID_SPACEMOUSE_HUD_HOLD_MS = 1000;
+const ZIVID_SPACEMOUSE_AXES = Object.freeze(['x', 'y', 'z', 'roll', 'pitch', 'yaw']);
+const ZIVID_SPACEMOUSE_ACTIONS = Object.freeze({
+  x: {
+    code: 'X', group: 'XYZ', positive: ['near', '前进 · 靠近'], negative: ['far', '后退 · 远离'],
+  },
+  y: {
+    code: 'Y', group: 'XYZ', positive: ['left', '向左'], negative: ['right', '向右'],
+  },
+  z: {
+    code: 'Z', group: 'XYZ', positive: ['up', '向上'], negative: ['down', '向下'],
+  },
+  roll: {
+    code: 'ROLL', group: 'RPY', positive: ['roll-left', '左翻滚'], negative: ['roll-right', '右翻滚'],
+  },
+  pitch: {
+    code: 'PITCH', group: 'RPY', positive: ['pitch-down', '前倾'], negative: ['pitch-up', '后仰'],
+  },
+  yaw: {
+    code: 'YAW', group: 'RPY', positive: ['yaw-left', '左偏航'], negative: ['yaw-right', '右偏航'],
+  },
+});
 const CAMERA_SURFACE_GRID_BY_QUALITY = Object.freeze({
   performance: { columns: 38, rows: 24 },
   balanced: { columns: 54, rows: 34 },
@@ -1208,6 +1235,7 @@ export default function ZividCameraPanel({
   cameraTeachingResult,
   meshRenderQuality = 'auto',
   onMeshRenderQualityChange,
+  spaceMouseInputRef,
   onCameraTeachingMove,
   onCaptureProviderChange,
 }) {
@@ -1220,6 +1248,26 @@ export default function ZividCameraPanel({
   const [zoom, setZoom] = useState(1);
   const [pan, setPan] = useState({ x: 0, y: 0 });
   const [expanded, setExpanded] = useState(false);
+  const [spaceMouseViewEnabled, setSpaceMouseViewEnabled] = useState(false);
+  const [spaceMouseStatus, setSpaceMouseStatus] = useState({
+    connected: false,
+    calibrated: false,
+    calibrating: false,
+    controlEnabled: true,
+    mode: 'xyz',
+    selectedAxis: 'x',
+    controlTarget: 'viewport',
+  });
+  const [spaceMouseHud, setSpaceMouseHud] = useState({
+    visible: false,
+    active: false,
+    axis: 'x',
+    code: 'X',
+    group: 'XYZ',
+    label: '前进 · 靠近',
+    value: 0,
+    inputCount: 0,
+  });
   const [dragging, setDragging] = useState(false);
   const [rendererStatus, setRendererStatus] = useState('waiting');
   const [cameraMeshStats, setCameraMeshStats] = useState(EMPTY_CAMERA_MESH_STATS);
@@ -1229,6 +1277,12 @@ export default function ZividCameraPanel({
   const renderModeRef = useRef(renderMode);
   const viewRef = useRef({ zoom, pan });
   const dragRef = useRef(null);
+  const onCameraTeachingMoveRef = useRef(onCameraTeachingMove);
+  const cameraTeachingResultRef = useRef(cameraTeachingResult);
+  const spaceMouseHudTimerRef = useRef(null);
+  const spaceMouseHudVisibleRef = useRef(false);
+  const spaceMouseInputCountRef = useRef(0);
+  const spaceMouseStatusSignatureRef = useRef('');
   const activePose = cameraPoses?.[activeSide] || null;
   const hasRgb = Boolean(mapData?.geometry?.getAttribute('color'));
   const meshInfo = mapData?.meshInfo || mapData?.geometry?.userData?.mapTopology || null;
@@ -1254,6 +1308,9 @@ export default function ZividCameraPanel({
   cameraPosesRef.current = cameraPoses;
   renderModeRef.current = renderMode;
   viewRef.current = { zoom, pan };
+  onCameraTeachingMoveRef.current = onCameraTeachingMove;
+  cameraTeachingResultRef.current = cameraTeachingResult;
+  spaceMouseHudVisibleRef.current = spaceMouseHud.visible;
 
   useEffect(() => {
     if (!enabled && expanded) setExpanded(false);
@@ -1290,6 +1347,220 @@ export default function ZividCameraPanel({
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [expanded]);
+
+  useEffect(() => {
+    if (!expanded) return undefined;
+    const syncStatus = () => {
+      const input = spaceMouseInputRef?.current || {};
+      const nextStatus = {
+        connected: Boolean(input.connected),
+        calibrated: Boolean(input.calibrated),
+        calibrating: Boolean(input.calibrating),
+        controlEnabled: input.controlEnabled !== false,
+        mode: input.mode === 'rpy' ? 'rpy' : 'xyz',
+        selectedAxis: ZIVID_SPACEMOUSE_AXES.includes(input.selectedAxis)
+          ? input.selectedAxis
+          : input.mode === 'rpy' ? 'yaw' : 'x',
+        controlTarget: input.controlTarget === 'zivid-camera'
+          ? 'zivid-camera'
+          : 'viewport',
+      };
+      const signature = Object.values(nextStatus).join('|');
+      if (signature !== spaceMouseStatusSignatureRef.current) {
+        spaceMouseStatusSignatureRef.current = signature;
+        setSpaceMouseStatus(nextStatus);
+      }
+    };
+    syncStatus();
+    const statusTimer = window.setInterval(syncStatus, 100);
+    return () => window.clearInterval(statusTimer);
+  }, [expanded, spaceMouseInputRef]);
+
+  useEffect(() => {
+    const deviceUnavailable = !spaceMouseStatus.connected
+      || !spaceMouseStatus.calibrated
+      || spaceMouseStatus.calibrating;
+    if (
+      spaceMouseViewEnabled
+      && (!expanded || !cameraTeachingEnabled || deviceUnavailable)
+    ) {
+      setSpaceMouseViewEnabled(false);
+    }
+  }, [
+    cameraTeachingEnabled,
+    expanded,
+    spaceMouseStatus.calibrated,
+    spaceMouseStatus.calibrating,
+    spaceMouseStatus.connected,
+    spaceMouseViewEnabled,
+  ]);
+
+  useEffect(() => {
+    if (!spaceMouseInputRef || !expanded || !spaceMouseViewEnabled) return undefined;
+    const current = spaceMouseInputRef.current || {};
+    spaceMouseInputRef.current = {
+      ...current,
+      controlTarget: 'zivid-camera',
+      controlTargetSide: activeSide,
+      controlTargetRevision: Number(current.controlTargetRevision || 0) + 1,
+      revision: Number(current.revision || 0) + 1,
+    };
+
+    return () => {
+      const latest = spaceMouseInputRef.current || {};
+      if (
+        latest.controlTarget !== 'zivid-camera'
+        || latest.controlTargetSide !== activeSide
+      ) return;
+      spaceMouseInputRef.current = {
+        ...latest,
+        controlTarget: 'viewport',
+        controlTargetSide: null,
+        controlTargetRevision: Number(latest.controlTargetRevision || 0) + 1,
+        motionActive: false,
+        axes: Object.fromEntries(ZIVID_SPACEMOUSE_AXES.map((axis) => [axis, 0])),
+        timestamp: 0,
+        revision: Number(latest.revision || 0) + 1,
+      };
+    };
+  }, [activeSide, expanded, spaceMouseInputRef, spaceMouseViewEnabled]);
+
+  useEffect(() => {
+    if (!expanded || !spaceMouseViewEnabled || !spaceMouseInputRef) return undefined;
+    let frameId = 0;
+    let lastCommandAt = performance.now() - ZIVID_SPACEMOUSE_COMMAND_INTERVAL_MS;
+    let motionWasActive = false;
+
+    const setCanvasState = (state = {}) => {
+      const canvas = mountRef.current?.querySelector('.zivid-camera-canvas');
+      if (!canvas) return;
+      canvas.dataset.spacemouseViewEnabled = 'true';
+      canvas.dataset.spacemouseControlTarget = 'zivid-camera';
+      canvas.dataset.spacemouseControlModel = 'optical-frame-ik';
+      canvas.dataset.spacemouseZoomPolicy = 'mouse-only';
+      canvas.dataset.spacemouseSelectedAxis = state.axis || '';
+      canvas.dataset.spacemouseMotionState = state.motionState || 'idle';
+      canvas.dataset.spacemouseInputCount = String(spaceMouseInputCountRef.current);
+      canvas.dataset.spacemouseCommandIntervalMs = String(
+        ZIVID_SPACEMOUSE_COMMAND_INTERVAL_MS,
+      );
+      if (state.action) canvas.dataset.spacemouseLastAction = state.action;
+    };
+
+    const markHudInactive = () => {
+      if (
+        !motionWasActive
+        && (!spaceMouseHudVisibleRef.current || spaceMouseHudTimerRef.current)
+      ) return;
+      motionWasActive = false;
+      setSpaceMouseHud((current) => (
+        current.active ? { ...current, active: false, value: 0 } : current
+      ));
+      if (!spaceMouseHudTimerRef.current) {
+        spaceMouseHudTimerRef.current = window.setTimeout(() => {
+          spaceMouseHudTimerRef.current = null;
+          spaceMouseHudVisibleRef.current = false;
+          setSpaceMouseHud((current) => ({ ...current, visible: false, active: false }));
+        }, ZIVID_SPACEMOUSE_HUD_HOLD_MS);
+      }
+    };
+
+    const consumeInput = (now) => {
+      const input = spaceMouseInputRef.current || {};
+      const selectedAxis = ZIVID_SPACEMOUSE_AXES.includes(input.selectedAxis)
+        ? input.selectedAxis
+        : input.mode === 'rpy' ? 'yaw' : 'x';
+      const actionMeta = ZIVID_SPACEMOUSE_ACTIONS[selectedAxis];
+      const value = THREE.MathUtils.clamp(Number(input.axes?.[selectedAxis]) || 0, -1, 1);
+      const inputReady = Boolean(
+        input.controlTarget === 'zivid-camera'
+        && input.controlTargetSide === activeSide
+        && input.connected
+        && input.calibrated
+        && !input.calibrating
+        && input.controlEnabled !== false
+        && input.motionActive
+        && now - Number(input.timestamp || 0) <= ZIVID_SPACEMOUSE_INPUT_STALE_MS
+        && Math.abs(value) > 0.0001
+        && actionMeta
+      );
+
+      if (!inputReady) {
+        setCanvasState({ axis: selectedAxis, motionState: 'idle' });
+        markHudInactive();
+        frameId = requestAnimationFrame(consumeInput);
+        return;
+      }
+
+      motionWasActive = true;
+      if (spaceMouseHudTimerRef.current) {
+        window.clearTimeout(spaceMouseHudTimerRef.current);
+        spaceMouseHudTimerRef.current = null;
+      }
+      const [action, label] = value >= 0 ? actionMeta.positive : actionMeta.negative;
+      setCanvasState({ axis: selectedAxis, motionState: 'active', action });
+
+      const solving = cameraTeachingResultRef.current?.status === 'solving';
+      if (!solving && now - lastCommandAt >= ZIVID_SPACEMOUSE_COMMAND_INTERVAL_MS) {
+        const elapsedSeconds = THREE.MathUtils.clamp(
+          (now - lastCommandAt) / 1000,
+          0.05,
+          0.14,
+        );
+        const magnitude = Math.abs(value);
+        const linearStep = THREE.MathUtils.clamp(
+          magnitude * ZIVID_SPACEMOUSE_LINEAR_SPEED * elapsedSeconds,
+          0.001,
+          0.04,
+        );
+        const angularStep = THREE.MathUtils.clamp(
+          magnitude * ZIVID_SPACEMOUSE_ANGULAR_SPEED * elapsedSeconds,
+          0.2,
+          6,
+        );
+        lastCommandAt = now;
+        spaceMouseInputCountRef.current += 1;
+        spaceMouseHudVisibleRef.current = true;
+        setSpaceMouseHud({
+          visible: true,
+          active: true,
+          axis: selectedAxis,
+          code: actionMeta.code,
+          group: actionMeta.group,
+          label,
+          value,
+          inputCount: spaceMouseInputCountRef.current,
+        });
+        setCanvasState({ axis: selectedAxis, motionState: 'active', action });
+        onCameraTeachingMoveRef.current?.({
+          side: activeSide,
+          action,
+          linearStep,
+          angularStep,
+          source: 'spacemouse',
+          inputMagnitude: magnitude,
+        });
+      }
+      frameId = requestAnimationFrame(consumeInput);
+    };
+
+    frameId = requestAnimationFrame(consumeInput);
+    return () => {
+      cancelAnimationFrame(frameId);
+      if (spaceMouseHudTimerRef.current) {
+        window.clearTimeout(spaceMouseHudTimerRef.current);
+        spaceMouseHudTimerRef.current = null;
+      }
+      spaceMouseHudVisibleRef.current = false;
+      setSpaceMouseHud((current) => ({ ...current, visible: false, active: false, value: 0 }));
+      const canvas = mountRef.current?.querySelector('.zivid-camera-canvas');
+      if (canvas) {
+        canvas.dataset.spacemouseViewEnabled = 'false';
+        canvas.dataset.spacemouseControlTarget = 'viewport';
+        canvas.dataset.spacemouseMotionState = 'idle';
+      }
+    };
+  }, [activeSide, expanded, spaceMouseInputRef, spaceMouseViewEnabled]);
 
   useEffect(() => {
     if (!onCaptureProviderChange) return undefined;
@@ -1432,6 +1703,12 @@ export default function ZividCameraPanel({
     renderer.domElement.dataset.cameraBufferBytes = String(cameraBufferByteLength);
     renderer.domElement.dataset.sourceBufferReused = 'false';
     renderer.domElement.dataset.pixelRatioCap = String(pixelRatioCap);
+    renderer.domElement.dataset.spacemouseViewEnabled = 'false';
+    renderer.domElement.dataset.spacemouseControlTarget = 'viewport';
+    renderer.domElement.dataset.spacemouseControlModel = 'optical-frame-ik';
+    renderer.domElement.dataset.spacemouseZoomPolicy = 'mouse-only';
+    renderer.domElement.dataset.spacemouseMotionState = 'idle';
+    renderer.domElement.dataset.spacemouseInputCount = String(spaceMouseInputCountRef.current);
     mount.replaceChildren(renderer.domElement);
 
     let contextAvailable = true;
@@ -1697,6 +1974,39 @@ export default function ZividCameraPanel({
     setPan({ x: 0, y: 0 });
   };
 
+  const spaceMouseDeviceReady = Boolean(
+    spaceMouseStatus.connected
+    && spaceMouseStatus.calibrated
+    && !spaceMouseStatus.calibrating,
+  );
+  const spaceMouseSwitchReady = Boolean(
+    spaceMouseDeviceReady
+    && cameraTeachingEnabled
+    && activePose,
+  );
+  const selectedSpaceMouseMeta = ZIVID_SPACEMOUSE_ACTIONS[spaceMouseStatus.selectedAxis]
+    || ZIVID_SPACEMOUSE_ACTIONS.x;
+  const spaceMouseSwitchState = !spaceMouseStatus.connected
+    ? '未连接'
+    : spaceMouseStatus.calibrating
+      ? '标定中'
+      : !spaceMouseStatus.calibrated
+        ? '待标定'
+        : !cameraTeachingEnabled
+          ? '示教未就绪'
+          : !spaceMouseStatus.controlEnabled
+            ? '已暂停'
+            : spaceMouseViewEnabled ? '正在控制' : '可启用';
+  const spaceMouseSwitchTitle = !spaceMouseStatus.connected
+    ? '请先使用顶部“检测3D鼠标”连接 SpaceMouse'
+    : !spaceMouseStatus.calibrated || spaceMouseStatus.calibrating
+      ? '请先完成 SpaceMouse 标定'
+      : !cameraTeachingEnabled
+        ? '请先新建匹配当前地图与机器人的示教任务'
+        : spaceMouseViewEnabled
+          ? '关闭后 SpaceMouse 将恢复控制主 3D 视角'
+          : '驱动当前 Zivid optical frame 与机械臂 IK；缩放仍只由鼠标控制';
+
   const panel = (
     <section
       className={`zivid-camera-panel ${expanded ? 'is-expanded' : ''} ${teachingMode === 'camera' ? 'has-teaching-controls' : ''}`}
@@ -1723,6 +2033,13 @@ export default function ZividCameraPanel({
       data-visible-point-estimate={frustumStats.estimated}
       data-zoom={zoom.toFixed(2)}
       data-camera-teaching-mode={teachingMode === 'camera' ? 'active' : 'hidden'}
+      data-spacemouse-view-enabled={spaceMouseViewEnabled ? 'true' : 'false'}
+      data-spacemouse-ready={spaceMouseSwitchReady ? 'true' : 'false'}
+      data-spacemouse-control-target={spaceMouseViewEnabled ? 'zivid-camera' : 'viewport'}
+      data-spacemouse-selected-axis={spaceMouseStatus.selectedAxis}
+      data-spacemouse-control-model="optical-frame-ik"
+      data-spacemouse-zoom-policy="mouse-only"
+      data-spacemouse-input-count={spaceMouseHud.inputCount}
     >
       <header className="zivid-camera-panel__header">
         <div className="zivid-camera-panel__identity">
@@ -1733,6 +2050,29 @@ export default function ZividCameraPanel({
           </div>
         </div>
         <div className="zivid-camera-panel__live"><i /> OPTICAL LINK</div>
+        {expanded && (
+          <button
+            type="button"
+            className={`zivid-camera-spacemouse-toggle ${spaceMouseViewEnabled ? 'is-active' : ''} ${!spaceMouseStatus.controlEnabled ? 'is-paused' : ''}`}
+            aria-label={spaceMouseViewEnabled
+              ? '关闭 SpaceMouse 相机视角控制'
+              : '启用 SpaceMouse 相机视角控制'}
+            aria-pressed={spaceMouseViewEnabled}
+            title={spaceMouseSwitchTitle}
+            disabled={!spaceMouseViewEnabled && !spaceMouseSwitchReady}
+            onClick={() => {
+              if (!spaceMouseViewEnabled && !spaceMouseSwitchReady) return;
+              setSpaceMouseViewEnabled((current) => !current);
+            }}
+          >
+            <Move3D size={13} />
+            <span>
+              <strong>SpaceMouse 视角</strong>
+              <small>{spaceMouseSwitchState}</small>
+            </span>
+            <i aria-hidden="true"><b /></i>
+          </button>
+        )}
         <button
           type="button"
           className="zivid-camera-expand"
@@ -1851,6 +2191,38 @@ export default function ZividCameraPanel({
       >
         <div ref={mountRef} className="zivid-camera-render-mount" />
         <div className="zivid-camera-scan-grid" aria-hidden="true" />
+        {expanded && spaceMouseViewEnabled && (
+          <div
+            className={`zivid-camera-spacemouse-route ${spaceMouseStatus.controlEnabled ? 'is-linked' : 'is-paused'}`}
+            aria-label="SpaceMouse 相机路由状态"
+          >
+            <Move3D size={12} />
+            <span>
+              <small>SPACEMOUSE → {activeSide === 'left' ? 'CAM-L' : 'CAM-R'}</small>
+              <strong>OPTICAL FRAME · IK</strong>
+            </span>
+            <b>{spaceMouseStatus.controlEnabled ? selectedSpaceMouseMeta.code : 'PAUSE'}</b>
+          </div>
+        )}
+        {expanded && (
+          <div
+            className={`zivid-camera-spacemouse-hud ${spaceMouseHud.visible ? 'is-visible' : ''} ${spaceMouseHud.active ? 'is-active' : ''}`}
+            aria-label="SpaceMouse 相机控制轴"
+            aria-hidden={!spaceMouseHud.visible}
+            data-axis={spaceMouseHud.axis}
+            data-motion-state={spaceMouseHud.active ? 'active' : 'hold'}
+            data-input-count={spaceMouseHud.inputCount}
+          >
+            <span>{spaceMouseHud.group}</span>
+            <strong>{spaceMouseHud.code}</strong>
+            <div>
+              <b>{spaceMouseHud.label}</b>
+              <i>
+                <em style={{ width: `${Math.round(Math.abs(spaceMouseHud.value) * 100)}%` }} />
+              </i>
+            </div>
+          </div>
+        )}
         <div className="zivid-camera-reticle" aria-hidden="true"><span /><i /></div>
         <div className="zivid-camera-corner top-left" aria-hidden="true" />
         <div className="zivid-camera-corner top-right" aria-hidden="true" />

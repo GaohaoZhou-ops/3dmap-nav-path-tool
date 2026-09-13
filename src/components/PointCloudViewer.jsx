@@ -1642,6 +1642,9 @@ export default function PointCloudViewer({
 
     const side = cameraTeachingCommand?.side === 'right' ? 'right' : 'left';
     const actionId = String(cameraTeachingCommand?.action || '');
+    const commandSource = cameraTeachingCommand?.source === 'spacemouse'
+      ? 'spacemouse'
+      : 'button';
     const action = CAMERA_TEACH_ACTIONS[actionId];
     const canvas = controlsRef.current?.domElement;
     const publishFailure = (message) => {
@@ -1650,6 +1653,7 @@ export default function PointCloudViewer({
         canvas.dataset.cameraTeachingRevision = String(revision);
         canvas.dataset.cameraTeachingSide = side;
         canvas.dataset.cameraTeachingAction = actionId;
+        canvas.dataset.cameraTeachingSource = commandSource;
         canvas.dataset.cameraTeachingIkStatus = 'error';
         canvas.dataset.cameraTeachingError = message;
       }
@@ -1720,6 +1724,7 @@ export default function PointCloudViewer({
       canvas.dataset.cameraTeachingRevision = String(revision);
       canvas.dataset.cameraTeachingSide = side;
       canvas.dataset.cameraTeachingAction = actionId;
+      canvas.dataset.cameraTeachingSource = commandSource;
       canvas.dataset.cameraTeachingTargetPosition = targetPosition
         .toArray()
         .map((value) => value.toFixed(7))
@@ -1751,6 +1756,7 @@ export default function PointCloudViewer({
       revision,
       side,
       action: actionId,
+      source: commandSource,
       status: result.status,
       positionError: result.positionError,
       rotationError: result.rotationError,
@@ -3391,11 +3397,15 @@ export default function PointCloudViewer({
 
       const spaceMouseInput = spaceMouseInputRef?.current;
       const spaceMouseMode = spaceMouseInput?.mode === 'rpy' ? 'rpy' : 'xyz';
+      const spaceMouseControlTarget = spaceMouseInput?.controlTarget === 'zivid-camera'
+        ? 'zivid-camera'
+        : 'viewport';
       const spaceMouseReady = Boolean(
         spaceMouseInput?.connected
         && spaceMouseInput?.calibrated
         && !spaceMouseInput?.calibrating
         && spaceMouseInput?.controlEnabled !== false
+        && spaceMouseControlTarget === 'viewport'
       );
       const spaceMouseReportFresh = Boolean(
         spaceMouseReady
@@ -3413,6 +3423,7 @@ export default function PointCloudViewer({
         : 'false';
       renderer.domElement.dataset.spacemouseControlEnabled =
         spaceMouseInput?.controlEnabled === false ? 'false' : 'true';
+      renderer.domElement.dataset.spacemouseControlTarget = spaceMouseControlTarget;
       renderer.domElement.dataset.spacemouseMode = spaceMouseMode;
 
       SPACEMOUSE_VIEW_AXES.forEach((axis) => {

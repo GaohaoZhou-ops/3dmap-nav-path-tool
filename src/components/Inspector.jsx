@@ -79,6 +79,7 @@ export default function Inspector({
   robotControlEnabled,
   meshRenderQuality = 'auto',
   onMeshRenderQualityChange,
+  spaceMouseInputRef,
   teachingTasks = [],
   activeTeachingTaskId,
   jointPoses = [],
@@ -751,6 +752,7 @@ export default function Inspector({
                 cameraTeachingResult={cameraTeachingResult}
                 meshRenderQuality={meshRenderQuality}
                 onMeshRenderQualityChange={onMeshRenderQualityChange}
+                spaceMouseInputRef={spaceMouseInputRef}
                 onCameraTeachingMove={onCameraTeachingMove}
                 onCaptureProviderChange={onZividCaptureProviderChange}
               />

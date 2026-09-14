@@ -4,6 +4,8 @@ from pathlib import Path
 
 from playwright.sync_api import sync_playwright
 
+from archive_helpers import read_exported_project
+
 
 BASE_URL = os.environ.get("BASE_URL", "http://127.0.0.1:21990")
 ROOT = Path(__file__).resolve().parents[1]
@@ -120,8 +122,8 @@ def run():
         page.get_by_role("button", name="打开示教数据管理页").click()
         page.locator('[data-app-page="teaching-data"]').wait_for()
         with page.expect_download() as download_info:
-            page.get_by_role("button", name="导出示教工程 JSON").click()
-        exported = json.loads(Path(download_info.value.path()).read_text())
+            page.get_by_role("button", name="导出示教工程 ZIP").click()
+        exported = read_exported_project(download_info.value)
         assert exported["robot"]["lockedJoints"] == ["waist_pitch_J"]
         print("stage=export-lock-recorded", flush=True)
         page.get_by_role("button", name="返回主工作台继续示教").click()

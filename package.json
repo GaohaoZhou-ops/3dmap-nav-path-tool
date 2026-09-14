@@ -12,6 +12,7 @@
     "service:stop": "./scripts/stop.sh"
   },
   "dependencies": {
+    "fflate": "^0.8.3",
     "lucide-react": "^0.468.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",

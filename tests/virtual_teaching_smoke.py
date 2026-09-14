@@ -4,6 +4,8 @@ from pathlib import Path
 
 from playwright.sync_api import sync_playwright
 
+from archive_helpers import read_exported_project
+
 
 BASE_URL = os.environ.get("BASE_URL", "http://127.0.0.1:22060")
 ROOT = Path(__file__).resolve().parents[1]
@@ -250,8 +252,8 @@ def run():
         assert canvas.get_attribute("data-robot-control-enabled") == "false"
 
         with page.expect_download() as download_info:
-            page.get_by_role("button", name="导出示教工程 JSON").click()
-        exported = json.loads(Path(download_info.value.path()).read_text())
+            page.get_by_role("button", name="导出示教工程 ZIP").click()
+        exported = read_exported_project(download_info.value)
         teaching = exported["virtualTeaching"]
         assert teaching["coordinateFrame"] == "map"
         assert teaching["angularUnit"] == "degree"
@@ -322,10 +324,111 @@ def run():
         assert page.get_by_role("button", name="查看机械臂姿态 A01").is_visible()
         assert page.locator(".session-guard").get_attribute("data-session-restored") == "true"
 
+        page.get_by_role("button", name="选择示教任务 双臂装配演示").click()
+        merge_button = page.get_by_role(
+            "button", name="分析并合并当前任务的近邻停车点"
+        )
+        assert merge_button.is_enabled()
+        merge_button.click()
+        merge_dialog = page.get_by_role("dialog", name="合并停车点")
+        merge_dialog.wait_for()
+        page.wait_for_function(
+            "document.querySelector('.parking-merge-modal')?.dataset.analysisStatus === 'ready'",
+            timeout=180_000,
+        )
+        assert merge_dialog.get_by_role(
+            "spinbutton", name="停车点近邻聚类半径"
+        ).input_value() == "0.35"
+        assert merge_dialog.get_by_role(
+            "spinbutton", name="融合后末端XYZ容差"
+        ).input_value() == "5"
+        assert merge_dialog.get_by_role(
+            "spinbutton", name="融合后末端RPY容差"
+        ).input_value() == "5"
+        assert merge_dialog.get_attribute("data-cluster-count") == "1"
+        cluster = merge_dialog.locator("[data-merge-cluster-id]").first
+        assert cluster.get_attribute("data-merge-member-count") == "2"
+        assert cluster.get_attribute("data-merge-pose-count") == "3"
+        assert cluster.get_attribute("data-merge-feasible") == "true"
+        assert merge_dialog.get_attribute("data-selected-cluster-count") == "1"
+        assert merge_dialog.get_by_label("近邻簇 1 公共停车点位姿").is_visible()
+        page.screenshot(path="/tmp/atlas-parking-point-merge-analysis.png", full_page=True)
+
+        xyz_tolerance = merge_dialog.get_by_role(
+            "spinbutton", name="融合后末端XYZ容差"
+        )
+        xyz_tolerance.fill("6")
+        assert merge_dialog.get_by_text(
+            "容差参数已经修改，请重新分析后再执行合并。", exact=True
+        ).is_visible()
+        confirm_merge = merge_dialog.get_by_role(
+            "button", name="确认合并选中的停车点"
+        )
+        assert confirm_merge.is_disabled()
+        merge_dialog.get_by_role(
+            "button", name="使用当前容差重新分析"
+        ).click()
+        page.wait_for_function(
+            "document.querySelector('.parking-merge-modal')?.dataset.analysisStatus === 'ready'",
+            timeout=180_000,
+        )
+        assert merge_dialog.get_attribute("data-feasible-cluster-count") == "1"
+        confirm_merge = merge_dialog.get_by_role(
+            "button", name="确认合并选中的停车点"
+        )
+        assert confirm_merge.is_enabled()
+        confirm_merge.click()
+        merge_dialog.wait_for(state="detached")
+        page.wait_for_function(
+            "document.querySelector('[aria-label="
+            "\"示教数据管理\"]')?.dataset.parkingPointCount === '1'"
+        )
+        assert page.locator(".teaching-tree-node--parking").count() == 1
+
+        with page.expect_download() as merged_download_info:
+            page.get_by_role("button", name="导出示教工程 ZIP").click()
+        merged_export = read_exported_project(merged_download_info.value)
+        merged_task = merged_export["virtualTeaching"]["tasks"][0]
+        assert len(merged_task["parkingPoints"]) == 1
+        merged_parking = merged_task["parkingPoints"][0]
+        assert len(merged_parking["poses"]) == 3
+        assert len(merged_parking["mergeHistory"]) == 1
+        assert len(merged_parking["mergeHistory"][0]["sourceParkingPoints"]) == 2
+        assert merged_parking["mergeHistory"][0]["positionTolerance"] == 0.06
+        for merged_pose in merged_parking["poses"]:
+            assert len(merged_pose["replanningHistory"]) == 1
+            assert merged_pose["mapPose"] == merged_parking["mapPose"]
+            assert merged_pose["fullBodyJoints"]["count"] == movable_joint_count
+            assert set(merged_pose["cameraCapture"]["frames"]) == {"left", "right"}
+
+        page.wait_for_timeout(550)
+        page.reload(wait_until="domcontentloaded")
+        page.locator(".teaching-data-page__session.is-ready").wait_for()
+        page.wait_for_function(
+            "document.querySelector('.three-canvas')?.dataset.robotModelState === 'loaded'",
+            timeout=180_000,
+        )
+        page.locator(".loading-curtain").wait_for(state="hidden")
+        data_panel = page.locator('section[aria-label="示教数据管理"]')
+        assert data_panel.get_attribute("data-parking-point-count") == "1"
+        assert data_panel.get_attribute("data-teaching-point-count") == "3"
+        page.get_by_role("button", name="选择示教任务 双臂装配演示").click()
+        assert page.locator(".teaching-tree-node--parking").count() == 1
+
+        with page.expect_download() as restored_download_info:
+            page.get_by_role("button", name="导出示教工程 ZIP").click()
+        restored_export = read_exported_project(restored_download_info.value)
+        restored_parking = restored_export["virtualTeaching"]["tasks"][0]["parkingPoints"][0]
+        assert len(restored_parking["mergeHistory"]) == 1
+        assert all(
+            len(pose["replanningHistory"]) == 1 for pose in restored_parking["poses"]
+        )
+
         page.screenshot(path="/tmp/atlas-virtual-teaching.png", full_page=True)
-        print("teaching_task=", task["name"])
-        print("parking_points=", len(task["parkingPoints"]))
-        print("teaching_poses=", sum(len(item["poses"]) for item in task["parkingPoints"]))
+        print("teaching_task=", merged_task["name"])
+        print("parking_points=", len(merged_task["parkingPoints"]))
+        print("teaching_poses=", sum(len(item["poses"]) for item in merged_task["parkingPoints"]))
+        print("parking_merge_history=", len(merged_parking["mergeHistory"]))
         print("movable_joints=", movable_joint_count)
         print("page_errors=", errors)
         assert not errors

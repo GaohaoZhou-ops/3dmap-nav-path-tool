@@ -8,7 +8,7 @@ import {
   ChevronUp,
   CircleDot,
   Database,
-  FileJson,
+  FileArchive,
   FileSearch,
   FolderOpen,
   GitBranch,
@@ -34,12 +34,12 @@ import PointCloudViewer from './components/PointCloudViewer.jsx';
 import RobotPicker from './components/RobotPicker.jsx';
 import SpaceMouseControl from './components/SpaceMouseControl.jsx';
 import TeachingDataPage from './components/TeachingDataPage.jsx';
+import TeachingPlaybackDock from './components/TeachingPlaybackDock.jsx';
 import { inspectConnectivity } from './lib/graph.js';
 import {
   buildExport,
   clampSlice,
   createId,
-  downloadJson,
   fetchBufferWithProgress,
   normalizeProject,
   readFileWithProgress,
@@ -57,6 +57,10 @@ import {
 } from './lib/mapGeometry.js';
 import { createSpaceMouseInputState } from './lib/spaceMouse.js';
 import {
+  buildTeachingTaskTrajectory,
+  sampleTeachingTrajectorySegment,
+} from './lib/teachingPlayback.js';
+import {
   fetchServiceSession,
   loadWorkspaceViews,
   prepareWorkspaceSession,
@@ -70,6 +74,57 @@ const initialValidation = { status: 'idle', unreachableCount: 0, checkedAt: null
 const pointColorModes = new Set(['height', 'source', 'white']);
 const APP_PAGE_WORKBENCH = 'workbench';
 const APP_PAGE_TEACHING_DATA = 'teaching-data';
+
+const createIdleTeachingPlayback = () => ({
+  status: 'idle',
+  taskId: '',
+  taskName: '',
+  phase: '',
+  segmentIndex: 0,
+  segmentCount: 0,
+  parkingPointName: '',
+  poseName: '',
+  poseOrdinal: 0,
+  poseCount: 0,
+  elapsedDurationMs: 0,
+  totalDurationMs: 0,
+  overallProgress: 0,
+  segmentProgress: 0,
+  speed: 1,
+});
+
+const teachingPlaybackStateFromRuntime = (runtime, status = runtime?.status || 'idle') => {
+  const segment = runtime?.plan?.segments?.[runtime.segmentIndex] || null;
+  if (!runtime || !segment) return createIdleTeachingPlayback();
+  const segmentProgress = segment.durationMs > 0
+    ? Math.max(0, Math.min(1, runtime.segmentElapsedMs / segment.durationMs))
+    : 1;
+  const elapsedDurationMs = Math.min(
+    runtime.plan.totalDurationMs,
+    segment.startOffsetMs + runtime.segmentElapsedMs,
+  );
+  return {
+    status,
+    taskId: runtime.plan.taskId,
+    taskName: runtime.plan.taskName,
+    phase: segment.phase,
+    segmentIndex: runtime.segmentIndex,
+    segmentCount: runtime.plan.segments.length,
+    parkingPointId: segment.target?.parkingPointId || '',
+    parkingPointName: segment.target?.parkingPointName || '',
+    poseId: segment.target?.poseId || '',
+    poseName: segment.target?.poseName || '',
+    poseOrdinal: segment.target?.poseOrdinal || 0,
+    poseCount: runtime.plan.poseCount,
+    elapsedDurationMs,
+    totalDurationMs: runtime.plan.totalDurationMs,
+    overallProgress: runtime.plan.totalDurationMs > 0
+      ? elapsedDurationMs / runtime.plan.totalDurationMs
+      : 1,
+    segmentProgress,
+    speed: runtime.speed,
+  };
+};
 
 const appPageFromLocation = () => {
   if (typeof window === 'undefined') return APP_PAGE_WORKBENCH;
@@ -300,7 +355,11 @@ export default function App() {
   const robotNotificationRef = useRef('');
   const cameraTeachingRevisionRef = useRef(0);
   const zividCaptureProviderRef = useRef(null);
+  const parkingMergePlannerRef = useRef(null);
   const teachingCaptureBusyRef = useRef(false);
+  const projectExportBusyRef = useRef(false);
+  const teachingPlaybackFrameRef = useRef(null);
+  const teachingPlaybackRuntimeRef = useRef(null);
   const spaceMouseInputRef = useRef(createSpaceMouseInputState());
   const main3DCanvasRef = useRef(null);
   const [appPage, setAppPage] = useState(appPageFromLocation);
@@ -333,6 +392,7 @@ export default function App() {
   const [teachingTasks, setTeachingTasks] = useState([]);
   const [activeTeachingTaskId, setActiveTeachingTaskId] = useState(null);
   const [activeTeachingParkingPointId, setActiveTeachingParkingPointId] = useState(null);
+  const [robotParkingGhost, setRobotParkingGhost] = useState(null);
   const [jointPoses, setJointPoses] = useState([]);
   const [zividCameraPoses, setZividCameraPoses] = useState({});
   const [cameraTeachingCommand, setCameraTeachingCommand] = useState(null);
@@ -344,6 +404,12 @@ export default function App() {
     status: 'idle',
     message: '',
   });
+  const [parkingMergePlannerReady, setParkingMergePlannerReady] = useState(false);
+  const [projectExportState, setProjectExportState] = useState({
+    status: 'idle',
+    byteLength: 0,
+  });
+  const [teachingPlayback, setTeachingPlayback] = useState(createIdleTeachingPlayback);
   const [sessionState, setSessionState] = useState({ status: 'checking', restored: false });
   const [loadState, setLoadState] = useState({
     loading: true,
@@ -383,10 +449,52 @@ export default function App() {
     return () => geometry?.dispose?.();
   }, [mapData?.geometry]);
 
+  useEffect(() => {
+    setRobotParkingGhost((current) => {
+      if (!current) return current;
+      const task = teachingTasks.find((item) => item.id === current.taskId);
+      const parkingPoint = task?.parkingPoints?.find(
+        (item) => item.id === current.parkingPointId,
+      );
+      const currentMapKey = mapData?.sourceHash || mapData?.mapId || mapData?.name || '';
+      const currentRobotKey = selectedRobot?.id || selectedRobot?.relativePath || '';
+      if (
+        !parkingPoint
+        || !currentMapKey
+        || !currentRobotKey
+        || current.mapKey !== currentMapKey
+        || current.robotKey !== currentRobotKey
+      ) return null;
+      if (
+        current.parkingPointName !== parkingPoint.name
+        || current.taskName !== task.name
+      ) {
+        return {
+          ...current,
+          parkingPointName: parkingPoint.name,
+          taskName: task.name,
+        };
+      }
+      return current;
+    });
+  }, [
+    mapData?.mapId,
+    mapData?.name,
+    mapData?.sourceHash,
+    selectedRobot?.id,
+    selectedRobot?.relativePath,
+    teachingTasks,
+  ]);
+
   useEffect(
     () => () => {
       if (toastTimerRef.current) window.clearTimeout(toastTimerRef.current);
       if (sessionSaveTimerRef.current) window.clearTimeout(sessionSaveTimerRef.current);
+      if (teachingPlaybackFrameRef.current !== null) {
+        window.cancelAnimationFrame(teachingPlaybackFrameRef.current);
+      }
+      teachingPlaybackFrameRef.current = null;
+      teachingPlaybackRuntimeRef.current = null;
     },
     [],
   );
@@ -1099,7 +1207,9 @@ export default function App() {
     event.target.value = '';
     if (!file) return;
     try {
-      const payload = JSON.parse(await file.text());
+      const { readProjectFile } = await import('./lib/projectArchive.js');
+      const importedFile = await readProjectFile(file);
+      const payload = importedFile.payload;
       const project = normalizeProject(payload);
       setWaypoints(project.waypoints);
       setEdges(project.edges);
@@ -1179,7 +1289,7 @@ export default function App() {
         });
       }
       notify(
-        `工程配置已加载 · ${project.waypoints.length} 导航点 / ${project.teachingTasks.length} 示教任务`,
+        `${importedFile.source === 'zip' ? 'ZIP 工程包' : '工程配置'}已加载 · ${project.waypoints.length} 导航点 / ${project.teachingTasks.length} 示教任务${importedFile.source === 'zip' ? ` / ${importedFile.manifest?.statistics?.cameraFrameCount || 0} 相机帧` : ''}`,
       );
 
       const referencedMap = project.map?.fileName;
@@ -1194,7 +1304,7 @@ export default function App() {
         setHeightRange(clampSlice(project.slice, mapData.bounds));
       }
     } catch (error) {
-      notify(`路径文件无效：${error.message}`, 'error');
+      notify(`工程文件无效：${error.message}`, 'error');
     }
   };
 
@@ -1480,6 +1590,7 @@ export default function App() {
       },
       parkingPoints: initialParkingPoint ? [initialParkingPoint] : [],
     };
+    setRobotParkingGhost(null);
     setTeachingTasks((current) => [...current, task]);
     setActiveTeachingTaskId(task.id);
     setActiveTeachingParkingPointId(initialParkingPoint?.id || null);
@@ -1496,6 +1607,7 @@ export default function App() {
     const task = teachingTasks.find((item) => item.id === id);
     setActiveTeachingTaskId(id);
     setActiveTeachingParkingPointId(task?.parkingPoints?.[0]?.id || null);
+    setRobotParkingGhost(null);
     setTeachingCaptureState({ status: 'idle', message: '' });
   }, [teachingTasks]);
 
@@ -1548,6 +1660,7 @@ export default function App() {
       },
       poses: [],
     };
+    setRobotParkingGhost(null);
     setTeachingTasks((current) => current.map((item) => (
       item.id === task.id
         ? {
@@ -1571,7 +1684,90 @@ export default function App() {
 
   const selectTeachingParkingPoint = useCallback((id) => {
     setActiveTeachingParkingPointId(id);
+    setRobotParkingGhost(null);
     setTeachingCaptureState({ status: 'idle', message: '' });
+  }, []);
+
+  const previewTeachingParkingPoint = useCallback((id) => {
+    const task = teachingTasks.find((item) => (
+      (item.parkingPoints || []).some((parkingPoint) => parkingPoint.id === id)
+    ));
+    const parkingPoint = task?.parkingPoints?.find((item) => item.id === id);
+    const currentTask = teachingTasks.find((item) => item.id === activeTeachingTaskId);
+    const currentParkingPoint = currentTask?.parkingPoints?.find(
+      (item) => item.id === activeTeachingParkingPointId,
+    );
+
+    setActiveTeachingTaskId(task?.id || activeTeachingTaskId);
+    setActiveTeachingParkingPointId(id);
+    setTeachingCaptureState({ status: 'idle', message: '' });
+
+    if (!task || !parkingPoint) {
+      setRobotParkingGhost(null);
+      return;
+    }
+    if (robotLoadState.status !== 'loaded' || !teachingContextMatches(task)) {
+      setRobotParkingGhost(null);
+      notify('停车点已选择；请加载与任务匹配的地图和机器人后再生成虚影', 'warning');
+      return;
+    }
+
+    const currentPose = normalizeRobotPose(robotPose);
+    const targetPose = normalizeRobotPose(parkingPoint.mapPose);
+    const deltaX = targetPose.position.x - currentPose.position.x;
+    const deltaY = targetPose.position.y - currentPose.position.y;
+    const deltaZ = targetPose.position.z - currentPose.position.z;
+    const planarDistance = Math.hypot(deltaX, deltaY);
+    const straightDistance = Math.hypot(deltaX, deltaY, deltaZ);
+    const sourceParkingPose = currentParkingPoint
+      ? normalizeRobotPose(currentParkingPoint.mapPose)
+      : null;
+    const sourceParkingDistance = sourceParkingPose
+      ? Math.hypot(
+          sourceParkingPose.position.x - currentPose.position.x,
+          sourceParkingPose.position.y - currentPose.position.y,
+          sourceParkingPose.position.z - currentPose.position.z,
+        )
+      : Number.POSITIVE_INFINITY;
+
+    setRobotParkingGhost({
+      revision: createId('robot-parking-ghost'),
+      taskId: task.id,
+      taskName: task.name,
+      parkingPointId: parkingPoint.id,
+      parkingPointName: parkingPoint.name,
+      sourceParkingPointId: sourceParkingDistance <= 0.15 ? currentParkingPoint?.id || '' : '',
+      sourceName: sourceParkingDistance <= 0.15
+        ? currentParkingPoint?.name || '当前机器人'
+        : '当前机器人',
+      targetPose,
+      jointValues: { ...normalizeRobotJointValues(robotJointValues) },
+      mapKey: mapData?.sourceHash || mapData?.mapId || mapData?.name || '',
+      robotKey: selectedRobot?.id || selectedRobot?.relativePath || '',
+      createdAt: new Date().toISOString(),
+    });
+    setCollapsedPanel((current) => current === '3d' ? null : current);
+    requestSynchronizedFocus('robot-ghost', parkingPoint.id);
+    notify(
+      `${parkingPoint.name} 虚影已生成 · XY ${planarDistance.toFixed(2)} m / 直线 ${straightDistance.toFixed(2)} m`,
+      'info',
+    );
+  }, [
+    activeTeachingParkingPointId,
+    activeTeachingTaskId,
+    mapData,
+    notify,
+    requestSynchronizedFocus,
+    robotJointValues,
+    robotLoadState.status,
+    robotPose,
+    selectedRobot,
+    teachingContextMatches,
+    teachingTasks,
+  ]);
+
+  const clearRobotParkingGhost = useCallback(() => {
+    setRobotParkingGhost(null);
   }, []);
 
   const renameTeachingParkingPoint = useCallback((taskId, parkingPointId, name) => {
@@ -1827,6 +2023,202 @@ export default function App() {
     [notify, robotLoadState.status, teachingContextMatches, teachingTasks],
   );
 
+  const handleParkingMergePlannerChange = useCallback((provider) => {
+    const normalized = typeof provider === 'function' ? provider : null;
+    parkingMergePlannerRef.current = normalized;
+    setParkingMergePlannerReady(Boolean(normalized));
+  }, []);
+
+  const analyzeTeachingParkingPointMerge = useCallback(
+    async (taskId, options = {}) => {
+      const task = teachingTasks.find((item) => item.id === taskId);
+      if (!task) throw new Error('示教任务不存在或已经被删除');
+      if ((task.parkingPoints?.length || 0) < 2) {
+        throw new Error('至少需要两个停车点才能执行近邻聚类');
+      }
+      if (robotLoadState.status !== 'loaded' || !teachingContextMatches(task)) {
+        throw new Error('请加载该任务绑定的地图与机器人后再分析');
+      }
+      const planner = parkingMergePlannerRef.current;
+      if (typeof planner !== 'function') {
+        throw new Error('机器人运动学规划器正在准备，请稍后重新分析');
+      }
+      return planner({ task, ...options });
+    },
+    [robotLoadState.status, teachingContextMatches, teachingTasks],
+  );
+
+  const mergeTeachingParkingPoints = useCallback(
+    (taskId, requestedClusters = [], analysis = {}) => {
+      const task = teachingTasks.find((item) => item.id === taskId);
+      const mergeableClusters = requestedClusters.filter((cluster) => (
+        cluster?.feasible
+        && cluster.candidate?.mapPose
+        && Array.isArray(cluster.memberIds)
+        && cluster.memberIds.length >= 2
+      ));
+      if (!task || !mergeableClusters.length) {
+        notify('没有可执行的停车点合并方案', 'warning');
+        return { success: false, mergedClusterCount: 0 };
+      }
+
+      const timestamp = new Date().toISOString();
+      let parkingPoints = [...(task.parkingPoints || [])];
+      let firstRetainedParkingPointId = null;
+      let mergedClusterCount = 0;
+      let removedParkingPointCount = 0;
+      let replannedPoseCount = 0;
+      const consumedParkingPointIds = new Set();
+
+      mergeableClusters.forEach((cluster) => {
+        const memberIdSet = new Set(
+          cluster.memberIds.filter((id) => !consumedParkingPointIds.has(id)),
+        );
+        const memberParkingPoints = parkingPoints.filter((item) => memberIdSet.has(item.id));
+        if (memberParkingPoints.length < 2) return;
+        const sourcePoses = memberParkingPoints.flatMap((parkingPoint) => (
+          (parkingPoint.poses || []).map((pose) => ({ parkingPoint, pose }))
+        ));
+        const plannedByPoseId = new Map(
+          (cluster.plannedPoses || []).map((plannedPose) => [plannedPose.poseId, plannedPose]),
+        );
+        if (
+          sourcePoses.some(({ pose }) => {
+            const plan = plannedByPoseId.get(pose.id);
+            return !plan?.feasible || !plan.jointValues;
+          })
+        ) return;
+
+        const normalizeMapPose = (value) => {
+          const pose = normalizeRobotPose(value);
+          return {
+            frameId: 'map',
+            position: { ...pose.position },
+            rpy: { ...pose.rpy },
+          };
+        };
+        const commonMapPose = normalizeMapPose(cluster.candidate.mapPose);
+        const retainedParkingPoint = memberParkingPoints.find(
+          (item) => item.id === cluster.candidate.anchorParkingPointId,
+        ) || memberParkingPoints[0];
+        const mergeId = createId('parking-merge');
+        const sourceParkingPoints = memberParkingPoints.map((parkingPoint) => ({
+          id: parkingPoint.id,
+          name: parkingPoint.name,
+          mapPose: normalizeMapPose(parkingPoint.mapPose),
+          poseCount: parkingPoint.poses?.length || 0,
+        }));
+        const mergedPoses = sourcePoses.map(({ parkingPoint, pose }, index) => {
+          const plan = plannedByPoseId.get(pose.id);
+          const jointValues = normalizeRobotJointValues(plan.jointValues);
+          return {
+            ...pose,
+            sequence: index + 1,
+            mapPose: normalizeMapPose(commonMapPose),
+            fullBodyJoints: {
+              ...pose.fullBodyJoints,
+              source: 'parking-point-merge-dls-replan',
+              count: Object.keys(jointValues).length,
+              values: jointValues,
+            },
+            replanningHistory: [
+              ...(Array.isArray(pose.replanningHistory) ? pose.replanningHistory : []),
+              {
+                mergeId,
+                replannedAt: timestamp,
+                method: analysis.method || 'common-base-dual-optical-dls',
+                sourceParkingPointId: parkingPoint.id,
+                sourceParkingPointName: parkingPoint.name,
+                sourceMapPose: normalizeMapPose(pose.mapPose),
+                sourceJointValues: normalizeRobotJointValues(
+                  pose.fullBodyJoints?.values,
+                ),
+                commonMapPose: normalizeMapPose(commonMapPose),
+                positionTolerance: Number(analysis.positionTolerance) || 0,
+                rotationTolerance: Number(analysis.rotationTolerance) || 0,
+                positionError: Number(plan.positionError) || 0,
+                rotationError: Number(plan.rotationError) || 0,
+                sideErrors: plan.sideErrors || {},
+              },
+            ],
+          };
+        });
+        const originalIndices = memberParkingPoints.map((parkingPoint) => (
+          parkingPoints.findIndex((item) => item.id === parkingPoint.id)
+        ));
+        const insertionIndex = Math.max(0, Math.min(...originalIndices));
+        const priorMergeIds = new Set();
+        const priorMergeHistory = memberParkingPoints.flatMap((parkingPoint) => (
+          Array.isArray(parkingPoint.mergeHistory) ? parkingPoint.mergeHistory : []
+        )).filter((history) => {
+          const historyId = String(history?.id || '');
+          if (historyId && priorMergeIds.has(historyId)) return false;
+          if (historyId) priorMergeIds.add(historyId);
+          return true;
+        });
+        const mergedParkingPoint = {
+          ...retainedParkingPoint,
+          updatedAt: timestamp,
+          mapPose: commonMapPose,
+          poses: mergedPoses,
+          mergeHistory: [
+            ...priorMergeHistory,
+            {
+              id: mergeId,
+              mergedAt: timestamp,
+              method: analysis.method || 'xy-single-link+common-base-dual-optical-dls',
+              candidateSource: cluster.candidate.source,
+              distanceThreshold: Number(analysis.distanceThreshold) || 0,
+              positionTolerance: Number(analysis.positionTolerance) || 0,
+              rotationTolerance: Number(analysis.rotationTolerance) || 0,
+              sourceParkingPoints,
+              poseCount: mergedPoses.length,
+              maximumPositionError: Number(cluster.candidate.maximumPositionError) || 0,
+              maximumRotationError: Number(cluster.candidate.maximumRotationError) || 0,
+            },
+          ],
+        };
+
+        parkingPoints = parkingPoints.filter((item) => !memberIdSet.has(item.id));
+        parkingPoints.splice(insertionIndex, 0, mergedParkingPoint);
+        memberIdSet.forEach((id) => consumedParkingPointIds.add(id));
+        firstRetainedParkingPointId ||= retainedParkingPoint.id;
+        mergedClusterCount += 1;
+        removedParkingPointCount += memberParkingPoints.length - 1;
+        replannedPoseCount += mergedPoses.length;
+      });
+
+      if (!mergedClusterCount) {
+        notify('分析结果已经过期，请重新计算停车点合并方案', 'warning');
+        return { success: false, mergedClusterCount: 0 };
+      }
+      parkingPoints = parkingPoints.map((parkingPoint, index) => ({
+        ...parkingPoint,
+        sequence: index + 1,
+      }));
+      setTeachingTasks((current) => current.map((item) => (
+        item.id === taskId
+          ? { ...item, parkingPoints, updatedAt: timestamp }
+          : item
+      )));
+      setActiveTeachingTaskId(taskId);
+      setActiveTeachingParkingPointId(firstRetainedParkingPointId);
+      setTeachingCaptureState({ status: 'idle', message: '' });
+      notify(
+        `${mergedClusterCount} 组停车点已融合 · 减少 ${removedParkingPointCount} 个停车点 / 重规划 ${replannedPoseCount} 组姿态`,
+        'success',
+      );
+      return {
+        success: true,
+        mergedClusterCount,
+        removedParkingPointCount,
+        replannedPoseCount,
+        retainedParkingPointId: firstRetainedParkingPointId,
+      };
+    },
+    [notify, teachingTasks],
+  );
+
   const updateRobotJointValue = useCallback(
     (name, rawValue) => {
       if (robotLoadState.status !== 'loaded' || !name) return;
@@ -1957,11 +2349,12 @@ export default function App() {
     [jointPoses, notify, robotLoadState.movableJoints, robotLoadState.status, selectedRobot],
   );
 
-  const exportProject = () => {
+  const exportProject = async () => {
     if (!mapData) {
       notify('请先加载地图或路径配置', 'error');
       return;
     }
+    if (projectExportBusyRef.current) return;
     const invalid = edges.find(
       (edge) =>
         edge.limits.minSpeed > edge.limits.maxSpeed ||
@@ -1972,29 +2365,49 @@ export default function App() {
       notify('存在无效的路径约束，请修正后再导出', 'error');
       return;
     }
-    const payload = buildExport({
-      mapData,
-      heightRange,
-      waypoints,
-      edges,
-      view2d: view2dRef.current,
-      view3d: view3dRef.current,
-      robot: selectedRobot,
-      robotPose,
-      robotJointValues,
-      lockedRobotJointNames,
-      teachingTasks,
-      jointPoses,
-      meshRenderQuality,
-    });
-    const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
-    downloadJson(payload, `virtual-teaching-${stamp}.json`);
-    notify(
-      teachingTasks.length
-        ? '虚拟示教工程 JSON 已导出'
-        : '工程 JSON 已导出 · 当前未包含示教任务',
-      teachingTasks.length ? 'success' : 'info',
-    );
+    projectExportBusyRef.current = true;
+    setProjectExportState({ status: 'packing', byteLength: 0 });
+    notify('正在整理配置、RGB 与点云资源…', 'info');
+    try {
+      const payload = buildExport({
+        mapData,
+        heightRange,
+        waypoints,
+        edges,
+        view2d: view2dRef.current,
+        view3d: view3dRef.current,
+        robot: selectedRobot,
+        robotPose,
+        robotJointValues,
+        lockedRobotJointNames,
+        teachingTasks,
+        jointPoses,
+        meshRenderQuality,
+      });
+      const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+      const { downloadProjectArchive } = await import('./lib/projectArchive.js');
+      const archive = await downloadProjectArchive(
+        payload,
+        `virtual-teaching-${stamp}.zip`,
+      );
+      setProjectExportState({
+        status: 'ready',
+        byteLength: archive.byteLength,
+        statistics: archive.manifest.statistics,
+      });
+      const sizeMb = archive.byteLength / (1024 * 1024);
+      notify(
+        teachingTasks.length
+          ? `示教工程 ZIP 已导出 · ${sizeMb >= 0.1 ? `${sizeMb.toFixed(1)} MB` : `${Math.max(1, Math.round(archive.byteLength / 1024))} KB`}`
+          : '工程 ZIP 已导出 · 当前未包含示教任务',
+        teachingTasks.length ? 'success' : 'info',
+      );
+    } catch (error) {
+      setProjectExportState({ status: 'error', byteLength: 0 });
+      notify(`工程打包失败：${error.message}`, 'error');
+    } finally {
+      projectExportBusyRef.current = false;
+    }
   };
 
   const handleProjectionStats = useCallback((stats) => setProjectionStats(stats), []);
@@ -2227,6 +2640,223 @@ export default function App() {
     setAppPage(APP_PAGE_WORKBENCH);
   }, []);
 
+  const advanceTeachingPlayback = useCallback(function advancePlayback(timestamp) {
+    const runtime = teachingPlaybackRuntimeRef.current;
+    if (!runtime || runtime.status !== 'playing') {
+      teachingPlaybackFrameRef.current = null;
+      return;
+    }
+
+    if (runtime.lastTimestamp === null) {
+      runtime.lastTimestamp = timestamp;
+    } else {
+      const frameDuration = Math.max(0, Math.min(250, timestamp - runtime.lastTimestamp));
+      runtime.lastTimestamp = timestamp;
+      runtime.segmentElapsedMs += frameDuration * runtime.speed;
+    }
+
+    let crossedBoundary = false;
+    while (runtime.segmentIndex < runtime.plan.segments.length) {
+      const activeSegment = runtime.plan.segments[runtime.segmentIndex];
+      if (runtime.segmentElapsedMs < activeSegment.durationMs) break;
+      const finalSample = sampleTeachingTrajectorySegment(activeSegment, 1);
+      setRobotPose(normalizeRobotPose(finalSample.robotPose));
+      setRobotJointValues(normalizeRobotJointValues(finalSample.robotJointValues));
+      runtime.segmentElapsedMs -= activeSegment.durationMs;
+      runtime.segmentIndex += 1;
+      crossedBoundary = true;
+    }
+
+    if (runtime.segmentIndex >= runtime.plan.segments.length) {
+      const finalSegment = runtime.plan.segments.at(-1);
+      runtime.segmentIndex = Math.max(0, runtime.plan.segments.length - 1);
+      runtime.segmentElapsedMs = finalSegment?.durationMs || 0;
+      runtime.status = 'completed';
+      const completedState = teachingPlaybackStateFromRuntime(runtime, 'completed');
+      setTeachingPlayback({
+        ...completedState,
+        elapsedDurationMs: runtime.plan.totalDurationMs,
+        overallProgress: 1,
+        segmentProgress: 1,
+      });
+      teachingPlaybackRuntimeRef.current = null;
+      teachingPlaybackFrameRef.current = null;
+      notify(`${runtime.plan.taskName} 播放完成 · ${runtime.plan.poseCount} 个姿态已按规划到达`, 'success');
+      return;
+    }
+
+    const segment = runtime.plan.segments[runtime.segmentIndex];
+    if (runtime.activeParkingPointId !== segment.target?.parkingPointId) {
+      runtime.activeParkingPointId = segment.target?.parkingPointId || null;
+      setActiveTeachingParkingPointId(runtime.activeParkingPointId);
+    }
+    const shouldRender = crossedBoundary
+      || runtime.lastAppliedTimestamp === null
+      || timestamp - runtime.lastAppliedTimestamp >= 30;
+    if (shouldRender) {
+      const progress = segment.durationMs > 0
+        ? runtime.segmentElapsedMs / segment.durationMs
+        : 1;
+      const sample = sampleTeachingTrajectorySegment(segment, progress);
+      if (segment.phase === 'chassis') {
+        setRobotPose(normalizeRobotPose(sample.robotPose));
+      } else if (segment.phase === 'joints') {
+        setRobotJointValues(normalizeRobotJointValues(sample.robotJointValues));
+      }
+      setTeachingPlayback(teachingPlaybackStateFromRuntime(runtime));
+      runtime.lastAppliedTimestamp = timestamp;
+    }
+
+    teachingPlaybackFrameRef.current = window.requestAnimationFrame(advancePlayback);
+  }, [notify]);
+
+  const startTeachingTaskPlayback = useCallback((taskId) => {
+    const task = teachingTasks.find((item) => item.id === taskId);
+    if (!task) {
+      notify('示教任务不存在或已经被删除', 'warning');
+      return;
+    }
+    if (robotLoadState.status !== 'loaded' || !teachingContextMatches(task)) {
+      notify('请先加载该任务绑定的地图与机器人，再播放轨迹', 'warning');
+      return;
+    }
+
+    const current = latestWorkspaceRef.current;
+    const plan = buildTeachingTaskTrajectory({
+      task,
+      currentRobotPose: current?.robotPose || robotPose,
+      currentJointValues: current?.robotJointValues || robotJointValues,
+      jointDefinitions: robotLoadState.movableJoints || [],
+    });
+    if (!plan.poseCount || !plan.segments.length) {
+      notify('当前任务还没有可播放的机械臂示教姿态', 'warning');
+      return;
+    }
+
+    if (teachingPlaybackFrameRef.current !== null) {
+      window.cancelAnimationFrame(teachingPlaybackFrameRef.current);
+    }
+    const runtime = {
+      plan,
+      status: 'playing',
+      segmentIndex: 0,
+      segmentElapsedMs: 0,
+      lastTimestamp: null,
+      lastAppliedTimestamp: null,
+      activeParkingPointId: null,
+      speed: 1,
+      context: {
+        mapId: mapData?.mapId || mapData?.sourceHash || mapData?.name || '',
+        robotId: selectedRobot?.id || selectedRobot?.relativePath || '',
+      },
+    };
+    teachingPlaybackRuntimeRef.current = runtime;
+    setTeachingPlayback(teachingPlaybackStateFromRuntime(runtime));
+    setRobotParkingGhost(null);
+    setActiveTeachingTaskId(task.id);
+    setActiveTeachingParkingPointId(plan.segments[0]?.target?.parkingPointId || null);
+    setRobotControlEnabled(false);
+    setCollapsedPanel((currentPanel) => currentPanel === '3d' ? null : currentPanel);
+    focusRevisionRef.current += 1;
+    setSynchronizedFocus({
+      type: 'robot',
+      id: selectedRobot?.id || selectedRobot?.relativePath || 'active-robot',
+      revision: focusRevisionRef.current,
+    });
+    navigateAppPage(APP_PAGE_WORKBENCH);
+    teachingPlaybackFrameRef.current = window.requestAnimationFrame(advanceTeachingPlayback);
+    notify(
+      `${plan.taskName} 开始播放 · ${plan.populatedParkingPointCount} 个停车点 / ${plan.poseCount} 个姿态`,
+      'info',
+    );
+  }, [
+    advanceTeachingPlayback,
+    mapData,
+    navigateAppPage,
+    notify,
+    robotJointValues,
+    robotLoadState,
+    robotPose,
+    selectedRobot,
+    teachingContextMatches,
+    teachingTasks,
+  ]);
+
+  const pauseTeachingTaskPlayback = useCallback(() => {
+    const runtime = teachingPlaybackRuntimeRef.current;
+    if (!runtime || runtime.status !== 'playing') return;
+    if (teachingPlaybackFrameRef.current !== null) {
+      window.cancelAnimationFrame(teachingPlaybackFrameRef.current);
+    }
+    teachingPlaybackFrameRef.current = null;
+    runtime.status = 'paused';
+    runtime.lastTimestamp = null;
+    setTeachingPlayback(teachingPlaybackStateFromRuntime(runtime, 'paused'));
+  }, []);
+
+  const resumeTeachingTaskPlayback = useCallback(() => {
+    const runtime = teachingPlaybackRuntimeRef.current;
+    if (!runtime || runtime.status !== 'paused') return;
+    runtime.status = 'playing';
+    runtime.lastTimestamp = null;
+    setTeachingPlayback(teachingPlaybackStateFromRuntime(runtime, 'playing'));
+    teachingPlaybackFrameRef.current = window.requestAnimationFrame(advanceTeachingPlayback);
+  }, [advanceTeachingPlayback]);
+
+  const stopTeachingTaskPlayback = useCallback((announce = true) => {
+    const runtime = teachingPlaybackRuntimeRef.current;
+    const wasRunning = Boolean(runtime && ['playing', 'paused'].includes(runtime.status));
+    if (teachingPlaybackFrameRef.current !== null) {
+      window.cancelAnimationFrame(teachingPlaybackFrameRef.current);
+    }
+    teachingPlaybackFrameRef.current = null;
+    teachingPlaybackRuntimeRef.current = null;
+    setTeachingPlayback(createIdleTeachingPlayback());
+    if (announce && wasRunning) notify('示教轨迹播放已停止，机器人保留在当前位置', 'info');
+  }, [notify]);
+
+  const changeTeachingPlaybackSpeed = useCallback((requestedSpeed) => {
+    const speed = [0.5, 1, 1.5, 2].includes(Number(requestedSpeed))
+      ? Number(requestedSpeed)
+      : 1;
+    const runtime = teachingPlaybackRuntimeRef.current;
+    if (runtime) runtime.speed = speed;
+    setTeachingPlayback((current) => ({ ...current, speed }));
+  }, []);
+
+  useEffect(() => {
+    if (appPage === APP_PAGE_TEACHING_DATA) pauseTeachingTaskPlayback();
+  }, [appPage, pauseTeachingTaskPlayback]);
+
+  useEffect(() => {
+    const pauseWhenHidden = () => {
+      if (document.visibilityState !== 'visible') pauseTeachingTaskPlayback();
+    };
+    document.addEventListener('visibilitychange', pauseWhenHidden);
+    return () => document.removeEventListener('visibilitychange', pauseWhenHidden);
+  }, [pauseTeachingTaskPlayback]);
+
+  useEffect(() => {
+    const runtime = teachingPlaybackRuntimeRef.current;
+    if (!runtime) return;
+    const mapId = mapData?.mapId || mapData?.sourceHash || mapData?.name || '';
+    const robotId = selectedRobot?.id || selectedRobot?.relativePath || '';
+    if (
+      robotLoadState.status !== 'loaded'
+      || runtime.context.mapId !== mapId
+      || runtime.context.robotId !== robotId
+    ) {
+      stopTeachingTaskPlayback(false);
+    }
+  }, [
+    mapData?.mapId,
+    mapData?.name,
+    mapData?.sourceHash,
+    robotLoadState.status,
+    selectedRobot,
+    stopTeachingTaskPlayback,
+  ]);
+
   const modeOptions = [
     { id: 'select', label: '选择 / 漫游', icon: MousePointer2 },
     { id: 'box', label: '框选', icon: ScanLine },
@@ -2246,7 +2876,7 @@ export default function App() {
       aria-hidden={appPage === APP_PAGE_TEACHING_DATA}
     >
       <input ref={mapInputRef} className="visually-hidden" type="file" accept=".ply" onChange={handleMapFile} />
-      <input ref={pathInputRef} className="visually-hidden" type="file" accept=".json,application/json" onChange={handlePathFile} />
+      <input ref={pathInputRef} className="visually-hidden" type="file" accept=".zip,.json,application/zip,application/x-zip-compressed,application/json" onChange={handlePathFile} />
 
       <header className="topbar">
         <div className="brand-block">
@@ -2278,8 +2908,8 @@ export default function App() {
           <button type="button" className="action-button" onClick={() => mapInputRef.current?.click()}>
             <Upload size={15} /> 加载地图
           </button>
-          <button type="button" className="action-button" onClick={() => pathInputRef.current?.click()}>
-            <FileJson size={15} /> 加载路径
+          <button type="button" className="action-button" onClick={() => pathInputRef.current?.click()} title="加载 ZIP 工程包或兼容旧版 JSON">
+            <FileArchive size={15} /> 加载路径
           </button>
           <RobotPicker
             selectedRobot={selectedRobot}
@@ -2396,6 +3026,8 @@ export default function App() {
                 robotJointValues={robotJointValues}
                 lockedRobotJointNames={lockedRobotJointNames}
                 robotControlEnabled={robotControlEnabled}
+                robotTrajectoryActive={['playing', 'paused'].includes(teachingPlayback.status)}
+                robotParkingGhost={robotParkingGhost}
                 spaceMouseInputRef={spaceMouseInputRef}
                 viewportCanvasRef={main3DCanvasRef}
                 cameraTeachingCommand={cameraTeachingCommand}
@@ -2406,7 +3038,9 @@ export default function App() {
                 onRobotControlChange={handleRobotControlChange}
                 onZividCameraPoseChange={handleZividCameraPoseChange}
                 onCameraTeachingResult={handleCameraTeachingResult}
+                onParkingMergePlannerChange={handleParkingMergePlannerChange}
                 onCollisionProtectionChange={handleRobotCollisionProtectionChange}
+                onClearRobotParkingGhost={clearRobotParkingGhost}
                 isActive={appPage === APP_PAGE_WORKBENCH}
               />
               <HeightRange
@@ -2414,6 +3048,14 @@ export default function App() {
                 value={heightRange}
                 onChange={setHeightRange}
                 disabled={!mapData?.geometry}
+              />
+              <TeachingPlaybackDock
+                playback={teachingPlayback}
+                onPause={pauseTeachingTaskPlayback}
+                onResume={resumeTeachingTaskPlayback}
+                onStop={() => stopTeachingTaskPlayback()}
+                onReplay={() => startTeachingTaskPlayback(teachingPlayback.taskId)}
+                onSpeedChange={changeTeachingPlaybackSpeed}
               />
               {!mapData && (
                 <button type="button" className="placeholder-load" onClick={() => mapInputRef.current?.click()}>
@@ -2517,6 +3159,7 @@ export default function App() {
           teachingTasks={teachingTasks}
           activeTeachingTaskId={activeTeachingTaskId}
           activeTeachingParkingPointId={activeTeachingParkingPointId}
+          robotParkingGhostId={robotParkingGhost?.parkingPointId || null}
           jointPoses={jointPoses}
           zividCameraPoses={zividCameraPoses}
           cameraTeachingResult={cameraTeachingResult}
@@ -2533,7 +3176,7 @@ export default function App() {
           onCreateTeachingTask={createTeachingTask}
           onSelectTeachingTask={selectTeachingTask}
           onCreateTeachingParkingPoint={createTeachingParkingPoint}
-          onSelectTeachingParkingPoint={selectTeachingParkingPoint}
+          onSelectTeachingParkingPoint={previewTeachingParkingPoint}
           onCaptureTeachingPoint={captureTeachingPoint}
           onOpenTeachingDataPage={() => navigateAppPage(APP_PAGE_TEACHING_DATA)}
           onUpdateRobotJointValue={updateRobotJointValue}
@@ -2573,7 +3216,7 @@ export default function App() {
         <span className="statusbar__hint">
           {mode === 'connect' && connectionSourceId ? '起点已锁定 · 请选择终点' : mode === 'add' ? '点击二维截面添加导航点' : mode === 'box' ? '二维图左键拉框 · Delete 删除所选' : '拖动二维地图平移 · 滚轮缩放'}
         </span>
-        <span>SCHEMA 1.2</span>
+        <span>SCHEMA 1.3</span>
       </footer>
 
       {appPage === APP_PAGE_WORKBENCH && loadState.loading && (
@@ -2613,6 +3256,8 @@ export default function App() {
           robotLoadState={robotLoadState}
           robotJointValues={robotJointValues}
           captureState={teachingCaptureState}
+          parkingMergePlannerReady={parkingMergePlannerReady}
+          projectExportState={projectExportState}
           sessionState={sessionState}
           onBack={() => navigateAppPage(APP_PAGE_WORKBENCH)}
           onSelectTask={selectTeachingTask}
@@ -2625,6 +3270,9 @@ export default function App() {
           onRenamePoint={renameTeachingPoint}
           onDeletePoint={deleteTeachingPoint}
           onApplyPoint={applyTeachingPoint}
+          onPlayTask={startTeachingTaskPlayback}
+          onAnalyzeParkingPointMerge={analyzeTeachingParkingPointMerge}
+          onMergeParkingPoints={mergeTeachingParkingPoints}
           onExportProject={exportProject}
         />
 

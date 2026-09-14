@@ -30,6 +30,8 @@ export default function TeachingDataPage({
   robotLoadState,
   robotJointValues,
   captureState,
+  parkingMergePlannerReady,
+  projectExportState,
   sessionState,
   onBack,
   onSelectTask,
@@ -42,6 +44,9 @@ export default function TeachingDataPage({
   onRenamePoint,
   onDeletePoint,
   onApplyPoint,
+  onPlayTask,
+  onAnalyzeParkingPointMerge,
+  onMergeParkingPoints,
   onExportProject,
 }) {
   const activeTask = tasks.find((task) => task.id === activeTaskId) || tasks[0] || null;
@@ -169,6 +174,8 @@ export default function TeachingDataPage({
                 colorMode={pointColorMode}
                 robot={robot}
                 robotLoadState={robotLoadState}
+                parkingMergePlannerReady={parkingMergePlannerReady}
+                projectExportState={projectExportState}
                 onSelectTask={onSelectTask}
                 onRenameTask={onRenameTask}
                 onDeleteTask={onDeleteTask}
@@ -179,6 +186,9 @@ export default function TeachingDataPage({
                 onRenamePoint={onRenamePoint}
                 onDeletePoint={onDeletePoint}
                 onApplyPoint={onApplyPoint}
+                onPlayTask={onPlayTask}
+                onAnalyzeParkingPointMerge={onAnalyzeParkingPointMerge}
+                onMergeParkingPoints={onMergeParkingPoints}
                 onExportProject={onExportProject}
                 onOpenCapturePage={onBack}
               />

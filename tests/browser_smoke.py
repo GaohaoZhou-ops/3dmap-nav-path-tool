@@ -3,6 +3,8 @@ import os
 from pathlib import Path
 from playwright.sync_api import sync_playwright
 
+from archive_helpers import read_exported_project
+
 
 BASE_URL = os.environ.get("BASE_URL", "http://127.0.0.1:21990")
 
@@ -264,12 +266,13 @@ def run():
         page.get_by_role("button", name="打开示教数据管理页").click()
         page.locator('[data-app-page="teaching-data"]').wait_for()
         with page.expect_download() as download_info:
-            page.get_by_role("button", name="导出示教工程 JSON").click()
+            page.get_by_role("button", name="导出示教工程 ZIP").click()
         download = download_info.value
         download_path = Path(download.path())
         assert download.suggested_filename.startswith("virtual-teaching-")
+        assert download.suggested_filename.endswith(".zip")
         assert download_path.stat().st_size > 500
-        exported = json.loads(download_path.read_text())
+        exported = read_exported_project(download)
         exported_slice = exported["projection"]
         assert exported_slice["mode"] == "height-range"
         exported_center = (exported_slice["minHeight"] + exported_slice["maxHeight"]) / 2
@@ -291,8 +294,8 @@ def run():
         page.get_by_role("button", name="返回主工作台继续示教").click()
         page.locator('[data-app-page="teaching-data"]').wait_for(state="detached")
 
-        page.locator('input[type="file"][accept*="json"]').set_input_files(str(download_path))
-        page.get_by_text("工程配置已加载", exact=False).wait_for()
+        page.locator('input[type="file"][accept*=".zip"]').set_input_files(str(download_path))
+        page.get_by_text("ZIP 工程包已加载", exact=False).wait_for()
         assert page.locator(".waypoint-marker").count() == 2
         assert page.locator(".route-edge").count() == 2
         imported_route_button = page.get_by_role("button", name="配置路径 P01 到 P02")

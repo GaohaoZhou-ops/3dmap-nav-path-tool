@@ -5,6 +5,8 @@ from pathlib import Path
 
 from playwright.sync_api import sync_playwright
 
+from archive_helpers import read_exported_archive
+
 
 BASE_URL = os.environ.get("BASE_URL", "http://127.0.0.1:22083")
 ROOT = Path(__file__).resolve().parents[1]
@@ -126,16 +128,56 @@ def run():
         modal.wait_for(state="detached")
 
         with page.expect_download() as download_info:
-            page.get_by_role("button", name="导出示教工程 JSON").click()
-        exported = json.loads(Path(download_info.value.path()).read_text())
-        assert exported["schemaVersion"] == "1.2"
+            page.get_by_role("button", name="导出示教工程 ZIP").click()
+        download = download_info.value
+        archive = read_exported_archive(download)
+        exported = archive["project"]
+        assert download.suggested_filename.endswith(".zip")
+        assert exported["schemaVersion"] == "1.3"
+        assert archive["manifest"]["format"] == "atlas-route-studio-project"
+        assert archive["manifest"]["statistics"]["cameraFrameCount"] == 2
+        assert b"data:image/" not in archive["project_bytes"]
+        assert b'"positionData"' not in archive["project_bytes"]
+        assert b'"colorData"' not in archive["project_bytes"]
+        for name, content in archive["files"].items():
+            if name.endswith(".json"):
+                assert b"data:image/" not in content
+                assert b'"positionData"' not in content
+                assert b'"colorData"' not in content
         teaching_pose = exported["virtualTeaching"]["tasks"][0]["parkingPoints"][0]["poses"][0]
         capture = teaching_pose["cameraCapture"]
         assert teaching_pose["fullBodyJoints"]["count"] == 24
-        assert_camera_capture(capture)
+        assert set(capture["frames"]) == {"left", "right"}
+        assert any(name.endswith("/pose.json") for name in archive["names"])
+        for side, frame in capture["frames"].items():
+            assert "dataUrl" not in frame["rgb"]
+            assert frame["rgb"]["file"] in archive["files"]
+            cloud = frame["pointCloud"]
+            assert "positionData" not in cloud
+            assert "colorData" not in cloud
+            assert cloud["metadataFile"] in archive["files"]
+            assert cloud["preview"]["file"] in archive["files"]
+            if cloud["pointCount"]:
+                assert cloud["positionFile"] in archive["files"]
+                assert cloud["colorFile"] in archive["files"]
+                assert len(archive["files"][cloud["positionFile"]]) == cloud["pointCount"] * 6
+                assert len(archive["files"][cloud["colorFile"]]) == cloud["pointCount"] * 3
         assert max(
             frame["pointCloud"]["pointCount"] for frame in capture["frames"].values()
         ) > 0
+
+        page.locator('input[type="file"][accept*=".zip"]').set_input_files(
+            str(archive["path"])
+        )
+        page.get_by_text("ZIP 工程包已加载", exact=False).wait_for()
+        page.get_by_role("button", name="查看机械臂姿态 A01").click()
+        imported_vision = page.get_by_label("机械臂姿态双目视觉快照", exact=True)
+        imported_vision.wait_for()
+        assert imported_vision.locator(".teaching-vision-thumbnails img").count() == 4
+        assert all(
+            image.get_attribute("src").startswith("data:image/")
+            for image in imported_vision.locator(".teaching-vision-thumbnails img").all()
+        )
 
         page.wait_for_timeout(700)
         stored_capture = page.evaluate(

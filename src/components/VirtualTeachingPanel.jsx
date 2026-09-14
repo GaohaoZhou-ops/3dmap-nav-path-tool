@@ -11,7 +11,7 @@ import {
   Crosshair,
   Database,
   Download,
-  FileJson,
+  FileArchive,
   Folder,
   FolderOpen,
   MapPin,
@@ -103,6 +103,7 @@ export default function VirtualTeachingPanel({
   tasks,
   activeTaskId,
   activeParkingPointId,
+  previewParkingPointId = null,
   mapData,
   robot,
   robotLoadState,
@@ -405,7 +406,7 @@ export default function VirtualTeachingPanel({
         data-export-point-count={teachingPointCount}
       >
         <div className="teaching-project-export__identity">
-          <span><FileJson size={14} /></span>
+          <span><FileArchive size={14} /></span>
           <div>
             <strong>示教工程包</strong>
             <small>{tasks.length} TASKS · {parkingPointCount} STOPS · {teachingPointCount} POSES</small>
@@ -415,12 +416,12 @@ export default function VirtualTeachingPanel({
           type="button"
           onClick={onExportProject}
           disabled={!canExport}
-          aria-label="导出示教工程 JSON"
+          aria-label="导出示教工程 ZIP"
           title={canExport
             ? '导出地图、导航图、机器人状态与全部示教任务'
             : '请先加载地图或工程配置'}
         >
-          <Download size={12} /> 导出工程
+          <Download size={12} /> 导出 ZIP
         </button>
       </div>}
 
@@ -489,20 +490,23 @@ export default function VirtualTeachingPanel({
                       {(task.parkingPoints || []).map((parkingPoint, index) => {
                         const parkingIsActive = taskIsActive
                           && parkingPoint.id === activeParkingPoint?.id;
+                        const parkingIsGhostTarget = parkingPoint.id === previewParkingPointId;
                         return (
                           <button
                             type="button"
-                            className={`teaching-capture-tree__parking ${parkingIsActive ? 'is-active' : ''}`}
+                            className={`teaching-capture-tree__parking ${parkingIsActive ? 'is-active' : ''} ${parkingIsGhostTarget ? 'is-ghost-target' : ''}`}
                             key={parkingPoint.id}
                             role="treeitem"
                             aria-label={`选择当前停车点 ${parkingPoint.name}`}
                             aria-current={parkingIsActive ? 'true' : undefined}
+                            data-ghost-preview={parkingIsGhostTarget ? 'true' : 'false'}
+                            title="点击后在 3D 场景中以当前关节姿态生成停车点机器人虚影"
                             onClick={() => selectCaptureParkingPoint(task, parkingPoint)}
                           >
                             <i>P{String(parkingPoint.sequence || index + 1).padStart(2, '0')}</i>
                             <MapPin size={11} />
                             <span>{parkingPoint.name}</span>
-                            <small>{parkingPoint.poses?.length || 0} 姿态</small>
+                            <small>{parkingIsGhostTarget ? '3D 虚影' : `${parkingPoint.poses?.length || 0} 姿态`}</small>
                           </button>
                         );
                       })}

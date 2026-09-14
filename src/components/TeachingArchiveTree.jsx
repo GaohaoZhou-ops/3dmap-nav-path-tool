@@ -10,13 +10,21 @@ import {
   FileText,
   Folder,
   FolderOpen,
+  GitMerge,
   ListTree,
+  LoaderCircle,
   MapPin,
   Maximize2,
   Play,
   Trash2,
   X,
 } from 'lucide-react';
+import {
+  DEFAULT_PARKING_CLUSTER_DISTANCE,
+  DEFAULT_PARKING_MERGE_RPY_TOLERANCE,
+  DEFAULT_PARKING_MERGE_XYZ_TOLERANCE,
+} from '../lib/parkingPointMerge.js';
+import ParkingPointMergeDialog from './ParkingPointMergeDialog.jsx';
 import TeachingParkingMap from './TeachingParkingMap.jsx';
 
 const formatCapturedAt = (value) => {
@@ -90,6 +98,8 @@ export default function TeachingArchiveTree({
   colorMode,
   robot,
   robotLoadState,
+  parkingMergePlannerReady = false,
+  projectExportState = { status: 'idle' },
   onSelectTask,
   onRenameTask,
   onDeleteTask,
@@ -100,6 +110,9 @@ export default function TeachingArchiveTree({
   onRenamePoint,
   onDeletePoint,
   onApplyPoint,
+  onPlayTask,
+  onAnalyzeParkingPointMerge,
+  onMergeParkingPoints,
   onExportProject,
   onOpenCapturePage,
 }) {
@@ -126,6 +139,8 @@ export default function TeachingArchiveTree({
   ));
   const [nameDraft, setNameDraft] = useState('');
   const [visionPreview, setVisionPreview] = useState(null);
+  const [mergeDialog, setMergeDialog] = useState(null);
+  const mergeAnalysisRevisionRef = useRef(0);
 
   const selectedTask = tasks.find((task) => task.id === selection?.taskId)
     || tasks.find((task) => task.id === activeTaskId)
@@ -151,6 +166,12 @@ export default function TeachingArchiveTree({
     : Boolean(selectedTask?.map?.fileName && selectedTask.map.fileName === mapData?.name);
   const contextMatches = Boolean(selectedTask && sameRobot && sameMap);
   const robotReady = robotLoadState?.status === 'loaded' && Boolean(robot);
+  const mergePlannerAvailable = Boolean(
+    parkingMergePlannerReady
+    && robotReady
+    && Number(robotLoadState?.zividCount) > 0,
+  );
+  const exportPacking = projectExportState?.status === 'packing';
 
   const jointEntries = useMemo(
     () => Object.entries(selectedPoint?.fullBodyJoints?.values || {})
@@ -232,6 +253,17 @@ export default function TeachingArchiveTree({
     return () => window.removeEventListener('keydown', closeOnEscape);
   }, [visionPreview]);
 
+  useEffect(() => {
+    if (!mergeDialog) return undefined;
+    const closeOnEscape = (event) => {
+      if (event.key !== 'Escape' || mergeDialog.status === 'analyzing') return;
+      mergeAnalysisRevisionRef.current += 1;
+      setMergeDialog(null);
+    };
+    window.addEventListener('keydown', closeOnEscape);
+    return () => window.removeEventListener('keydown', closeOnEscape);
+  }, [mergeDialog]);
+
   const toggleCollapsed = (setter, id) => {
     setter((current) => {
       const next = new Set(current);
@@ -299,6 +331,129 @@ export default function TeachingArchiveTree({
     if (selection.type === 'pose') {
       onRenamePoint(selectedTask.id, selectedParkingPoint.id, selectedPoint.id, nextName);
     }
+  };
+
+  const normalizeMergeParameters = (value = {}) => {
+    const clamp = (rawValue, minimum, maximum, fallback) => {
+      const parsed = Number(rawValue);
+      return Math.max(minimum, Math.min(maximum, Number.isFinite(parsed) ? parsed : fallback));
+    };
+    return {
+      distanceThreshold: clamp(
+        value.distanceThreshold,
+        0.02,
+        5,
+        DEFAULT_PARKING_CLUSTER_DISTANCE,
+      ),
+      positionToleranceCm: clamp(
+        value.positionToleranceCm,
+        0.1,
+        50,
+        DEFAULT_PARKING_MERGE_XYZ_TOLERANCE * 100,
+      ),
+      rotationTolerance: clamp(
+        value.rotationTolerance,
+        0.1,
+        45,
+        DEFAULT_PARKING_MERGE_RPY_TOLERANCE,
+      ),
+    };
+  };
+
+  const runParkingMergeAnalysis = (task, requestedParameters) => {
+    if (!task || typeof onAnalyzeParkingPointMerge !== 'function') return;
+    const parameters = normalizeMergeParameters(requestedParameters);
+    const revision = ++mergeAnalysisRevisionRef.current;
+    setMergeDialog((current) => ({
+      ...(current || {}),
+      taskId: task.id,
+      status: 'analyzing',
+      parameters,
+      result: current?.taskId === task.id ? current.result : null,
+      analyzedParameters: current?.taskId === task.id ? current.analyzedParameters : null,
+      selectedClusterIds: new Set(),
+      error: '',
+    }));
+    window.requestAnimationFrame(async () => {
+      try {
+        const result = await onAnalyzeParkingPointMerge(task.id, {
+          distanceThreshold: parameters.distanceThreshold,
+          positionTolerance: parameters.positionToleranceCm / 100,
+          rotationTolerance: parameters.rotationTolerance,
+        });
+        if (revision !== mergeAnalysisRevisionRef.current) return;
+        setMergeDialog((current) => (
+          current?.taskId === task.id
+            ? {
+                ...current,
+                status: 'ready',
+                result,
+                analyzedParameters: parameters,
+                selectedClusterIds: new Set(
+                  (result?.clusters || []).filter((cluster) => cluster.feasible)
+                    .map((cluster) => cluster.id),
+                ),
+                error: '',
+              }
+            : current
+        ));
+      } catch (error) {
+        if (revision !== mergeAnalysisRevisionRef.current) return;
+        setMergeDialog((current) => (
+          current?.taskId === task.id
+            ? {
+                ...current,
+                status: 'error',
+                result: null,
+                analyzedParameters: null,
+                selectedClusterIds: new Set(),
+                error: error?.message || '停车点合并分析失败',
+              }
+            : current
+        ));
+      }
+    });
+  };
+
+  const openParkingMergeDialog = () => {
+    if (!selectedTask || selectedTask.parkingPoints?.length < 2) return;
+    runParkingMergeAnalysis(selectedTask, {
+      distanceThreshold: DEFAULT_PARKING_CLUSTER_DISTANCE,
+      positionToleranceCm: DEFAULT_PARKING_MERGE_XYZ_TOLERANCE * 100,
+      rotationTolerance: DEFAULT_PARKING_MERGE_RPY_TOLERANCE,
+    });
+  };
+
+  const closeParkingMergeDialog = () => {
+    if (mergeDialog?.status === 'analyzing') return;
+    mergeAnalysisRevisionRef.current += 1;
+    setMergeDialog(null);
+  };
+
+  const updateParkingMergeParameter = (name, value) => {
+    setMergeDialog((current) => current
+      ? { ...current, parameters: { ...current.parameters, [name]: value } }
+      : current);
+  };
+
+  const toggleParkingMergeCluster = (clusterId) => {
+    setMergeDialog((current) => {
+      if (!current) return current;
+      const selectedClusterIds = new Set(current.selectedClusterIds || []);
+      if (selectedClusterIds.has(clusterId)) selectedClusterIds.delete(clusterId);
+      else selectedClusterIds.add(clusterId);
+      return { ...current, selectedClusterIds };
+    });
+  };
+
+  const confirmParkingPointMerge = (clusters) => {
+    const task = tasks.find((item) => item.id === mergeDialog?.taskId);
+    if (!task || typeof onMergeParkingPoints !== 'function') return;
+    const outcome = onMergeParkingPoints(task.id, clusters, mergeDialog.result);
+    if (!outcome?.success) return;
+    mergeAnalysisRevisionRef.current += 1;
+    setSelection({ type: 'task', taskId: task.id });
+    setMergeDialog(null);
   };
 
   const renderTree = () => tasks.map((task) => {
@@ -416,6 +571,8 @@ export default function TeachingArchiveTree({
         data-active-teaching-task={selectedTask?.id || ''}
         data-active-parking-point={selectedParkingPoint?.id || ''}
         data-teaching-context-match={contextMatches ? 'true' : 'false'}
+        data-parking-merge-planner-ready={mergePlannerAvailable ? 'true' : 'false'}
+        data-project-export-state={projectExportState?.status || 'idle'}
       >
         <header className="teaching-tree-toolbar">
           <div>
@@ -426,11 +583,15 @@ export default function TeachingArchiveTree({
           <button type="button" onClick={onOpenCapturePage}>继续示教</button>
           <button
             type="button"
-            aria-label="导出示教工程 JSON"
+            aria-label={exportPacking ? '正在打包示教工程 ZIP' : '导出示教工程 ZIP'}
             onClick={onExportProject}
-            disabled={!mapData?.bounds}
+            disabled={!mapData?.bounds || exportPacking}
+            title="ZIP 内按任务、停车点、姿态分层保存配置、RGB 与点云"
           >
-            <Download size={11} /> 导出
+            {exportPacking
+              ? <LoaderCircle className="is-spinning" size={11} />
+              : <Download size={11} />}
+            {exportPacking ? '打包中' : '导出 ZIP'}
           </button>
         </header>
 
@@ -493,18 +654,56 @@ export default function TeachingArchiveTree({
                         <div><dt>创建时间</dt><dd>{formatCapturedAt(selectedTask.createdAt)}</dd></div>
                         <div><dt>坐标系</dt><dd>{selectedTask.coordinateFrame || 'map'}</dd></div>
                       </dl>
-                      <button
-                        type="button"
-                        className="teaching-tree-danger"
-                        aria-label="删除当前示教任务"
-                        onClick={() => {
-                          if (window.confirm(`删除 ${selectedTask.name} 及其全部停车点和机械臂姿态？`)) {
-                            onDeleteTask(selectedTask.id);
+                      <div className="teaching-tree-task-actions">
+                        <button
+                          type="button"
+                          className="teaching-tree-play-action"
+                          aria-label={`播放示教任务 ${selectedTask.name}`}
+                          disabled={!poseCountForTask(selectedTask) || !contextMatches || !robotReady}
+                          title={!poseCountForTask(selectedTask)
+                            ? '请先在停车点下记录至少一个机械臂姿态'
+                            : !contextMatches
+                              ? '当前地图或机器人与任务不匹配'
+                              : !robotReady
+                                ? '机器人模型尚未装配完成'
+                                : '切换到主工作台，按停车点与姿态顺序执行连续规划轨迹'}
+                          onClick={() => onPlayTask?.(selectedTask.id)}
+                        >
+                          <Play size={12} fill="currentColor" /> 播放任务
+                        </button>
+                        <button
+                          type="button"
+                          className="teaching-tree-merge-action"
+                          aria-label="分析并合并当前任务的近邻停车点"
+                          disabled={
+                            selectedTask.parkingPoints?.length < 2
+                            || !contextMatches
+                            || !mergePlannerAvailable
                           }
-                        }}
-                      >
-                        <Trash2 size={11} /> 删除任务
-                      </button>
+                          title={selectedTask.parkingPoints?.length < 2
+                            ? '至少需要两个停车点'
+                            : !contextMatches
+                              ? '当前地图或机器人与任务不匹配'
+                              : !mergePlannerAvailable
+                                ? '正在等待带末端相机的机器人运动学模型'
+                                : '聚类距离较近的停车点，并搜索末端姿态可达的公共停车位'}
+                          onClick={openParkingMergeDialog}
+                        >
+                          <GitMerge size={12} /> 合并停车点
+                        </button>
+                        <button
+                          type="button"
+                          className="teaching-tree-danger"
+                          aria-label="删除当前示教任务"
+                          onClick={() => {
+                            if (window.confirm(`删除 ${selectedTask.name} 及其全部停车点和机械臂姿态？`)) {
+                              onDeleteTask(selectedTask.id);
+                            }
+                          }}
+                        >
+                          <Trash2 size={11} /> 删除任务
+                        </button>
+                      </div>
                     </div>
                   )}
 
@@ -697,6 +896,21 @@ export default function TeachingArchiveTree({
           </section>
         </div>
       </section>
+
+      {mergeDialog && (
+        <ParkingPointMergeDialog
+          task={tasks.find((task) => task.id === mergeDialog.taskId)}
+          state={mergeDialog}
+          onClose={closeParkingMergeDialog}
+          onParameterChange={updateParkingMergeParameter}
+          onAnalyze={() => {
+            const task = tasks.find((item) => item.id === mergeDialog.taskId);
+            runParkingMergeAnalysis(task, mergeDialog.parameters);
+          }}
+          onToggleCluster={toggleParkingMergeCluster}
+          onConfirm={confirmParkingPointMerge}
+        />
+      )}
 
       {visionPreview && createPortal(
         <div

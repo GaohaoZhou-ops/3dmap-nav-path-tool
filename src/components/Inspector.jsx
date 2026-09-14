@@ -83,6 +83,7 @@ export default function Inspector({
   teachingTasks = [],
   activeTeachingTaskId,
   activeTeachingParkingPointId,
+  robotParkingGhostId,
   jointPoses = [],
   zividCameraPoses,
   cameraTeachingResult,
@@ -697,6 +698,7 @@ export default function Inspector({
               tasks={teachingTasks}
               activeTaskId={activeTeachingTaskId}
               activeParkingPointId={activeTeachingParkingPointId}
+              previewParkingPointId={robotParkingGhostId}
               mapData={mapData}
               robot={robot}
               robotLoadState={robotLoadState}

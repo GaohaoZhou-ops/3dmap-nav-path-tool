@@ -5,6 +5,8 @@ from pathlib import Path
 
 from playwright.sync_api import sync_playwright
 
+from archive_helpers import read_exported_project
+
 
 BASE_URL = os.environ.get("BASE_URL", "http://127.0.0.1:21990")
 ROOT = Path(__file__).resolve().parents[1]
@@ -257,8 +259,8 @@ def run():
         page.get_by_role("button", name="打开示教数据管理页").click()
         page.locator('[data-app-page="teaching-data"]').wait_for()
         with page.expect_download() as download_info:
-            page.get_by_role("button", name="导出示教工程 JSON").click()
-        exported = json.loads(Path(download_info.value.path()).read_text())
+            page.get_by_role("button", name="导出示教工程 ZIP").click()
+        exported = read_exported_project(download_info.value)
         assert exported["robot"]["relativePath"].endswith("botx_abx_zivid_m70.urdf")
         exported_pose = exported["robot"]["origin"]
         assert abs(exported_pose["position"]["x"] - moved_pose["x"]) < 1e-5

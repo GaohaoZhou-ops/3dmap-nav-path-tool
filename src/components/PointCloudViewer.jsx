@@ -2,6 +2,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import * as THREE from 'three';
 import { TrackballControls } from 'three/examples/jsm/controls/TrackballControls.js';
 import { TransformControls } from 'three/examples/jsm/controls/TransformControls.js';
+import { clone as cloneSkeleton } from 'three/examples/jsm/utils/SkeletonUtils.js';
 import {
   Bot,
   Box,
@@ -10,6 +11,7 @@ import {
   EyeOff,
   Gauge,
   Keyboard,
+  MapPin,
   Minus,
   MousePointer2,
   Move3D,
@@ -17,8 +19,10 @@ import {
   Plus,
   Rotate3D,
   RotateCcw,
+  Ruler,
   ShieldAlert,
   ShieldCheck,
+  X,
 } from 'lucide-react';
 import EndEffectorControlPanel from './EndEffectorControlPanel.jsx';
 import {
@@ -27,6 +31,13 @@ import {
   prepareMapGeometryTopology,
   resolveMeshRenderQuality,
 } from '../lib/mapGeometry.js';
+import {
+  clusterNearbyParkingPoints,
+  createCommonParkingCandidates,
+  DEFAULT_PARKING_CLUSTER_DISTANCE,
+  DEFAULT_PARKING_MERGE_RPY_TOLERANCE,
+  DEFAULT_PARKING_MERGE_XYZ_TOLERANCE,
+} from '../lib/parkingPointMerge.js';
 import {
   applyRobotJointValues,
   disposeRobotModel,
@@ -104,6 +115,8 @@ const SPACEMOUSE_AXIS_HUD_META = Object.freeze({
 });
 const ROBOT_LINEAR_SPEED = 0.9;
 const ROBOT_ROTATION_SPEED = THREE.MathUtils.degToRad(72);
+const ROBOT_PARKING_GHOST_COLOR = 0x63e6ee;
+const ROBOT_PARKING_GHOST_OPACITY = 0.24;
 const ROBOT_POSE_REPORT_INTERVAL = 70;
 const ROBOT_JOINT_REPORT_INTERVAL = 70;
 const ZIVID_CAMERA_POSE_REPORT_INTERVAL = 70;
@@ -484,6 +497,51 @@ const zividOpticalPoseFromObject = (frame, side) => {
       w: quaternion.w,
     },
     forward: { x: forward.x, y: forward.y, z: forward.z },
+  };
+};
+
+const parkingMergeTargetFromSnapshot = (value, side) => {
+  if (!value?.position || !value?.quaternion) return null;
+  const positionValues = ['x', 'y', 'z'].map((axis) => Number(value.position[axis]));
+  const quaternionValues = ['x', 'y', 'z', 'w'].map((axis) => Number(value.quaternion[axis]));
+  if (![...positionValues, ...quaternionValues].every(Number.isFinite)) return null;
+  const quaternion = new THREE.Quaternion(...quaternionValues);
+  if (quaternion.lengthSq() < 1e-12) return null;
+  quaternion.normalize();
+  return {
+    side,
+    frameName: String(value.frameName || `zivid_${side}_optical_frame`),
+    source: 'camera-capture',
+    position: new THREE.Vector3(...positionValues),
+    quaternion,
+  };
+};
+
+const parkingMergeTargetFromFrame = (frame, side) => {
+  if (!frame) return null;
+  return {
+    side,
+    frameName: frame.name,
+    source: 'forward-kinematics',
+    position: frame.getWorldPosition(new THREE.Vector3()),
+    quaternion: frame.getWorldQuaternion(new THREE.Quaternion()).normalize(),
+  };
+};
+
+const measureParkingMergeTarget = (frame, target) => {
+  if (!frame || !target) {
+    return { positionError: Number.POSITIVE_INFINITY, rotationError: Number.POSITIVE_INFINITY };
+  }
+  const position = frame.getWorldPosition(new THREE.Vector3());
+  const quaternion = frame.getWorldQuaternion(new THREE.Quaternion()).normalize();
+  const quaternionDot = THREE.MathUtils.clamp(
+    Math.abs(quaternion.dot(target.quaternion)),
+    -1,
+    1,
+  );
+  return {
+    positionError: position.distanceTo(target.position),
+    rotationError: THREE.MathUtils.radToDeg(2 * Math.acos(quaternionDot)),
   };
 };
 
@@ -936,6 +994,275 @@ const disposeObject = (object) => {
   });
 };
 
+const clearRobotParkingGhostLayer = (layer) => {
+  if (!layer) return;
+  const resources = layer.userData?.ownedResources;
+  if (resources instanceof Set) {
+    resources.forEach((resource) => resource?.dispose?.());
+  }
+  layer.clear();
+  layer.userData.ownedResources = new Set();
+};
+
+const writeRobotParkingGhostHiddenDataset = (canvas) => {
+  if (!canvas) return;
+  canvas.dataset.parkingGhostState = 'hidden';
+  canvas.dataset.parkingGhostTargetId = '';
+  canvas.dataset.parkingGhostMeshCount = '0';
+  canvas.dataset.parkingGhostJointCount = '0';
+  canvas.dataset.parkingGhostJointValues = '';
+  canvas.dataset.parkingGhostPlanarDistance = '';
+  canvas.dataset.parkingGhostStraightDistance = '';
+  canvas.dataset.parkingGhostDeltaZ = '';
+};
+
+const measureRobotParkingGhost = (sourcePose, targetPose) => {
+  const source = normalizeRobotPose(sourcePose);
+  const target = normalizeRobotPose(targetPose);
+  const deltaX = target.position.x - source.position.x;
+  const deltaY = target.position.y - source.position.y;
+  const deltaZ = target.position.z - source.position.z;
+  return {
+    deltaX,
+    deltaY,
+    deltaZ,
+    planarDistance: Math.hypot(deltaX, deltaY),
+    straightDistance: Math.hypot(deltaX, deltaY, deltaZ),
+  };
+};
+
+const copyRobotJointMetadata = (source, clone) => {
+  if (!source || !clone) return;
+  if (source.userData?.jointType) {
+    clone.userData.jointType = source.userData.jointType;
+    clone.userData.jointAxis = [...(source.userData.jointAxis || [0, 0, 1])];
+    clone.userData.jointLimit = { ...(source.userData.jointLimit || {}) };
+    clone.userData.restPosition = [...(source.userData.restPosition || source.position.toArray())];
+    clone.userData.restQuaternion = [
+      ...(source.userData.restQuaternion || source.quaternion.toArray()),
+    ];
+    clone.userData.jointValue = Number(source.userData.jointValue) || 0;
+  }
+  source.children.forEach((child, index) => {
+    copyRobotJointMetadata(child, clone.children[index]);
+  });
+};
+
+const createRobotParkingGhostVisual = (liveRobot, ghost) => {
+  const resources = new Set();
+  const ghostRobot = cloneSkeleton(liveRobot);
+  copyRobotJointMetadata(liveRobot, ghostRobot);
+  applyRobotJointValues(ghostRobot, ghost.jointValues);
+  ghostRobot.name = `parking-ghost:${ghost.parkingPointName || ghost.parkingPointId}`;
+  ghostRobot.userData.isRobotParkingGhost = true;
+  let meshCount = 0;
+
+  ghostRobot.traverse((object) => {
+    const sourceMaterials = Array.isArray(object.material)
+      ? object.material
+      : [object.material];
+    const isInteractionHelper = (
+      object.userData?.robotChassisDragTarget
+      || /^end-effector-.*-double-click-target$/.test(object.name || '')
+      || object.name === 'robot-chassis-planar-drag-guide'
+      || sourceMaterials.some((material) => material?.colorWrite === false)
+    );
+    if (isInteractionHelper) {
+      object.visible = false;
+      return;
+    }
+
+    let material = null;
+    if (object.isMesh) {
+      material = new THREE.MeshBasicMaterial({
+        color: ROBOT_PARKING_GHOST_COLOR,
+        transparent: true,
+        opacity: ROBOT_PARKING_GHOST_OPACITY,
+        depthTest: true,
+        depthWrite: false,
+        side: THREE.DoubleSide,
+        toneMapped: false,
+      });
+      meshCount += 1;
+    } else if (object.isLine || object.isLineSegments) {
+      material = new THREE.LineBasicMaterial({
+        color: ROBOT_PARKING_GHOST_COLOR,
+        transparent: true,
+        opacity: ROBOT_PARKING_GHOST_OPACITY * 1.7,
+        depthTest: true,
+        depthWrite: false,
+        toneMapped: false,
+      });
+    } else if (object.isPoints) {
+      material = new THREE.PointsMaterial({
+        color: ROBOT_PARKING_GHOST_COLOR,
+        transparent: true,
+        opacity: ROBOT_PARKING_GHOST_OPACITY,
+        depthTest: true,
+        depthWrite: false,
+        size: 0.012,
+        sizeAttenuation: true,
+        toneMapped: false,
+      });
+    } else if (object.isSprite) {
+      object.visible = false;
+    }
+    if (!material) return;
+    object.material = material;
+    object.castShadow = false;
+    object.receiveShadow = false;
+    object.renderOrder = 23;
+    object.userData.isRobotParkingGhost = true;
+    resources.add(material);
+  });
+
+  const targetPose = normalizeRobotPose(ghost.targetPose);
+  const metadata = liveRobot.userData?.robot || {};
+  const modelSize = Math.max(
+    0.5,
+    ...(Array.isArray(metadata.bounds?.size)
+      ? metadata.bounds.size.map((value) => Math.abs(Number(value) || 0))
+      : [1]),
+  );
+  const ringRadius = THREE.MathUtils.clamp(modelSize * 0.2, 0.18, 0.85);
+  const guideLift = THREE.MathUtils.clamp(ringRadius * 0.08, 0.018, 0.065);
+
+  const poseRoot = new THREE.Group();
+  poseRoot.name = 'robot-parking-ghost-pose';
+  poseRoot.add(ghostRobot);
+  applyRobotPose(poseRoot, targetPose);
+
+  const targetMarker = new THREE.Group();
+  targetMarker.name = 'robot-parking-ghost-target-marker';
+  targetMarker.position.set(
+    targetPose.position.x,
+    targetPose.position.y,
+    targetPose.position.z + guideLift,
+  );
+  const ringGeometry = new THREE.RingGeometry(ringRadius * 0.86, ringRadius, 72);
+  const ringMaterial = new THREE.MeshBasicMaterial({
+    color: ROBOT_PARKING_GHOST_COLOR,
+    transparent: true,
+    opacity: 0.86,
+    depthTest: false,
+    depthWrite: false,
+    side: THREE.DoubleSide,
+    toneMapped: false,
+  });
+  const ring = new THREE.Mesh(ringGeometry, ringMaterial);
+  ring.renderOrder = 29;
+  const pulseGeometry = new THREE.RingGeometry(ringRadius * 1.02, ringRadius * 1.075, 72);
+  const pulseMaterial = new THREE.MeshBasicMaterial({
+    color: ROBOT_PARKING_GHOST_COLOR,
+    transparent: true,
+    opacity: 0.28,
+    depthTest: false,
+    depthWrite: false,
+    side: THREE.DoubleSide,
+    toneMapped: false,
+  });
+  const pulseRing = new THREE.Mesh(pulseGeometry, pulseMaterial);
+  pulseRing.renderOrder = 28;
+  targetMarker.add(ring, pulseRing);
+  resources.add(ringGeometry);
+  resources.add(ringMaterial);
+  resources.add(pulseGeometry);
+  resources.add(pulseMaterial);
+
+  const forward = new THREE.Vector3(
+    Math.cos(THREE.MathUtils.degToRad(targetPose.rpy.yaw)),
+    Math.sin(THREE.MathUtils.degToRad(targetPose.rpy.yaw)),
+    0,
+  );
+  const orientationArrow = new THREE.ArrowHelper(
+    forward,
+    targetMarker.position,
+    ringRadius * 0.78,
+    ROBOT_PARKING_GHOST_COLOR,
+    ringRadius * 0.22,
+    ringRadius * 0.1,
+  );
+  [orientationArrow.line, orientationArrow.cone].forEach((object) => {
+    object.material.transparent = true;
+    object.material.opacity = 0.92;
+    object.material.depthTest = false;
+    object.material.depthWrite = false;
+    object.renderOrder = 30;
+    resources.add(object.material);
+  });
+
+  const distanceArrow = new THREE.ArrowHelper(
+    new THREE.Vector3(1, 0, 0),
+    new THREE.Vector3(),
+    1,
+    ROBOT_PARKING_GHOST_COLOR,
+    Math.max(ringRadius * 0.24, 0.05),
+    Math.max(ringRadius * 0.1, 0.025),
+  );
+  distanceArrow.name = 'robot-parking-ghost-distance-guide';
+  [distanceArrow.line, distanceArrow.cone].forEach((object) => {
+    object.material.transparent = true;
+    object.material.opacity = object === distanceArrow.line ? 0.64 : 0.9;
+    object.material.depthTest = false;
+    object.material.depthWrite = false;
+    object.renderOrder = 28;
+    resources.add(object.material);
+  });
+
+  return {
+    objects: [poseRoot, targetMarker, orientationArrow, distanceArrow],
+    resources,
+    poseRoot,
+    ghostRobot,
+    targetMarker,
+    pulseRing,
+    distanceArrow,
+    targetPose,
+    targetPosition: new THREE.Vector3(
+      targetPose.position.x,
+      targetPose.position.y,
+      targetPose.position.z + guideLift,
+    ),
+    ringRadius,
+    guideLift,
+    meshCount,
+    jointCount: Object.keys(normalizeRobotJointValues(ghost.jointValues)).length,
+  };
+};
+
+const updateRobotParkingGhostGuide = (visual, sourcePose, canvas) => {
+  if (!visual) return measureRobotParkingGhost(sourcePose, null);
+  const source = normalizeRobotPose(sourcePose);
+  const metrics = measureRobotParkingGhost(source, visual.targetPose);
+  const start = new THREE.Vector3(
+    source.position.x,
+    source.position.y,
+    source.position.z + visual.guideLift,
+  );
+  const delta = visual.targetPosition.clone().sub(start);
+  const length = delta.length();
+  visual.distanceArrow.position.copy(start);
+  visual.distanceArrow.visible = length > 1e-4;
+  if (visual.distanceArrow.visible) {
+    visual.distanceArrow.setDirection(delta.normalize());
+    const headLength = Math.min(
+      Math.max(visual.ringRadius * 0.24, 0.05),
+      length * 0.34,
+    );
+    visual.distanceArrow.setLength(
+      length,
+      headLength,
+      Math.max(headLength * 0.42, 0.025),
+    );
+  }
+  if (canvas) {
+    canvas.dataset.parkingGhostPlanarDistance = metrics.planarDistance.toFixed(6);
+    canvas.dataset.parkingGhostStraightDistance = metrics.straightDistance.toFixed(6);
+    canvas.dataset.parkingGhostDeltaZ = metrics.deltaZ.toFixed(6);
+  }
+  return metrics;
+};
+
 const createRosAxisLabel = (text, color, worldHeight) => {
   const canvas = document.createElement('canvas');
   canvas.width = 64;
@@ -1018,6 +1345,8 @@ export default function PointCloudViewer({
   robotJointValues,
   lockedRobotJointNames = [],
   robotControlEnabled = false,
+  robotTrajectoryActive = false,
+  robotParkingGhost = null,
   spaceMouseInputRef,
   viewportCanvasRef,
   cameraTeachingCommand,
@@ -1028,7 +1357,9 @@ export default function PointCloudViewer({
   onRobotControlChange,
   onZividCameraPoseChange,
   onCameraTeachingResult,
+  onParkingMergePlannerChange,
   onCollisionProtectionChange,
+  onClearRobotParkingGhost,
   onCollisionProtectionStatus,
   isActive = true,
 }) {
@@ -1040,6 +1371,8 @@ export default function PointCloudViewer({
   const waypointGroupRef = useRef(null);
   const robotLayerRef = useRef(null);
   const loadedRobotRef = useRef(null);
+  const robotParkingGhostLayerRef = useRef(null);
+  const robotParkingGhostVisualRef = useRef(null);
   const robotChassisHandleRef = useRef(null);
   const chassisDragInteractionRef = useRef(null);
   const chassisDragModeRef = useRef(false);
@@ -1079,6 +1412,7 @@ export default function PointCloudViewer({
   const onRobotControlChangeRef = useRef(onRobotControlChange);
   const onZividCameraPoseChangeRef = useRef(onZividCameraPoseChange);
   const onCameraTeachingResultRef = useRef(onCameraTeachingResult);
+  const parkingMergePlannerRef = useRef(null);
   const onCollisionProtectionStatusRef = useRef(onCollisionProtectionStatus);
   const collisionMonitorGenerationRef = useRef(0);
   const collisionHighlightCleanupRef = useRef(null);
@@ -1090,6 +1424,7 @@ export default function PointCloudViewer({
   const robotJointValuesRef = useRef(normalizeRobotJointValues(robotJointValues));
   const lockedRobotJointNamesRef = useRef(normalizeRobotJointLocks(lockedRobotJointNames));
   const robotControlEnabledRef = useRef(Boolean(robotControlEnabled));
+  const robotTrajectoryActiveRef = useRef(Boolean(robotTrajectoryActive));
   const robotLoadStateRef = useRef(robotLoadState);
   const robotPoseActionsRef = useRef(null);
   const lastRobotPoseReportRef = useRef(0);
@@ -1125,6 +1460,7 @@ export default function PointCloudViewer({
   onCameraTeachingResultRef.current = onCameraTeachingResult;
   onCollisionProtectionStatusRef.current = onCollisionProtectionStatus;
   robotControlEnabledRef.current = Boolean(robotControlEnabled);
+  robotTrajectoryActiveRef.current = Boolean(robotTrajectoryActive);
   robotLoadStateRef.current = robotLoadState;
   lockedRobotJointNamesRef.current = normalizeRobotJointLocks(lockedRobotJointNames);
   const [manualResolution, setManualResolution] = useState({ mapKey: null, index: null });
@@ -1256,6 +1592,313 @@ export default function PointCloudViewer({
     }
     onZividCameraPoseChangeRef.current?.(poses);
   };
+
+  parkingMergePlannerRef.current = async (request = {}) => {
+    const task = request?.task;
+    if (!task?.id) throw new Error('没有可分析的示教任务');
+    const distanceThreshold = THREE.MathUtils.clamp(
+      Number(request.distanceThreshold) || DEFAULT_PARKING_CLUSTER_DISTANCE,
+      0.02,
+      5,
+    );
+    const positionTolerance = THREE.MathUtils.clamp(
+      Number(request.positionTolerance) || DEFAULT_PARKING_MERGE_XYZ_TOLERANCE,
+      0.001,
+      0.5,
+    );
+    const rotationTolerance = THREE.MathUtils.clamp(
+      Number(request.rotationTolerance) || DEFAULT_PARKING_MERGE_RPY_TOLERANCE,
+      0.1,
+      45,
+    );
+    const spatialAnalysis = clusterNearbyParkingPoints(
+      task.parkingPoints || [],
+      distanceThreshold,
+    );
+    const canvas = controlsRef.current?.domElement;
+    if (canvas) {
+      canvas.dataset.parkingMergePlannerState = 'analyzing';
+      canvas.dataset.parkingMergeClusterCount = String(spatialAnalysis.clusters.length);
+      delete canvas.dataset.parkingMergePlannerError;
+    }
+
+    if (!spatialAnalysis.clusters.length) {
+      if (canvas) canvas.dataset.parkingMergePlannerState = 'ready';
+      return {
+        version: 1,
+        status: 'no-neighbors',
+        taskId: task.id,
+        analyzedAt: new Date().toISOString(),
+        distanceThreshold,
+        positionTolerance,
+        rotationTolerance,
+        clusters: [],
+        nearbyPairs: spatialAnalysis.nearbyPairs,
+        isolatedParkingPointIds: spatialAnalysis.isolatedParkingPointIds,
+        feasibleClusterCount: 0,
+      };
+    }
+
+    const liveRobot = loadedRobotRef.current;
+    if (!liveRobot) throw new Error('机器人运动学模型尚未加载，无法搜索公共停车点');
+    const liveFrames = zividCameraFramesRef.current;
+    const availableSides = ['left', 'right'].filter((side) => (
+      liveFrames[side] && endEffectorControllersRef.current[side]
+    ));
+    if (!availableSides.length) {
+      throw new Error('机器人末端相机运动链尚未就绪，无法校验拍照姿态');
+    }
+
+    const planningRobot = liveRobot.clone(true);
+    const planningLayer = new THREE.Group();
+    planningLayer.name = 'parking-point-merge-planning-layer';
+    planningLayer.add(planningRobot);
+    const baselineJoints = readRobotJointValues(liveRobot);
+    const planningControllers = Object.fromEntries(availableSides.flatMap((side) => {
+      const controller = getRobotEndEffector(planningRobot, side);
+      const opticalFrame = planningRobot.getObjectByName(liveFrames[side].name)
+        || planningRobot.getObjectByName(`zivid_${side}_optical_frame`);
+      return controller && opticalFrame
+        ? [[side, { ...controller, frame: opticalFrame }]]
+        : [];
+    }));
+    const planningSides = availableSides.filter((side) => planningControllers[side]);
+    if (!planningSides.length) {
+      planningLayer.clear();
+      throw new Error('克隆的机器人模型缺少 Zivid 光学坐标系');
+    }
+
+    const applyPlanningSeed = (mapPose, jointValues) => {
+      applyRobotPose(planningLayer, mapPose);
+      applyRobotJointValues(planningRobot, baselineJoints);
+      applyRobotJointValues(planningRobot, jointValues || {});
+      planningLayer.updateMatrixWorld(true);
+    };
+    const clusterPlans = [];
+
+    try {
+      for (const cluster of spatialAnalysis.clusters) {
+        const sourcePoseRecords = cluster.members.flatMap((parkingPoint) => (
+          (parkingPoint.poses || []).map((pose) => ({ parkingPoint, pose }))
+        ));
+        if (!sourcePoseRecords.length) {
+          clusterPlans.push({
+            id: cluster.id,
+            memberIds: cluster.memberIds,
+            memberNames: cluster.memberNames,
+            poseCount: 0,
+            targetCount: 0,
+            maximumPairDistance: cluster.maximumPairDistance,
+            nearbyPairCount: cluster.nearbyPairCount,
+            feasible: false,
+            reason: '该近邻簇没有机械臂示教姿态',
+            candidateCount: 0,
+            plannedPoses: [],
+          });
+          continue;
+        }
+
+        const targetRecords = sourcePoseRecords.map(({ parkingPoint, pose }) => {
+          const sourceMapPose = pose.mapPose || parkingPoint.mapPose;
+          const sourceJoints = pose.fullBodyJoints?.values || {};
+          applyPlanningSeed(sourceMapPose, sourceJoints);
+          const targets = planningSides.flatMap((side) => {
+            const capturedPose = pose.cameraCapture?.frames?.[side]?.opticalPose;
+            const target = parkingMergeTargetFromSnapshot(capturedPose, side)
+              || parkingMergeTargetFromFrame(planningControllers[side].frame, side);
+            return target ? [target] : [];
+          });
+          return {
+            poseId: pose.id,
+            poseName: pose.name,
+            sourceParkingPointId: parkingPoint.id,
+            sourceParkingPointName: parkingPoint.name,
+            sourceMapPose,
+            sourceJoints,
+            targets,
+          };
+        });
+        const candidates = createCommonParkingCandidates(cluster.members);
+        let bestCandidate = null;
+
+        for (const candidate of candidates) {
+          const plannedPoses = [];
+          for (const record of targetRecords) {
+            applyPlanningSeed(candidate.mapPose, record.sourceJoints);
+            let sideErrors = {};
+
+            for (let pass = 0; pass < 4; pass += 1) {
+              record.targets.forEach((target) => {
+                const controller = planningControllers[target.side];
+                solveEndEffectorIk(
+                  controller,
+                  target.position,
+                  target.quaternion,
+                  new Set(),
+                );
+              });
+              planningLayer.updateMatrixWorld(true);
+              sideErrors = Object.fromEntries(record.targets.map((target) => [
+                target.side,
+                {
+                  ...measureParkingMergeTarget(
+                    planningControllers[target.side]?.frame,
+                    target,
+                  ),
+                  targetSource: target.source,
+                  frameName: target.frameName,
+                },
+              ]));
+              const errors = Object.values(sideErrors);
+              if (
+                errors.length
+                && errors.every((error) => (
+                  error.positionError <= Math.min(positionTolerance, 0.004)
+                  && error.rotationError <= Math.min(rotationTolerance, 1)
+                ))
+              ) break;
+            }
+
+            const errors = Object.values(sideErrors);
+            const positionError = errors.length
+              ? Math.max(...errors.map((error) => error.positionError))
+              : Number.POSITIVE_INFINITY;
+            const rotationError = errors.length
+              ? Math.max(...errors.map((error) => error.rotationError))
+              : Number.POSITIVE_INFINITY;
+            const feasible = errors.length === record.targets.length
+              && errors.length > 0
+              && positionError <= positionTolerance
+              && rotationError <= rotationTolerance;
+            plannedPoses.push({
+              poseId: record.poseId,
+              poseName: record.poseName,
+              sourceParkingPointId: record.sourceParkingPointId,
+              sourceParkingPointName: record.sourceParkingPointName,
+              feasible,
+              positionError,
+              rotationError,
+              sideErrors,
+              jointValues: readRobotJointValues(planningRobot),
+            });
+          }
+
+          const feasiblePoseCount = plannedPoses.filter((pose) => pose.feasible).length;
+          const failedPoseCount = plannedPoses.length - feasiblePoseCount;
+          const maximumPositionError = Math.max(
+            ...plannedPoses.map((pose) => pose.positionError),
+          );
+          const maximumRotationError = Math.max(
+            ...plannedPoses.map((pose) => pose.rotationError),
+          );
+          const score = failedPoseCount * 1_000_000
+            + (maximumPositionError / positionTolerance) * 1_000
+            + (maximumRotationError / rotationTolerance) * 100
+            + candidate.travel.maximum;
+          const candidateResult = {
+            id: candidate.id,
+            source: candidate.source,
+            sourceLabel: candidate.sourceLabel,
+            anchorParkingPointId: candidate.anchorParkingPointId,
+            anchorParkingPointName: candidate.anchorParkingPointName,
+            mapPose: candidate.mapPose,
+            travel: candidate.travel,
+            plannedPoses,
+            feasiblePoseCount,
+            failedPoseCount,
+            maximumPositionError,
+            maximumRotationError,
+            score,
+          };
+          if (!bestCandidate || candidateResult.score < bestCandidate.score) {
+            bestCandidate = candidateResult;
+          }
+          await new Promise((resolve) => window.setTimeout(resolve, 0));
+        }
+
+        const feasible = Boolean(
+          bestCandidate
+          && bestCandidate.failedPoseCount === 0
+          && bestCandidate.plannedPoses.length === sourcePoseRecords.length,
+        );
+        clusterPlans.push({
+          id: cluster.id,
+          memberIds: cluster.memberIds,
+          memberNames: cluster.memberNames,
+          poseCount: sourcePoseRecords.length,
+          targetCount: targetRecords.reduce(
+            (total, record) => total + record.targets.length,
+            0,
+          ),
+          maximumPairDistance: cluster.maximumPairDistance,
+          nearbyPairCount: cluster.nearbyPairCount,
+          candidateCount: candidates.length,
+          feasible,
+          reason: feasible ? '' : '没有候选底盘位姿能让全部相机姿态落入当前容差',
+          candidate: bestCandidate
+            ? {
+                id: bestCandidate.id,
+                source: bestCandidate.source,
+                sourceLabel: bestCandidate.sourceLabel,
+                anchorParkingPointId: bestCandidate.anchorParkingPointId,
+                anchorParkingPointName: bestCandidate.anchorParkingPointName,
+                mapPose: bestCandidate.mapPose,
+                travel: bestCandidate.travel,
+                maximumPositionError: bestCandidate.maximumPositionError,
+                maximumRotationError: bestCandidate.maximumRotationError,
+                feasiblePoseCount: bestCandidate.feasiblePoseCount,
+                failedPoseCount: bestCandidate.failedPoseCount,
+              }
+            : null,
+          plannedPoses: bestCandidate?.plannedPoses || [],
+        });
+      }
+    } finally {
+      planningLayer.remove(planningRobot);
+      planningLayer.clear();
+    }
+
+    const result = {
+      version: 1,
+      status: 'ready',
+      taskId: task.id,
+      analyzedAt: new Date().toISOString(),
+      method: 'xy-single-link+common-base-dual-optical-dls',
+      distanceThreshold,
+      positionTolerance,
+      rotationTolerance,
+      clusters: clusterPlans,
+      nearbyPairs: spatialAnalysis.nearbyPairs,
+      isolatedParkingPointIds: spatialAnalysis.isolatedParkingPointIds,
+      feasibleClusterCount: clusterPlans.filter((cluster) => cluster.feasible).length,
+    };
+    if (canvas) {
+      canvas.dataset.parkingMergePlannerState = 'ready';
+      canvas.dataset.parkingMergeFeasibleClusterCount = String(result.feasibleClusterCount);
+      canvas.dataset.parkingMergeAnalysisRevision = String(
+        Number(canvas.dataset.parkingMergeAnalysisRevision || 0) + 1,
+      );
+    }
+    return result;
+  };
+
+  useEffect(() => {
+    if (!onParkingMergePlannerChange) return undefined;
+    const provider = async (request) => {
+      try {
+        return await parkingMergePlannerRef.current?.(request);
+      } catch (error) {
+        const canvas = controlsRef.current?.domElement;
+        if (canvas) {
+          canvas.dataset.parkingMergePlannerState = 'error';
+          canvas.dataset.parkingMergePlannerError = error?.message || 'planning-failed';
+        }
+        throw error;
+      }
+    };
+    onParkingMergePlannerChange(provider);
+    return () => onParkingMergePlannerChange(null);
+  }, [onParkingMergePlannerChange]);
 
   const currentEndEffectorLockModes = () =>
     endEffectorLockModes(lockedEndEffectorsRef.current);
@@ -1442,6 +2085,7 @@ export default function PointCloudViewer({
   };
 
   const enterEndEffectorControl = (side) => {
+    if (robotTrajectoryActiveRef.current) return false;
     const controller = endEffectorControllersRef.current[side];
     const transform = transformControlsRef.current;
     const target = endEffectorTargetRef.current;
@@ -1699,7 +2343,9 @@ export default function PointCloudViewer({
     const nextPose = normalizeRobotPose(robotPose);
     robotPoseRef.current = nextPose;
     applyRobotPose(robotLayerRef.current, nextPose);
-    writeRobotPoseDataset(controlsRef.current?.domElement, nextPose);
+    const canvas = controlsRef.current?.domElement;
+    writeRobotPoseDataset(canvas, nextPose);
+    updateRobotParkingGhostGuide(robotParkingGhostVisualRef.current, nextPose, canvas);
   }, [mapData?.geometry, robotPose]);
 
   useLayoutEffect(() => {
@@ -2341,15 +2987,19 @@ export default function PointCloudViewer({
     const routeGroup = new THREE.Group();
     const waypointGroup = new THREE.Group();
     const robotLayer = new THREE.Group();
+    const robotParkingGhostLayer = new THREE.Group();
     routeGroup.name = 'directed-route-edges';
     waypointGroup.name = 'navigation-waypoint-markers';
     robotLayer.name = 'loaded-robot-model';
+    robotParkingGhostLayer.name = 'robot-parking-ghost-layer';
+    robotParkingGhostLayer.userData.ownedResources = new Set();
     robotLayer.visible = true;
-    scene.add(sliceGroup, robotLayer, routeGroup, waypointGroup);
+    scene.add(sliceGroup, robotLayer, robotParkingGhostLayer, routeGroup, waypointGroup);
     sliceGroupRef.current = sliceGroup;
     routeGroupRef.current = routeGroup;
     waypointGroupRef.current = waypointGroup;
     robotLayerRef.current = robotLayer;
+    robotParkingGhostLayerRef.current = robotParkingGhostLayer;
     robotPoseRef.current = applyRobotPose(robotLayer, robotPoseRef.current);
     writeRobotPoseDataset(renderer.domElement, robotPoseRef.current);
     renderer.domElement.dataset.robotLayerVisible = 'true';
@@ -2824,6 +3474,7 @@ export default function PointCloudViewer({
     };
 
     const updateChassisDragMode = (enabled, reason = 'user', updateUi = true) => {
+      if (enabled && robotTrajectoryActiveRef.current) return false;
       const nextEnabled = Boolean(enabled && robotChassisHandleRef.current?.target);
       if (!nextEnabled) {
         finishChassisPointerDrag(null, reason, true, updateUi);
@@ -2863,6 +3514,8 @@ export default function PointCloudViewer({
 
     const startChassisPointerDrag = (event) => {
       if (
+        robotTrajectoryActiveRef.current
+        ||
         !chassisDragModeRef.current
         || event.button !== 0
         || event.shiftKey
@@ -3156,6 +3809,7 @@ export default function PointCloudViewer({
       return null;
     };
     const onRobotDoubleClick = (event) => {
+      if (robotTrajectoryActiveRef.current) return;
       if (transformControls.dragging || transformControls.axis) return;
       const side = endEffectorAtPointer(event);
       renderer.domElement.dataset.lastEndEffectorDoubleClick = side || 'none';
@@ -3896,6 +4550,15 @@ export default function PointCloudViewer({
         selectedHalo.material.opacity = 0.22 + ((pulse - 0.94) / 0.24) * 0.34;
         renderer.domElement.dataset.selectedWaypointPulse = pulse.toFixed(3);
       }
+      const parkingGhostVisual = robotParkingGhostVisualRef.current;
+      if (parkingGhostVisual) {
+        updateRobotParkingGhostGuide(parkingGhostVisual, robotPoseRef.current, null);
+        const ghostPulse = 1.04 + Math.sin(performance.now() * 0.0034) * 0.08;
+        parkingGhostVisual.pulseRing.scale.setScalar(ghostPulse);
+        parkingGhostVisual.pulseRing.material.opacity = 0.18
+          + ((ghostPulse - 0.96) / 0.16) * 0.22;
+        renderer.domElement.dataset.parkingGhostPulse = ghostPulse.toFixed(3);
+      }
       renderer.render(scene, camera);
     });
 
@@ -3937,6 +4600,7 @@ export default function PointCloudViewer({
       disposeObject(sliceGroup);
       disposeObject(routeGroup);
       disposeObject(waypointGroup);
+      clearRobotParkingGhostLayer(robotParkingGhostLayer);
       renderer.dispose();
       if (viewportCanvasRef?.current === renderer.domElement) {
         viewportCanvasRef.current = null;
@@ -3948,6 +4612,8 @@ export default function PointCloudViewer({
       waypointGroupRef.current = null;
       robotLayerRef.current = null;
       loadedRobotRef.current = null;
+      robotParkingGhostLayerRef.current = null;
+      robotParkingGhostVisualRef.current = null;
       robotChassisHandleRef.current = null;
       endEffectorControllersRef.current = { left: null, right: null };
       endEffectorControlRef.current = null;
@@ -4157,6 +4823,65 @@ export default function PointCloudViewer({
       if (loadedRobot) disposeRobotModel(loadedRobot);
     };
   }, [mapData?.geometry, robotDescriptor]);
+
+  useEffect(() => {
+    const layer = robotParkingGhostLayerRef.current;
+    const canvas = controlsRef.current?.domElement;
+    if (!layer || !canvas) return undefined;
+
+    clearRobotParkingGhostLayer(layer);
+    robotParkingGhostVisualRef.current = null;
+    writeRobotParkingGhostHiddenDataset(canvas);
+    if (
+      !robotParkingGhost
+      || !loadedRobotRef.current
+      || robotLoadState?.status !== 'loaded'
+    ) return undefined;
+
+    let visual = null;
+    try {
+      visual = createRobotParkingGhostVisual(
+        loadedRobotRef.current,
+        robotParkingGhost,
+      );
+      visual.objects.forEach((object) => layer.add(object));
+      layer.userData.ownedResources = visual.resources;
+      layer.userData.parkingPointId = robotParkingGhost.parkingPointId;
+      robotParkingGhostVisualRef.current = visual;
+      updateRobotParkingGhostGuide(visual, robotPoseRef.current, canvas);
+      canvas.dataset.parkingGhostState = 'visible';
+      canvas.dataset.parkingGhostTargetId = robotParkingGhost.parkingPointId;
+      canvas.dataset.parkingGhostMeshCount = String(visual.meshCount);
+      canvas.dataset.parkingGhostJointCount = String(visual.jointCount);
+      canvas.dataset.parkingGhostJointValues = JSON.stringify(
+        normalizeRobotJointValues(robotParkingGhost.jointValues),
+      );
+      canvas.dataset.parkingGhostOpacity = String(ROBOT_PARKING_GHOST_OPACITY);
+      canvas.dataset.parkingGhostTargetPose = [
+        visual.targetPose.position.x,
+        visual.targetPose.position.y,
+        visual.targetPose.position.z,
+        visual.targetPose.rpy.roll,
+        visual.targetPose.rpy.pitch,
+        visual.targetPose.rpy.yaw,
+      ].join(',');
+    } catch (error) {
+      clearRobotParkingGhostLayer(layer);
+      robotParkingGhostVisualRef.current = null;
+      canvas.dataset.parkingGhostState = 'error';
+      canvas.dataset.parkingGhostError = error?.message || '机器人虚影创建失败';
+      console.error('Failed to create robot parking ghost', error);
+      return undefined;
+    }
+
+    return () => {
+      if (robotParkingGhostVisualRef.current === visual) {
+        robotParkingGhostVisualRef.current = null;
+        clearRobotParkingGhostLayer(layer);
+        writeRobotParkingGhostHiddenDataset(canvas);
+      }
+    };
+  }, [mapData?.geometry, robotDescriptor, robotLoadState?.status, robotParkingGhost]);
 
   useEffect(() => {
     const canvas = controlsRef.current?.domElement;
@@ -4536,6 +5261,34 @@ export default function PointCloudViewer({
         target = start.clone().add(end).multiplyScalar(0.5);
         subjectSpan = start.distanceTo(end);
       }
+    } else if (focusRequest.type === 'robot') {
+      const robot = robotLayerRef.current;
+      if (robot?.children.length) {
+        const robotSphere = new THREE.Box3()
+          .setFromObject(robot)
+          .getBoundingSphere(new THREE.Sphere());
+        if (Number.isFinite(robotSphere.radius) && robotSphere.radius > 0) {
+          target = robotSphere.center.clone();
+          subjectSpan = robotSphere.radius * 2;
+          camera.updateMatrixWorld(true);
+          const screenUp = new THREE.Vector3()
+            .setFromMatrixColumn(camera.matrixWorld, 1)
+            .normalize();
+          target.addScaledVector(screenUp, -robotSphere.radius * 0.28);
+        }
+      }
+    } else if (focusRequest.type === 'robot-ghost') {
+      const robot = robotLayerRef.current;
+      const ghostPoseRoot = robotParkingGhostVisualRef.current?.poseRoot;
+      if (robot?.children.length && ghostPoseRoot) {
+        const comparisonBounds = new THREE.Box3().setFromObject(robot);
+        comparisonBounds.expandByObject(ghostPoseRoot);
+        const comparisonSphere = comparisonBounds.getBoundingSphere(new THREE.Sphere());
+        if (Number.isFinite(comparisonSphere.radius) && comparisonSphere.radius > 0) {
+          target = comparisonSphere.center.clone();
+          subjectSpan = comparisonSphere.radius * 2;
+        }
+      }
     }
     if (!target) return undefined;
 
@@ -4551,7 +5304,11 @@ export default function PointCloudViewer({
     const desiredDistance = THREE.MathUtils.clamp(
       focusRequest.type === 'edge'
         ? Math.max(subjectSpan * 1.45, sphere.radius * 0.12, routeScale * 12)
-        : Math.max(sphere.radius * WAYPOINT_FOCUS_DISTANCE_RATIO, routeScale * 12),
+        : focusRequest.type === 'robot'
+          ? Math.max(subjectSpan * 1.72, 0.9)
+          : focusRequest.type === 'robot-ghost'
+            ? Math.max(subjectSpan * 1.48, 1.05)
+          : Math.max(sphere.radius * WAYPOINT_FOCUS_DISTANCE_RATIO, routeScale * 12),
       controls.minDistance * 2,
       controls.maxDistance * 0.82,
     );
@@ -4687,6 +5444,23 @@ export default function PointCloudViewer({
     canvas.dataset.shiftPanArmed = 'false';
     canvas.dataset.effectiveInteractionMode = interactionModeRef.current;
   }, [mapData?.geometry, robotControlEnabled, robotDescriptor, robotLoadState?.status]);
+
+  useEffect(() => {
+    const canvas = controlsRef.current?.domElement;
+    const active = Boolean(robotTrajectoryActive);
+    if (active) {
+      chassisDragInteractionRef.current?.exit?.('teaching-trajectory-playback');
+      endEffectorInteractionRef.current?.exit?.();
+      robotControlEnabledRef.current = false;
+      pressedKeysRef.current.clear();
+      keyboardImpulseRef.current.clear();
+      setShiftPanArmed(false);
+    }
+    if (canvas) {
+      canvas.dataset.robotTrajectoryActive = active ? 'true' : 'false';
+      if (active) canvas.dataset.keyboardControlOwner = 'camera';
+    }
+  }, [mapData?.geometry, robotTrajectoryActive]);
 
   useEffect(() => {
     if (!mapData?.geometry) return undefined;
@@ -5035,6 +5809,7 @@ export default function PointCloudViewer({
   };
 
   const toggleRobotControl = () => {
+    if (robotTrajectoryActiveRef.current) return;
     if (robotLoadState?.status !== 'loaded' || !robotDescriptor) return;
     const enabled = !robotControlEnabledRef.current;
     if (enabled && chassisDragModeRef.current) {
@@ -5084,6 +5859,14 @@ export default function PointCloudViewer({
     && robotLoadState?.status === 'loaded',
   );
   const displayedRobotPose = normalizeRobotPose(robotPose);
+  const robotParkingGhostVisible = Boolean(
+    robotParkingGhost
+    && robotDescriptor
+    && robotLoadState?.status === 'loaded',
+  );
+  const robotParkingGhostMetrics = robotParkingGhostVisible
+    ? measureRobotParkingGhost(displayedRobotPose, robotParkingGhost.targetPose)
+    : null;
   const endEffectorControlActive = Boolean(endEffectorControl);
   const mapLockedSides = ['left', 'right'].filter(
     (side) => endEffectorLockModesState[side] === 'map',
@@ -5117,8 +5900,13 @@ export default function PointCloudViewer({
 
   return (
     <div
-      className={`point-cloud-view ${shiftPanArmed ? 'is-shift-pan-armed' : ''} ${effectiveViewportPan ? 'is-viewport-pan-mode' : ''} ${persistentPanMode ? 'is-persistent-pan-mode' : ''} ${robotControlActive ? 'is-robot-driving' : ''} ${endEffectorControlActive ? 'is-end-effector-control' : ''} ${chassisDragMode ? 'is-chassis-drag-mode' : ''} ${chassisDragging ? 'is-chassis-dragging' : ''}`}
+      className={`point-cloud-view ${shiftPanArmed ? 'is-shift-pan-armed' : ''} ${effectiveViewportPan ? 'is-viewport-pan-mode' : ''} ${persistentPanMode ? 'is-persistent-pan-mode' : ''} ${robotControlActive ? 'is-robot-driving' : ''} ${endEffectorControlActive ? 'is-end-effector-control' : ''} ${chassisDragMode ? 'is-chassis-drag-mode' : ''} ${chassisDragging ? 'is-chassis-dragging' : ''} ${robotTrajectoryActive ? 'is-teaching-trajectory-active' : ''} ${robotParkingGhostVisible ? 'is-parking-ghost-visible' : ''}`}
       ref={mountRef}
+      data-robot-trajectory-active={robotTrajectoryActive ? 'true' : 'false'}
+      data-parking-ghost-state={robotParkingGhostVisible ? 'visible' : 'hidden'}
+      data-parking-ghost-target={robotParkingGhost?.parkingPointId || ''}
+      data-parking-ghost-planar-distance={robotParkingGhostMetrics?.planarDistance.toFixed(6) || ''}
+      data-parking-ghost-straight-distance={robotParkingGhostMetrics?.straightDistance.toFixed(6) || ''}
     >
       {!mapData?.geometry && (
         <div className="viewer-placeholder">
@@ -5168,6 +5956,43 @@ export default function PointCloudViewer({
               </b>
             </div>
           )}
+          {robotParkingGhostVisible && robotParkingGhostMetrics && (
+            <aside
+              className={`robot-parking-ghost-readout ${collisionProtectionEnabled ? 'has-collision-readout' : ''}`}
+              role="status"
+              aria-live="polite"
+              aria-label="停车点机器人虚影"
+              data-parking-point-id={robotParkingGhost.parkingPointId}
+              data-frozen-joint-count={Object.keys(robotParkingGhost.jointValues || {}).length}
+            >
+              <span className="robot-parking-ghost-readout__mark" aria-hidden="true">
+                <Bot size={16} />
+                <MapPin size={10} />
+              </span>
+              <div className="robot-parking-ghost-readout__body">
+                <small>ROBOT GHOST · MAP COMPARISON</small>
+                <strong>
+                  <span>{robotParkingGhost.sourceName || '当前机器人'}</span>
+                  <i>→</i>
+                  <span>{robotParkingGhost.parkingPointName || '目标停车点'}</span>
+                </strong>
+                <div className="robot-parking-ghost-readout__metrics">
+                  <span><Ruler size={10} /><small>XY 平面</small><b>{robotParkingGhostMetrics.planarDistance.toFixed(2)} m</b></span>
+                  <span><small>3D 直线</small><b>{robotParkingGhostMetrics.straightDistance.toFixed(2)} m</b></span>
+                  <span><small>ΔZ</small><b>{robotParkingGhostMetrics.deltaZ >= 0 ? '+' : ''}{robotParkingGhostMetrics.deltaZ.toFixed(2)} m</b></span>
+                </div>
+                <em>{Object.keys(robotParkingGhost.jointValues || {}).length} JOINTS FROZEN · 虚影不改变当前机器人</em>
+              </div>
+              <button
+                type="button"
+                aria-label="清除停车点机器人虚影"
+                title="移除停车点机器人虚影与距离连线"
+                onClick={() => onClearRobotParkingGhost?.()}
+              >
+                <X size={12} />
+              </button>
+            </aside>
+          )}
           <div className="viewer-top-tools">
             <div className="viewer-tool-switch" role="toolbar" aria-label="三维视图工具">
               <button
@@ -5207,6 +6032,7 @@ export default function PointCloudViewer({
                 <button
                   type="button"
                   className={`robot-control-toggle ${robotControlActive ? 'is-active' : ''}`}
+                  disabled={robotTrajectoryActive}
                   onClick={() => {
                     focusRobot();
                     toggleRobotControl();
@@ -5214,7 +6040,9 @@ export default function PointCloudViewer({
                   aria-label="定位机器人模型"
                   aria-pressed={robotControlActive}
                   title={
-                    endEffectorControlActive
+                    robotTrajectoryActive
+                      ? '示教轨迹播放期间由规划器接管机器人，暂停或停止后可恢复手动控制'
+                      : endEffectorControlActive
                       ? '退出机械臂末端控制，定位机器人并启用麦轮底盘控制'
                       : robotControlActive
                         ? '底盘控制已启用；再次点击将键盘交还相机'

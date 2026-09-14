@@ -259,6 +259,78 @@ const normalizeTeachingCameraCapture = (value) => {
   };
 };
 
+const normalizeParkingMergeSideErrors = (value) => {
+  if (!value || typeof value !== 'object') return {};
+  return Object.fromEntries(
+    ['left', 'right'].flatMap((side) => {
+      const error = value[side];
+      if (!error || typeof error !== 'object') return [];
+      return [[side, {
+        positionError: Math.max(0, numberOr(error.positionError)),
+        rotationError: Math.max(0, numberOr(error.rotationError)),
+        targetSource: String(error.targetSource || ''),
+        frameName: String(error.frameName || ''),
+      }]];
+    }),
+  );
+};
+
+const normalizeTeachingReplanningHistory = (value) => (
+  Array.isArray(value)
+    ? value.flatMap((entry) => {
+        if (!entry || typeof entry !== 'object') return [];
+        return [{
+          mergeId: String(entry.mergeId || ''),
+          replannedAt: String(entry.replannedAt || ''),
+          method: String(entry.method || 'common-base-dual-optical-dls'),
+          sourceParkingPointId: String(entry.sourceParkingPointId || ''),
+          sourceParkingPointName: String(entry.sourceParkingPointName || ''),
+          sourceMapPose: normalizeTeachingPose(entry.sourceMapPose),
+          sourceJointValues: normalizeTeachingJoints(entry.sourceJointValues).values,
+          commonMapPose: normalizeTeachingPose(entry.commonMapPose),
+          positionTolerance: Math.max(0, numberOr(entry.positionTolerance)),
+          rotationTolerance: Math.max(0, numberOr(entry.rotationTolerance)),
+          positionError: Math.max(0, numberOr(entry.positionError)),
+          rotationError: Math.max(0, numberOr(entry.rotationError)),
+          sideErrors: normalizeParkingMergeSideErrors(entry.sideErrors),
+        }];
+      })
+    : []
+);
+
+const normalizeParkingPointMergeHistory = (value) => (
+  Array.isArray(value)
+    ? value.flatMap((entry) => {
+        if (!entry || typeof entry !== 'object') return [];
+        const sources = Array.isArray(entry.sourceParkingPoints)
+          ? entry.sourceParkingPoints
+          : [];
+        return [{
+          id: String(entry.id || createId('parking-merge')),
+          mergedAt: String(entry.mergedAt || ''),
+          method: String(entry.method || 'xy-single-link+common-base-dual-optical-dls'),
+          candidateSource: String(entry.candidateSource || ''),
+          distanceThreshold: Math.max(0, numberOr(entry.distanceThreshold)),
+          positionTolerance: Math.max(0, numberOr(entry.positionTolerance)),
+          rotationTolerance: Math.max(0, numberOr(entry.rotationTolerance)),
+          sourceParkingPoints: sources.flatMap((source) => (
+            source && typeof source === 'object'
+              ? [{
+                  id: String(source.id || ''),
+                  name: String(source.name || ''),
+                  mapPose: normalizeTeachingPose(source.mapPose),
+                  poseCount: Math.max(0, Math.floor(numberOr(source.poseCount))),
+                }]
+              : []
+          )),
+          poseCount: Math.max(0, Math.floor(numberOr(entry.poseCount))),
+          maximumPositionError: Math.max(0, numberOr(entry.maximumPositionError)),
+          maximumRotationError: Math.max(0, numberOr(entry.maximumRotationError)),
+        }];
+      })
+    : []
+);
+
 const normalizeTeachingPoint = (point, pointIndex) => {
   const joints = normalizeTeachingJoints(
     point?.fullBodyJoints || point?.joints || point?.jointValues,
@@ -279,6 +351,7 @@ const normalizeTeachingPoint = (point, pointIndex) => {
     cameraCapture: normalizeTeachingCameraCapture(
       point?.cameraCapture || point?.visionCapture || point?.cameraFrames,
     ),
+    replanningHistory: normalizeTeachingReplanningHistory(point?.replanningHistory),
   };
 };
 
@@ -309,6 +382,7 @@ const normalizeTeachingParkingPoint = (parkingPoint, parkingIndex) => {
       || poses[0]?.mapPose,
     ),
     poses,
+    mergeHistory: normalizeParkingPointMergeHistory(parkingPoint?.mergeHistory),
   };
 };
 
@@ -553,7 +627,7 @@ export function buildExport({
   const pointById = new Map(waypoints.map((point) => [point.id, point]));
   const exportedRobotPose = robotPose || robot?.origin || {};
   return {
-    schemaVersion: '1.2',
+    schemaVersion: '1.3',
     exportedAt: new Date().toISOString(),
     coordinateSystem: {
       horizontalPlane: 'XY',

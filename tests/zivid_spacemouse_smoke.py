@@ -94,8 +94,16 @@ MOCK_WEBHID = r"""
       super();
       this.device = new MockSpaceMouseDevice();
     }
-    async getDevices() { return [this.device]; }
-    async requestDevice() { return [this.device]; }
+    async getDevices() {
+      return localStorage.getItem('__atlas_mock_hid_granted') === 'true'
+        ? [this.device]
+        : [];
+    }
+    async requestDevice() {
+      localStorage.setItem('__atlas_mock_hid_granted', 'true');
+      window.__spaceMouseRequestCount = Number(window.__spaceMouseRequestCount || 0) + 1;
+      return [this.device];
+    }
   }
 
   const hid = new MockHID();
@@ -105,6 +113,7 @@ MOCK_WEBHID = r"""
     value: hid,
   });
   window.__spaceMouseMock = hid.device;
+  window.__spaceMouseRequestCount = 0;
 })();
 """
 
@@ -154,7 +163,6 @@ def run():
               'atlas-route-studio:spacemouse-wireless-bt-profile-v4',
               JSON.stringify({json.dumps(PROFILE)})
             );
-            localStorage.setItem('__atlas_mock_hid_granted', 'true');
             """
         )
         page = context.new_page()
@@ -169,10 +177,11 @@ def run():
 
         page.goto(BASE_URL, wait_until="networkidle")
         page.locator('[data-session-state="ready"]').wait_for()
-        page.wait_for_function(
-            "document.querySelector('.spacemouse-control')?.dataset.spacemouseState === 'connected'"
-        )
         control = page.locator(".spacemouse-control")
+        page.wait_for_function(
+            "document.querySelector('.spacemouse-control')?.dataset.spacemouseState === 'idle'"
+        )
+        assert control.get_attribute("data-spacemouse-state") == "idle"
         assert control.get_attribute("data-spacemouse-calibrated") == "true"
         assert control.get_attribute("data-spacemouse-selected-axis") == "x"
 
@@ -187,29 +196,35 @@ def run():
         page.wait_for_function(
             "document.querySelector('.three-canvas')?.dataset.robotModelState === 'loaded'"
         )
-        page.get_by_role("button", name="新建任务", exact=True).click()
+        page.get_by_role("button", name="新建示教任务", exact=True).click()
         page.wait_for_function(
             "document.querySelector('[aria-label=\"虚拟示教\"]')?.dataset.teachingTaskCount === '1'"
         )
-        page.get_by_role("tab", name="相机反算", exact=True).click()
         page.wait_for_function(
-            "document.querySelector('[aria-label=\"相机视角反算示教\"]')?.dataset.cameraReady === 'true'"
+            "document.querySelector('[aria-label=\"Zivid 2 M70 相机视图\"]')?.dataset.cameraTeachingMode === 'active'"
         )
 
         main_canvas = page.locator(".three-canvas")
         panel = page.get_by_label("Zivid 2 M70 相机视图", exact=True)
+        assert page.get_by_label("相机视角反算示教", exact=True).count() == 0
         panel.get_by_role("button", name="放大 Zivid 相机视图").click()
         dialog = page.get_by_role("dialog", name="Zivid 2 M70 相机大图")
         dialog.wait_for()
         panel = dialog.get_by_label("Zivid 2 M70 相机视图", exact=True)
+        camera_teach = dialog.get_by_label("相机视角反算示教", exact=True)
+        camera_teach.wait_for()
+        assert camera_teach.get_attribute("data-camera-ready") == "true"
         camera_canvas = panel.get_by_label("Zivid 2 M70 仿真相机画面", exact=True)
-        toggle = panel.get_by_role("button", name="启用 SpaceMouse 相机视角控制")
+        toggle = panel.locator(".zivid-camera-spacemouse-toggle")
         assert toggle.is_visible()
         page.wait_for_function(
-            "document.querySelector('.zivid-camera-panel.is-expanded')?.dataset.spacemouseReady === 'true'"
+            "document.querySelector('.zivid-camera-panel.is-expanded')?.dataset.spacemouseConnectFromCamera === 'available'"
         )
         assert toggle.is_enabled()
         assert toggle.get_attribute("aria-pressed") == "false"
+        assert toggle.get_attribute("aria-label") == "连接 SpaceMouse 并启用相机视角控制"
+        assert panel.get_attribute("data-spacemouse-ready") == "false"
+        assert page.evaluate("window.__spaceMouseRequestCount") == 0
         assert panel.get_attribute("data-spacemouse-control-model") == "optical-frame-ik"
         assert panel.get_attribute("data-spacemouse-zoom-policy") == "mouse-only"
 
@@ -222,6 +237,12 @@ def run():
 
         toggle.click()
         page.wait_for_function(
+            "document.querySelector('.spacemouse-control')?.dataset.spacemouseState === 'connected'"
+        )
+        page.wait_for_function(
+            "document.querySelector('.zivid-camera-panel.is-expanded')?.dataset.spacemouseReady === 'true'"
+        )
+        page.wait_for_function(
             "document.querySelector('.zivid-camera-panel.is-expanded')?.dataset.spacemouseViewEnabled === 'true'"
         )
         page.wait_for_function(
@@ -230,6 +251,7 @@ def run():
         assert panel.get_by_role(
             "button", name="关闭 SpaceMouse 相机视角控制"
         ).get_attribute("aria-pressed") == "true"
+        assert page.evaluate("window.__spaceMouseRequestCount") == 1
         assert panel.locator(".zivid-camera-spacemouse-route").count() == 0
         axis_indicator = panel.locator(".zivid-camera-spacemouse-axis")
         assert axis_indicator.is_visible()

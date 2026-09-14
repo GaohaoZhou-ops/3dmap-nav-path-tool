@@ -117,12 +117,15 @@ def run():
         ) > 0.001
         print("stage=ik-lock-held", flush=True)
 
-        page.get_by_role("tab", name="示教数据管理").click()
+        page.get_by_role("button", name="打开示教数据管理页").click()
+        page.locator('[data-app-page="teaching-data"]').wait_for()
         with page.expect_download() as download_info:
             page.get_by_role("button", name="导出示教工程 JSON").click()
         exported = json.loads(Path(download_info.value.path()).read_text())
         assert exported["robot"]["lockedJoints"] == ["waist_pitch_J"]
         print("stage=export-lock-recorded", flush=True)
+        page.get_by_role("button", name="返回主工作台继续示教").click()
+        page.locator('[data-app-page="teaching-data"]').wait_for(state="detached")
 
         floating.get_by_role("button", name="展开全关节浮动窗口").click()
         page.get_by_role("button", name="解除全部关节 IK 锁定", exact=True).click()

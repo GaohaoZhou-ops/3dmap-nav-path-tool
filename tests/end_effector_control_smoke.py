@@ -104,7 +104,8 @@ def run():
         assert canvas.get_attribute("data-end-effector-ik-status") in ("tracking", "limited")
         final_ik_status = canvas.get_attribute("data-end-effector-ik-status")
 
-        page.get_by_role("tab", name="示教数据管理").click()
+        page.get_by_role("button", name="打开示教数据管理页").click()
+        page.locator('[data-app-page="teaching-data"]').wait_for()
         with page.expect_download() as download_info:
             page.get_by_role("button", name="导出示教工程 JSON").click()
         locked_export = json.loads(Path(download_info.value.path()).read_text())
@@ -115,6 +116,8 @@ def run():
             if name.startswith("left_J") or name.startswith("waist_")
         ]
         assert locked_joint_names
+        page.get_by_role("button", name="返回主工作台继续示教").click()
+        page.locator('[data-app-page="teaching-data"]').wait_for(state="detached")
 
         page.get_by_role("button", name="锁定本体姿态左机械臂末端", exact=True).click()
         assert panel.get_attribute("data-end-effector-locked") == "true"
@@ -166,7 +169,8 @@ def run():
         )
         page.screenshot(path="/tmp/atlas-end-effector-lock.png", full_page=True)
 
-        page.get_by_role("tab", name="示教数据管理").click()
+        page.get_by_role("button", name="打开示教数据管理页").click()
+        page.locator('[data-app-page="teaching-data"]').wait_for()
         with page.expect_download() as download_info:
             page.get_by_role("button", name="导出示教工程 JSON").click()
         exported = json.loads(Path(download_info.value.path()).read_text())
@@ -178,6 +182,8 @@ def run():
             abs(joints[name] - locked_joint_values[name]) < 1e-7
             for name in locked_joint_names
         )
+        page.get_by_role("button", name="返回主工作台继续示教").click()
+        page.locator('[data-app-page="teaching-data"]').wait_for(state="detached")
 
         double_click_tool(page, canvas, "left")
         page.wait_for_function(
@@ -198,11 +204,14 @@ def run():
             axis: number_attr(canvas, f"robot-left-tool-world-{axis}")
             for axis in ("x", "y", "z")
         }
-        page.get_by_role("tab", name="示教数据管理").click()
+        page.get_by_role("button", name="打开示教数据管理页").click()
+        page.locator('[data-app-page="teaching-data"]').wait_for()
         with page.expect_download() as download_info:
             page.get_by_role("button", name="导出示教工程 JSON").click()
         before_global_move = json.loads(Path(download_info.value.path()).read_text())
         before_global_joints = before_global_move["robot"]["joints"]
+        page.get_by_role("button", name="返回主工作台继续示教").click()
+        page.locator('[data-app-page="teaching-data"]').wait_for(state="detached")
         before_robot_pose = {
             axis: number_attr(canvas, f"robot-{axis}")
             for axis in ("x", "y")
@@ -251,7 +260,8 @@ def run():
         assert global_position_error < 0.006
         assert global_rotation_error < 2.0
 
-        page.get_by_role("tab", name="示教数据管理").click()
+        page.get_by_role("button", name="打开示教数据管理页").click()
+        page.locator('[data-app-page="teaching-data"]').wait_for()
         with page.expect_download() as download_info:
             page.get_by_role("button", name="导出示教工程 JSON").click()
         after_global_move = json.loads(Path(download_info.value.path()).read_text())
@@ -265,6 +275,8 @@ def run():
             abs(after_global_joints[name] - before_global_joints[name]) > 0.001
             for name in global_chain_names
         )
+        page.get_by_role("button", name="返回主工作台继续示教").click()
+        page.locator('[data-app-page="teaching-data"]').wait_for(state="detached")
 
         double_click_tool(page, canvas, "left")
         page.wait_for_function(

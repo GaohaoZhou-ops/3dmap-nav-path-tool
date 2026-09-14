@@ -115,15 +115,17 @@ def run():
         canvas = page.locator(".three-canvas")
         assert canvas.get_attribute("data-robot-joint-applied-count") == "24"
 
-        page.get_by_role("button", name="新建任务").click()
+        page.get_by_role("button", name="新建示教任务").click()
         page.wait_for_function(
             "document.querySelector('[aria-label=\"虚拟示教\"]')?.dataset.teachingTaskCount === '1'"
         )
-        page.get_by_role("tab", name="相机反算", exact=True).click()
-        camera_teach = page.get_by_label("相机视角反算示教", exact=True)
-        assert camera_teach.is_visible()
         zivid_panel = page.get_by_label("Zivid 2 M70 相机视图", exact=True)
         assert zivid_panel.is_visible()
+        assert page.get_by_label("相机视角反算示教", exact=True).count() == 0
+        assert page.get_by_role("tab", name="相机反算", exact=True).count() == 0
+        assert zivid_panel.get_attribute("data-camera-teaching-activation") == "automatic"
+        assert zivid_panel.get_attribute("data-camera-teaching-mode") == "active"
+        assert zivid_panel.get_by_label("相机反算已激活", exact=True).is_visible()
         assert floating_window.is_visible()
         assert panel.is_visible()
         assert page.locator(".three-canvas").is_visible()
@@ -169,6 +171,14 @@ def run():
             assert not errors, errors
             browser.close()
             return
+
+        zivid_panel.get_by_role("button", name="放大 Zivid 相机视图").click()
+        camera_modal = page.get_by_label("Zivid 2 M70 相机大图", exact=True)
+        camera_modal.wait_for()
+        floating_window.wait_for(state="hidden")
+        zivid_panel = camera_modal.get_by_label("Zivid 2 M70 相机视图", exact=True)
+        camera_teach = camera_modal.get_by_label("相机视角反算示教", exact=True)
+        camera_teach.wait_for()
         assert camera_teach.get_attribute("data-attached-to-camera") == "true"
         assert camera_teach.evaluate(
             "node => node.parentElement?.getAttribute('aria-label')"
@@ -180,7 +190,9 @@ def run():
         viewport_box = camera_viewport.bounding_box()
         controls_box = camera_teach.bounding_box()
         assert viewport_box and controls_box
-        assert abs(controls_box["y"] - (viewport_box["y"] + viewport_box["height"])) < 3
+        assert abs(
+            controls_box["x"] - (viewport_box["x"] + viewport_box["width"])
+        ) < 3
         page.wait_for_function(
             "document.querySelector('[aria-label=\"相机视角反算示教\"]')?.dataset.cameraReady === 'true'"
         )
@@ -246,17 +258,12 @@ def run():
         assert vector_distance(right_quaternion_before, right_quaternion_after) > 0.003
         zivid_panel.screenshot(path="/tmp/atlas-camera-teaching.png", timeout=30_000)
 
-        zivid_panel.get_by_role("button", name="放大 Zivid 相机视图").click()
-        camera_modal = page.get_by_label("Zivid 2 M70 相机大图", exact=True)
-        camera_modal.wait_for()
-        floating_window.wait_for(state="hidden")
         joint_adjust_button = camera_modal.get_by_role(
             "button", name="打开全关节控制"
         )
         joint_adjust_button.wait_for()
-        space_mouse_button = camera_modal.get_by_role(
-            "button", name="启用 SpaceMouse 相机视角控制"
-        )
+        space_mouse_button = camera_modal.locator(".zivid-camera-spacemouse-toggle")
+        space_mouse_button.wait_for()
         joint_button_box = joint_adjust_button.bounding_box()
         space_mouse_button_box = space_mouse_button.bounding_box()
         assert joint_button_box and space_mouse_button_box
@@ -298,7 +305,6 @@ def run():
         page.wait_for_function(
             "Object.values(JSON.parse(document.querySelector('.three-canvas')?.dataset.robotJointValues || '{}')).every(value => Math.abs(value) < 1e-6)"
         )
-        page.get_by_role("tab", name="姿态示教", exact=True).click()
         initial_transforms = scene_joint_transforms(page)
         initial_right_quaternion = initial_transforms["right_J1"]["quaternion"]
         initial_right_tool = [
@@ -430,7 +436,8 @@ def run():
             """
         )
 
-        page.get_by_role("tab", name="示教数据管理").click()
+        page.get_by_role("button", name="打开示教数据管理页").click()
+        page.locator('[data-app-page="teaching-data"]').wait_for()
         with page.expect_download() as download_info:
             page.get_by_role("button", name="导出示教工程 JSON").click()
         exported = json.loads(Path(download_info.value.path()).read_text())
@@ -442,6 +449,8 @@ def run():
         assert abs(joint_poses[0]["joints"]["values"]["left_J1"] + 22) < 1e-6
         assert abs(joint_poses[0]["joints"]["values"]["wheel_LF_J"] + 270) < 1e-6
         assert abs(exported["robot"]["joints"]["right_J1"] - 35) < 1e-6
+        page.get_by_role("button", name="返回主工作台继续示教").click()
+        page.locator('[data-app-page="teaching-data"]').wait_for(state="detached")
 
         page.wait_for_timeout(600)
         stored_joint_poses = page.evaluate(

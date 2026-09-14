@@ -72,7 +72,7 @@ def run():
         page.wait_for_function(
             "document.querySelector('.zivid-camera-canvas')?.dataset.contextState === 'ready'"
         )
-        page.get_by_role("button", name="新建任务", exact=True).click()
+        page.get_by_role("button", name="新建示教任务", exact=True).click()
         capture_button = page.get_by_role("button", name="记录当前机器人姿态")
         capture_button.click()
         teaching_panel = page.get_by_label("虚拟示教", exact=True)
@@ -82,10 +82,9 @@ def run():
         )
         assert capture_button.get_attribute("aria-busy") == "false"
 
-        page.get_by_role("button", name="管理数据", exact=False).click()
-        assert page.get_by_role(
-            "tab", name="示教数据管理"
-        ).get_attribute("aria-selected") == "true"
+        page.get_by_role("button", name="打开数据页", exact=False).click()
+        page.locator('[data-app-page="teaching-data"]').wait_for()
+        assert page.url.endswith("/teaching-data")
         assert page.locator('section[aria-label="示教数据管理"]').is_visible()
         point_row = page.locator(".teaching-point-row").first
         assert int(point_row.get_attribute("data-joint-count")) == 24
@@ -154,13 +153,12 @@ def run():
         assert_camera_capture(stored_capture)
 
         page.reload(wait_until="domcontentloaded")
-        page.locator('[data-session-state="ready"]').wait_for()
+        page.locator(".teaching-data-page__session.is-ready").wait_for()
         page.wait_for_function(
             "document.querySelector('.three-canvas')?.dataset.robotModelState === 'loaded'",
             timeout=180_000,
         )
         page.locator(".loading-curtain").wait_for(state="hidden")
-        page.get_by_role("tab", name="示教数据管理").click(force=True)
         restored_vision = page.get_by_label("示教点双目视觉快照", exact=True)
         restored_vision.wait_for()
         assert restored_vision.get_attribute("data-camera-frame-count") == "2"

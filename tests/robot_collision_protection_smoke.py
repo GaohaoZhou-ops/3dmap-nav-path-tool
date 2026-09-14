@@ -62,14 +62,10 @@ def run():
             joint_toggle.click()
 
         panel = page.get_by_label("虚拟示教", exact=True)
-        guard = page.get_by_label("自碰撞保护", exact=True)
-        assert guard.is_visible()
-        assert guard.get_attribute("data-protection-default") == "off"
-        assert guard.get_attribute("data-bottom-structure-policy") == "excluded"
-        assert panel.get_attribute("data-collision-protection-enabled") == "false"
-        assert panel.get_attribute("data-collision-safety-threshold") == "0.1"
-        assert guard.get_by_role("button", name="开启自碰撞保护").count() == 0
-        assert "3D 工具栏" in guard.inner_text()
+        assert panel.is_visible()
+        assert page.get_by_label("自碰撞保护", exact=True).count() == 0
+        assert panel.get_attribute("data-capture-surface") == "task-actions"
+        assert page.get_by_role("button", name="开启碰撞保护").count() == 0
 
         map_input = page.locator('input[type="file"][accept=".ply"]')
         map_input.set_input_files(
@@ -79,15 +75,16 @@ def run():
             )
         )
         page.locator(".loading-curtain").wait_for(state="hidden")
-        toggle = page.get_by_role("button", name="开启自碰撞保护")
+        toggle = page.get_by_role("button", name="开启碰撞保护")
         assert toggle.is_visible()
+        assert toggle.count() == 1
         assert toggle.is_disabled()
         page.get_by_role("button", name="加载机器人", exact=True).click()
         page.get_by_role("option", name="加载机器人 botx_abx_zivid_m70").click()
         wait_for_robot(page)
 
         canvas = page.locator(".three-canvas")
-        toggle = page.get_by_role("button", name="开启自碰撞保护")
+        toggle = page.get_by_role("button", name="开启碰撞保护")
         assert not toggle.is_disabled()
         assert toggle.get_attribute("aria-pressed") == "false"
         assert toggle.locator("xpath=following-sibling::button[1]").get_attribute(
@@ -104,8 +101,6 @@ def run():
         page.wait_for_function(
             "document.querySelector('.three-canvas')?.dataset.collisionState === 'safe'"
         )
-        assert panel.get_attribute("data-collision-protection-enabled") == "true"
-        assert guard.get_attribute("class").endswith("is-safe")
         assert canvas.get_attribute("data-collision-worker") == "dedicated"
         assert canvas.get_attribute("data-collision-safety-distance") == "0.1"
         assert int(canvas.get_attribute("data-collision-indexed-points")) >= 4
@@ -129,7 +124,7 @@ def run():
         assert probe_link
         assert probe_link not in excluded
 
-        page.get_by_role("button", name="关闭自碰撞保护").click()
+        page.get_by_role("button", name="关闭碰撞保护").click()
         page.wait_for_function(
             "document.querySelector('.three-canvas')?.dataset.collisionProtectionEnabled === 'false'"
         )
@@ -153,7 +148,7 @@ def run():
         )
         wait_for_robot(page)
         canvas = page.locator(".three-canvas")
-        page.get_by_role("button", name="开启自碰撞保护").click()
+        page.get_by_role("button", name="开启碰撞保护").click()
         page.wait_for_function(
             "document.querySelector('.three-canvas')?.dataset.collisionState === 'collision'"
         )
@@ -165,6 +160,22 @@ def run():
         assert collision_alert.is_visible()
         assert "检测到环境干涉" in collision_alert.inner_text()
         assert "红色部件" in collision_alert.inner_text()
+        camera_panel = page.get_by_label("Zivid 2 M70 相机视图", exact=True)
+        page.wait_for_function(
+            "document.querySelector('[aria-label=\"Zivid 2 M70 相机视图\"]')?.dataset.cameraCollisionState === 'collision'"
+        )
+        assert camera_panel.get_attribute("data-collision-protection-enabled") == "true"
+        assert camera_panel.get_attribute("data-camera-collision-warning") == "visible"
+        camera_panel.get_by_role("button", name="放大 Zivid 相机视图").click()
+        camera_dialog = page.get_by_role("dialog", name="Zivid 2 M70 相机大图")
+        camera_dialog.wait_for()
+        camera_warning = camera_dialog.locator(".zivid-camera-collision-alert.is-collision")
+        assert camera_warning.is_visible()
+        assert "检测到环境干涉" in camera_warning.inner_text()
+        assert probe_link in camera_warning.get_attribute("data-collision-links")
+        camera_dialog.screenshot(path="/tmp/atlas-zivid-camera-collision.png")
+        camera_dialog.get_by_role("button", name="关闭 Zivid 相机大图").click()
+        camera_dialog.wait_for(state="detached")
         page.get_by_role("button", name="定位机器人模型").click()
         page.wait_for_function(
             "document.querySelector('.three-canvas')?.dataset.robotControlEnabled === 'true'"
@@ -191,6 +202,12 @@ def run():
                 near_alert = page.locator(".robot-collision-alert.is-near")
                 assert near_alert.is_visible()
                 assert "进入 100 mm 安全边界" in near_alert.inner_text()
+                page.wait_for_function(
+                    "document.querySelector('[aria-label=\"Zivid 2 M70 相机视图\"]')?.dataset.cameraCollisionState === 'near'"
+                )
+                camera_warning = page.locator(".zivid-camera-collision-alert.is-near")
+                assert camera_warning.is_visible()
+                assert "距离低于 10 cm 安全阈值" in camera_warning.inner_text()
             if observed_near and state == "safe":
                 observed_safe_after_near = True
                 break
@@ -199,6 +216,10 @@ def run():
         assert observed_safe_after_near
         assert canvas.get_attribute("data-collision-highlighted-links") == ""
         assert canvas.get_attribute("data-collision-highlight-color") == "none"
+        page.wait_for_function(
+            "document.querySelector('[aria-label=\"Zivid 2 M70 相机视图\"]')?.dataset.cameraCollisionWarning === 'hidden'"
+        )
+        assert page.locator(".zivid-camera-collision-alert").count() == 0
         page.screenshot(path="/tmp/atlas-collision-protection.png", full_page=True)
 
         # The protection state is deliberately not persisted: refresh should
@@ -208,12 +229,10 @@ def run():
         page.locator(".loading-curtain").wait_for(state="hidden")
         wait_for_robot(page)
         page.get_by_role("tab", name="虚拟示教与相机").click(force=True)
-        panel = page.get_by_label("虚拟示教", exact=True)
         canvas = page.locator(".three-canvas")
-        assert panel.get_attribute("data-collision-protection-enabled") == "false"
-        assert panel.get_attribute("data-collision-state") == "disabled"
+        assert page.get_by_label("自碰撞保护", exact=True).count() == 0
         assert canvas.get_attribute("data-collision-worker") == "inactive"
-        assert page.get_by_role("button", name="开启自碰撞保护").get_attribute(
+        assert page.get_by_role("button", name="开启碰撞保护").get_attribute(
             "aria-pressed"
         ) == "false"
 

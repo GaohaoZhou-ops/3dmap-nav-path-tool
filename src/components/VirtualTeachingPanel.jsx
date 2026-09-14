@@ -11,13 +11,11 @@ import {
   Database,
   Download,
   FileJson,
+  FolderOpen,
   MapPin,
   Maximize2,
-  Move3D,
   Play,
   Save,
-  ShieldAlert,
-  ShieldCheck,
   Trash2,
   X,
 } from 'lucide-react';
@@ -56,10 +54,7 @@ export default function VirtualTeachingPanel({
   robotLoadState,
   robotJointValues,
   view = 'capture',
-  teachingMode = 'pose',
   captureState = { status: 'idle', message: '' },
-  collisionProtectionEnabled = false,
-  collisionProtectionStatus = { state: 'disabled' },
   onCreateTask,
   onSelectTask,
   onRenameTask,
@@ -68,7 +63,6 @@ export default function VirtualTeachingPanel({
   onRenamePoint,
   onDeletePoint,
   onApplyPoint,
-  onTeachingModeChange,
   onExportProject,
   onOpenDataPage,
   onOpenCapturePage,
@@ -135,15 +129,6 @@ export default function VirtualTeachingPanel({
     (count, task) => count + (task.points?.length || 0),
     0,
   );
-  const collisionState = collisionProtectionEnabled
-    ? collisionProtectionStatus?.state || 'building'
-    : 'disabled';
-  const collisionDistanceMillimeters = Number.isFinite(
-    collisionProtectionStatus?.minimumDistance,
-  )
-    ? Math.max(0, collisionProtectionStatus.minimumDistance * 1000)
-    : null;
-  const CollisionIcon = collisionState === 'safe' ? ShieldCheck : ShieldAlert;
 
   const commitTaskName = () => {
     if (!activeTask) return;
@@ -177,12 +162,9 @@ export default function VirtualTeachingPanel({
       data-active-teaching-task={activeTask?.id || ''}
       data-teaching-context-match={contextMatches ? 'true' : 'false'}
       data-current-joint-count={currentJointCount}
-      data-teaching-mode={teachingMode}
+      data-camera-inverse-mode="automatic"
+      data-capture-surface={isDataView ? 'archive-management' : 'task-actions'}
       data-camera-capture-status={captureState?.status || 'idle'}
-      data-collision-protection-enabled={collisionProtectionEnabled ? 'true' : 'false'}
-      data-collision-state={collisionState}
-      data-collision-safety-threshold="0.1"
-      data-collision-chassis-excluded="true"
     >
       <div className="virtual-teaching__header">
         <div className="virtual-teaching__identity">
@@ -209,7 +191,7 @@ export default function VirtualTeachingPanel({
             disabled={!canCreate}
             title={canCreate ? '以当前地图和机器人新建示教任务' : '请先加载地图与机器人'}
           >
-            <CirclePlus size={12} /> 新建任务
+            <CirclePlus size={12} /> 新建示教任务
           </button>
         )}
       </div>
@@ -239,80 +221,32 @@ export default function VirtualTeachingPanel({
         </button>
       </div>}
 
-      {!isDataView && <div className="teaching-mode-switch" role="tablist" aria-label="选择虚拟示教模式">
-        <button
-          type="button"
-          role="tab"
-          className={teachingMode === 'pose' ? 'is-active' : ''}
-          aria-selected={teachingMode === 'pose'}
-          onClick={() => onTeachingModeChange?.('pose')}
-        >
-          <Move3D size={11} /> 姿态示教
-        </button>
-        <button
-          type="button"
-          role="tab"
-          className={teachingMode === 'camera' ? 'is-active' : ''}
-          aria-selected={teachingMode === 'camera'}
-          onClick={() => onTeachingModeChange?.('camera')}
-        >
-          <Camera size={11} /> 相机反算
-        </button>
-      </div>}
-
       {!isDataView && (
-        <section
-          className={`teaching-collision-guard is-${collisionState}`}
-          aria-label="自碰撞保护"
-          data-protection-default="off"
-          data-bottom-structure-policy="excluded"
-        >
-          <div className="teaching-collision-guard__head">
-            <span className="teaching-collision-guard__mark"><CollisionIcon size={14} /></span>
+        <div className="teaching-task-open" data-task-available={tasks.length ? 'true' : 'false'}>
+          <div className="teaching-task-open__identity">
+            <span><FolderOpen size={13} /></span>
             <div>
-              <small>ENVIRONMENT CLEARANCE / 100 MM</small>
-              <strong>自碰撞保护</strong>
+              <small>OPEN / RESUME</small>
+              <strong>打开已有任务</strong>
             </div>
-            <span
-              className={`teaching-collision-source ${collisionProtectionEnabled ? 'is-on' : ''}`}
-              title="开关位于 3D 窗口工具栏的“机器人”与“重置视角”之间"
+          </div>
+          <label>
+            <span className="visually-hidden">打开已有示教任务</span>
+            <select
+              aria-label="打开已有示教任务"
+              value={activeTask?.id || ''}
+              disabled={!tasks.length}
+              onChange={(event) => onSelectTask(event.target.value)}
             >
-              <i>3D 工具栏</i>
-              <b>{collisionProtectionEnabled ? 'ON' : 'OFF'}</b>
-            </span>
-          </div>
-          <div
-            className="teaching-collision-guard__status"
-            role={['collision', 'near', 'error'].includes(collisionState) ? 'alert' : 'status'}
-            aria-live="polite"
-          >
-            <span><CollisionIcon size={13} /></span>
-            <div>
-              <strong>
-                {collisionProtectionStatus?.message
-                  || (collisionProtectionEnabled ? '检测准备中' : '保护已关闭')}
-              </strong>
-              <small>
-                {collisionState === 'disabled'
-                  ? canCreate
-                    ? '点击 3D 窗口工具栏中的“碰撞保护”开启'
-                    : '加载地图与机器人后，在 3D 工具栏开启'
-                  : collisionProtectionStatus?.detail
-                    || '检测已在专用 Worker 中运行'}
-              </small>
-            </div>
-            <b>
-              {collisionDistanceMillimeters !== null
-                ? `${collisionDistanceMillimeters.toFixed(0)} mm`
-                : collisionState === 'safe' ? '≥100 mm' : '100 mm'}
-            </b>
-          </div>
-          <div className="teaching-collision-guard__policy">
-            <span><i /> 红色常亮：已干涉</span>
-            <span><i /> 黄色常亮：&lt; 10 cm</span>
-            <em>底盘 / 轮组已排除</em>
-          </div>
-        </section>
+              {!tasks.length && <option value="">暂无已有任务</option>}
+              {tasks.map((task, index) => (
+                <option key={task.id} value={task.id}>
+                  {String(index + 1).padStart(2, '0')} · {task.name} · {task.points.length} 姿态
+                </option>
+              ))}
+            </select>
+          </label>
+        </div>
       )}
 
       {!activeTask && (
@@ -325,7 +259,7 @@ export default function VirtualTeachingPanel({
           </strong>
           <span>
             {isDataView
-              ? '请先在“示教 / 相机”子页新建任务并采集机器人姿态。'
+              ? '请先返回主工作台，在“示教 / 相机”中新建任务并采集机器人姿态。'
               : canCreate
                 ? '任务将绑定当前地图和机器人；调整完成后逐点记录全身状态。'
                 : '机器人装配完成后，可记录地图定位与所有可动关节。'}
@@ -335,7 +269,7 @@ export default function VirtualTeachingPanel({
 
       {activeTask && (
         <>
-          <div className={`teaching-task-bar ${isDataView ? '' : 'is-select-only'}`}>
+          {isDataView && <div className="teaching-task-bar">
             <label>
               <span className="visually-hidden">选择示教任务</span>
               <select
@@ -350,21 +284,19 @@ export default function VirtualTeachingPanel({
                 ))}
               </select>
             </label>
-            {isDataView && (
-              <button
-                type="button"
-                aria-label="删除当前示教任务"
-                title="删除当前示教任务"
-                onClick={() => {
-                  if (window.confirm(`删除 ${activeTask.name} 及全部示教点？`)) {
-                    onDeleteTask(activeTask.id);
-                  }
-                }}
-              >
-                <Trash2 size={12} />
-              </button>
-            )}
-          </div>
+            <button
+              type="button"
+              aria-label="删除当前示教任务"
+              title="删除当前示教任务"
+              onClick={() => {
+                if (window.confirm(`删除 ${activeTask.name} 及全部示教点？`)) {
+                  onDeleteTask(activeTask.id);
+                }
+              }}
+            >
+              <Trash2 size={12} />
+            </button>
+          </div>}
 
           {isDataView && <label className="teaching-name-field">
             <span>任务名称</span>
@@ -379,7 +311,7 @@ export default function VirtualTeachingPanel({
             />
           </label>}
 
-          <div className={`teaching-context ${contextMatches ? 'is-matched' : 'is-mismatch'}`}>
+          {isDataView && <div className={`teaching-context ${contextMatches ? 'is-matched' : 'is-mismatch'}`}>
             <div title={activeTask.map.fileName}>
               <MapPin size={11} />
               <span>MAP</span>
@@ -391,7 +323,7 @@ export default function VirtualTeachingPanel({
               <strong>{activeTask.robot.name || '未绑定'}</strong>
             </div>
             <em>{contextMatches ? 'CONTEXT OK' : 'CONTEXT MISMATCH'}</em>
-          </div>
+          </div>}
 
           {!isDataView && <>
           <button
@@ -440,7 +372,7 @@ export default function VirtualTeachingPanel({
               <ClipboardCheck size={18} strokeWidth={1.3} />
               <span>
                 {isDataView
-                  ? '当前任务还没有点位，请返回“示教 / 相机”完成采集。'
+                  ? '当前任务还没有点位，请返回主工作台完成采集。'
                   : '调整机器人后，点击上方按钮采集第一个示教点。'}
               </span>
             </div>
@@ -647,13 +579,21 @@ export default function VirtualTeachingPanel({
               className="teaching-data-handoff"
               data-teaching-point-count={activeTask.points.length}
             >
-              <span><Database size={16} /></span>
+              <span className="teaching-data-handoff__count">
+                <b>{activeTask.points.length}</b>
+                <small>POSES</small>
+              </span>
               <div>
-                <strong>{activeTask.points.length} 个点位已归档</strong>
-                <small>历史点位、双目快照和工程导出已移至独立子页</small>
+                <strong>当前已归档姿态</strong>
+                <small>姿态查看、双目快照与工程导出由示教数据页统一管理</small>
               </div>
-              <button type="button" onClick={onOpenDataPage}>
-                管理数据 <ChevronRight size={11} />
+              <button
+                type="button"
+                onClick={onOpenDataPage}
+                disabled={captureState?.status === 'capturing'}
+                title={captureState?.status === 'capturing' ? '当前姿态记录完成后可进入数据页' : ''}
+              >
+                打开数据页 <ChevronRight size={11} />
               </button>
             </div>
           )}

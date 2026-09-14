@@ -1030,6 +1030,7 @@ export default function PointCloudViewer({
   onCameraTeachingResult,
   onCollisionProtectionChange,
   onCollisionProtectionStatus,
+  isActive = true,
 }) {
   const mountRef = useRef(null);
   const spaceMouseAxisHudRef = useRef(null);
@@ -1059,6 +1060,7 @@ export default function PointCloudViewer({
   const cloudMaterialRef = useRef(null);
   const meshMaterialRef = useRef(null);
   const colorModeRef = useRef(colorMode);
+  const renderActiveRef = useRef(Boolean(isActive));
   const onSelectWaypointRef = useRef(onSelectWaypoint);
   const onSelectEdgeRef = useRef(onSelectEdge);
   const onClearSelectionRef = useRef(onClearSelection);
@@ -1109,6 +1111,7 @@ export default function PointCloudViewer({
   );
   interactionModeRef.current = interactionMode;
   colorModeRef.current = colorMode;
+  renderActiveRef.current = Boolean(isActive);
   onSelectWaypointRef.current = onSelectWaypoint;
   onSelectEdgeRef.current = onSelectEdge;
   onClearSelectionRef.current = onClearSelection;
@@ -3334,6 +3337,7 @@ export default function PointCloudViewer({
     };
     renderer.setAnimationLoop(() => {
       const deltaSeconds = Math.min(frameClock.getDelta(), 0.05);
+      if (!renderActiveRef.current) return;
       const pressedKeys = pressedKeysRef.current;
       const keyboardImpulses = keyboardImpulseRef.current;
       const robotControlActive =
@@ -4239,7 +4243,7 @@ export default function PointCloudViewer({
       if (canvas) canvas.dataset.collisionWorker = 'inactive';
       publishStatus({
         state: 'disabled',
-        message: '自碰撞保护未开启',
+        message: '碰撞保护未开启',
         detail: '专用空间索引与距离检测尚未占用硬件资源',
       });
       return undefined;
@@ -5223,7 +5227,7 @@ export default function PointCloudViewer({
               <button
                 type="button"
                 className={`collision-protection-toggle is-${collisionButtonState} ${collisionProtectionEnabled ? 'is-active' : ''}`}
-                aria-label={collisionProtectionEnabled ? '关闭自碰撞保护' : '开启自碰撞保护'}
+                aria-label={collisionProtectionEnabled ? '关闭碰撞保护' : '开启碰撞保护'}
                 aria-pressed={collisionProtectionEnabled}
                 data-collision-control-state={collisionButtonState}
                 disabled={!collisionProtectionEnabled && !collisionControlReady}

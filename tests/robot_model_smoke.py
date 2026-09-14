@@ -254,7 +254,8 @@ def run():
         assert any("zivid_2_m70_official.glb" in url for url in robot_requests)
         assert not any("/ZividTwo.stl" in url for url in robot_requests)
 
-        page.get_by_role("tab", name="示教数据管理").click()
+        page.get_by_role("button", name="打开示教数据管理页").click()
+        page.locator('[data-app-page="teaching-data"]').wait_for()
         with page.expect_download() as download_info:
             page.get_by_role("button", name="导出示教工程 JSON").click()
         exported = json.loads(Path(download_info.value.path()).read_text())
@@ -266,6 +267,8 @@ def run():
         assert exported_pose["rpy"]["roll"] == 0
         assert exported_pose["rpy"]["pitch"] == 0
         assert abs(exported_pose["rpy"]["yaw"] - moved_pose["yaw"]) < 1e-5
+        page.get_by_role("button", name="返回主工作台继续示教").click()
+        page.locator('[data-app-page="teaching-data"]').wait_for(state="detached")
 
         page.wait_for_timeout(500)
         stored_robot = page.evaluate(

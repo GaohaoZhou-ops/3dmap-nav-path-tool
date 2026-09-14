@@ -57,6 +57,7 @@ const emptyControlAxes = () => (
 export function createSpaceMouseInputState() {
   return {
     connected: false,
+    connectionState: 'idle',
     calibrated: false,
     calibrating: false,
     controlEnabled: true,

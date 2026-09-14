@@ -460,10 +460,11 @@ export default function SpaceMouseControl({ inputRef, onNotify }) {
     publishInput({ calibrating: calibration.open });
   }, [calibration.open, publishInput]);
 
-  const publishStopped = useCallback((connected = false) => {
+  const publishStopped = useCallback((connected = false, connectionState = connected ? 'connected' : 'idle') => {
     const profileReady = isSpaceMouseProfileReady(profileRef.current);
     publishInput({
       connected,
+      connectionState,
       calibrated: profileReady,
       controlEnabled: controlEnabledRef.current,
       mode: modeRef.current,
@@ -920,7 +921,7 @@ export default function SpaceMouseControl({ inputRef, onNotify }) {
     setRawDisplay(zeroSpaceMouseAxes());
     setSignalActive(false);
     setControlEnabled(true);
-    publishStopped(false);
+    publishStopped(false, disconnected ? 'disconnected' : 'idle');
     if (close && device?.opened) {
       try {
         await device.close();
@@ -945,6 +946,7 @@ export default function SpaceMouseControl({ inputRef, onNotify }) {
       await detachDevice({ close: true });
     }
     setStatus('connecting');
+    publishInput({ connectionState: 'connecting' });
     if (!device.opened) await device.open();
     deviceRef.current = device;
     controlEnabledRef.current = true;
@@ -963,6 +965,7 @@ export default function SpaceMouseControl({ inputRef, onNotify }) {
     setLastError('');
     publishInput({
       connected: true,
+      connectionState: 'connected',
       calibrated: isSpaceMouseProfileReady(profileRef.current),
       controlEnabled: true,
       mode: modeRef.current,
@@ -991,10 +994,12 @@ export default function SpaceMouseControl({ inputRef, onNotify }) {
     if (!navigator.hid) {
       setStatus('unsupported');
       setOpen(true);
-      return;
+      publishInput({ connected: false, connectionState: 'unsupported' });
+      return false;
     }
     setStatus('requesting');
     setLastError('');
+    publishInput({ connected: false, connectionState: 'requesting' });
     try {
       const devices = await navigator.hid.requestDevice({
         filters: SPACEMOUSE_SUPPORTED_PRODUCT_IDS.map((productId) => ({
@@ -1007,17 +1012,51 @@ export default function SpaceMouseControl({ inputRef, onNotify }) {
         setStatus('idle');
         setLastError('未选择受支持的 SpaceMouse');
         setOpen(true);
-        return;
+        publishInput({ connected: false, connectionState: 'idle' });
+        return false;
       }
       await attachDevice(device);
       setOpen(true);
+      return true;
     } catch (error) {
       const cancelled = error?.name === 'NotFoundError';
       setStatus(cancelled ? 'idle' : 'error');
       setLastError(cancelled ? '已取消设备选择' : error?.message || '无法打开 HID 设备');
       setOpen(true);
+      publishInput({
+        connected: false,
+        connectionState: cancelled ? 'idle' : 'error',
+      });
+      return false;
     }
-  }, [attachDevice]);
+  }, [attachDevice, publishInput]);
+
+  const requestConnectionFlow = useCallback(() => {
+    if (deviceRef.current?.opened) {
+      setOpen(true);
+      if (!isSpaceMouseProfileReady(profileRef.current)) {
+        setCalibration({ ...initialCalibration(), open: true });
+      }
+      return Promise.resolve(true);
+    }
+    return requestDevice();
+  }, [requestDevice]);
+
+  useEffect(() => {
+    if (!inputRef) return undefined;
+    const bridge = requestConnectionFlow;
+    inputRef.current = {
+      ...(inputRef.current || {}),
+      requestConnection: bridge,
+    };
+    return () => {
+      const latest = inputRef.current || {};
+      if (latest.requestConnection !== bridge) return;
+      const next = { ...latest };
+      delete next.requestConnection;
+      inputRef.current = next;
+    };
+  }, [inputRef, requestConnectionFlow]);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -1033,7 +1072,11 @@ export default function SpaceMouseControl({ inputRef, onNotify }) {
         return undefined;
       })
       .catch((error) => {
-        if (!cancelled) setLastError(error?.message || '无法恢复 HID 权限');
+        if (!cancelled) {
+          setStatus('error');
+          setLastError(error?.message || '无法恢复 HID 权限');
+          publishInput({ connected: false, connectionState: 'error' });
+        }
       });
 
     const onConnect = (event) => {
@@ -1041,6 +1084,7 @@ export default function SpaceMouseControl({ inputRef, onNotify }) {
         attachDevice(event.device, { announce: true }).catch((error) => {
           setStatus('error');
           setLastError(error?.message || '设备重连失败');
+          publishInput({ connected: false, connectionState: 'error' });
         });
       }
     };
@@ -1072,6 +1116,7 @@ export default function SpaceMouseControl({ inputRef, onNotify }) {
     clearScheduledCalibrationInput,
     detachDevice,
     onNotify,
+    publishInput,
   ]);
 
   useEffect(() => {

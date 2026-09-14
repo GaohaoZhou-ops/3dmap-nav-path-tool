@@ -261,7 +261,8 @@ def run():
         perception_switch.click()
         assert perception_switch.get_attribute("aria-checked") == "false"
 
-        page.get_by_role("tab", name="示教数据管理").click()
+        page.get_by_role("button", name="打开示教数据管理页").click()
+        page.locator('[data-app-page="teaching-data"]').wait_for()
         with page.expect_download() as download_info:
             page.get_by_role("button", name="导出示教工程 JSON").click()
         download = download_info.value
@@ -287,6 +288,8 @@ def run():
         }
         assert exported_path["distance"]["straight3D"] >= exported_path["distance"]["planarXY"] > 0
         assert exported_path["distance"]["verticalDelta"] >= 0
+        page.get_by_role("button", name="返回主工作台继续示教").click()
+        page.locator('[data-app-page="teaching-data"]').wait_for(state="detached")
 
         page.locator('input[type="file"][accept*="json"]').set_input_files(str(download_path))
         page.get_by_text("工程配置已加载", exact=False).wait_for()

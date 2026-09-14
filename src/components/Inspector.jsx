@@ -7,7 +7,6 @@ import {
   ChevronRight,
   CircleGauge,
   Compass,
-  Database,
   MoveHorizontal,
   Route,
   Ruler,
@@ -77,8 +76,6 @@ export default function Inspector({
   robotJointValues,
   lockedRobotJointNames = [],
   robotControlEnabled,
-  robotCollisionProtectionEnabled = false,
-  robotCollisionStatus,
   meshRenderQuality = 'auto',
   onMeshRenderQualityChange,
   spaceMouseInputRef,
@@ -100,12 +97,8 @@ export default function Inspector({
   onDeleteEdge,
   onCreateTeachingTask,
   onSelectTeachingTask,
-  onRenameTeachingTask,
-  onDeleteTeachingTask,
   onCaptureTeachingPoint,
-  onRenameTeachingPoint,
-  onDeleteTeachingPoint,
-  onApplyTeachingPoint,
+  onOpenTeachingDataPage,
   onUpdateRobotJointValue,
   onToggleRobotJointLock,
   onUnlockAllRobotJoints,
@@ -116,14 +109,13 @@ export default function Inspector({
   onApplyJointPose,
   onCameraTeachingMove,
   onZividCaptureProviderChange,
-  onExportTeachingProject,
+  isWorkbenchActive = true,
 }) {
   const [activePage, setActivePage] = useState('project');
   const [activeTeachingCameraSide, setActiveTeachingCameraSide] = useState('left');
-  const [teachingMode, setTeachingMode] = useState('pose');
   const [jointWindowOpen, setJointWindowOpen] = useState(false);
   const scrollRef = useRef(null);
-  const cameraTeachingWorkspaceRef = useRef(null);
+  const workbenchActivityRef = useRef(isWorkbenchActive);
   const selectedWaypoint = waypoints.find((point) => point.id === selectedWaypointId);
   const selectedEdge = edges.find((edge) => edge.id === selectedEdgeId);
   const meshQualityPlan = resolveMeshRenderQuality(meshRenderQuality, mapData?.faceCount);
@@ -162,6 +154,16 @@ export default function Inspector({
     [pointById, selectedEdge],
   );
 
+  useEffect(() => {
+    const resumed = isWorkbenchActive && !workbenchActivityRef.current;
+    workbenchActivityRef.current = isWorkbenchActive;
+    if (!isWorkbenchActive) {
+      setActivePage('project');
+    } else if (resumed) {
+      setActivePage('teaching');
+    }
+  }, [isWorkbenchActive]);
+
   const validationCopy =
     validation.status === 'connected'
       ? { title: '全图强连通', detail: '所有导航点均可往返到达', icon: CheckCircle2 }
@@ -196,11 +198,6 @@ export default function Inspector({
     ? selectedEdge.limits.minSpeed > selectedEdge.limits.maxSpeed ||
       selectedEdge.limits.minAcceleration > selectedEdge.limits.maxAcceleration
     : false;
-  const teachingPointCount = teachingTasks.reduce(
-    (count, task) => count + (task.points?.length || 0),
-    0,
-  );
-
   const inspectorPages = [
     {
       id: 'navigation',
@@ -226,14 +223,6 @@ export default function Inspector({
       summary: `${teachingTasks.length}T · ${robotLoadState?.zividCount || 0}C`,
       icon: Bot,
     },
-    {
-      id: 'teaching-data',
-      index: '04',
-      label: '示教数据管理',
-      compactLabel: '示教数据',
-      summary: `${teachingTasks.length}T · ${teachingPointCount}P`,
-      icon: Database,
-    },
   ];
   const activePageMeta = inspectorPages.find((page) => page.id === activePage)
     || inspectorPages[0];
@@ -250,23 +239,6 @@ export default function Inspector({
   const handleZividExpandedChange = useCallback((isExpanded) => {
     if (isExpanded) setJointWindowOpen(false);
   }, []);
-
-  const handleTeachingModeChange = (nextMode) => {
-    const normalized = nextMode === 'camera' ? 'camera' : 'pose';
-    setTeachingMode(normalized);
-    if (
-      normalized === 'camera'
-      && robotLoadState?.status === 'loaded'
-      && Number(robotLoadState?.zividCount) > 0
-    ) {
-      requestAnimationFrame(() => {
-        requestAnimationFrame(() => cameraTeachingWorkspaceRef.current?.scrollIntoView({
-          behavior: 'smooth',
-          block: 'start',
-        }));
-      });
-    }
-  };
 
   const activateInspectorPage = (pageId) => {
     setActivePage(pageId);
@@ -727,27 +699,17 @@ export default function Inspector({
               robotLoadState={robotLoadState}
               robotJointValues={robotJointValues}
               view="capture"
-              teachingMode={teachingMode}
               captureState={teachingCaptureState}
-              collisionProtectionEnabled={robotCollisionProtectionEnabled}
-              collisionProtectionStatus={robotCollisionStatus}
               onCreateTask={onCreateTeachingTask}
               onSelectTask={onSelectTeachingTask}
-              onRenameTask={onRenameTeachingTask}
-              onDeleteTask={onDeleteTeachingTask}
               onCapturePoint={onCaptureTeachingPoint}
-              onRenamePoint={onRenameTeachingPoint}
-              onDeletePoint={onDeleteTeachingPoint}
-              onApplyPoint={onApplyTeachingPoint}
-              onTeachingModeChange={handleTeachingModeChange}
-              onExportProject={onExportTeachingProject}
-              onOpenDataPage={() => activateInspectorPage('teaching-data')}
+              onOpenDataPage={onOpenTeachingDataPage}
             />
 
             <div
-              ref={cameraTeachingWorkspaceRef}
-              className={`camera-teaching-workspace ${teachingMode === 'camera' ? 'is-active' : ''}`}
+              className="camera-teaching-workspace is-active"
               data-camera-controls-location="adjacent-to-viewport"
+              data-camera-inverse-activation="automatic"
             >
               <ZividCameraPanel
                 mapData={mapData}
@@ -756,7 +718,6 @@ export default function Inspector({
                 cameraPoses={zividCameraPoses}
                 activeSide={activeTeachingCameraSide}
                 onActiveSideChange={setActiveTeachingCameraSide}
-                teachingMode={teachingMode}
                 cameraTeachingEnabled={cameraTeachingEnabled}
                 cameraTeachingResult={cameraTeachingResult}
                 meshRenderQuality={meshRenderQuality}
@@ -771,37 +732,6 @@ export default function Inspector({
               />
             </div>
 
-          </div>
-        )}
-
-        {activePage === 'teaching-data' && (
-          <div
-            className="inspector-page inspector-page--teaching-data"
-            role="tabpanel"
-            id="inspector-page-teaching-data"
-            aria-labelledby="inspector-tab-teaching-data"
-          >
-            <VirtualTeachingPanel
-              tasks={teachingTasks}
-              activeTaskId={activeTeachingTaskId}
-              mapData={mapData}
-              robot={robot}
-              robotLoadState={robotLoadState}
-              robotJointValues={robotJointValues}
-              view="data"
-              captureState={teachingCaptureState}
-              onCreateTask={onCreateTeachingTask}
-              onSelectTask={onSelectTeachingTask}
-              onRenameTask={onRenameTeachingTask}
-              onDeleteTask={onDeleteTeachingTask}
-              onCapturePoint={onCaptureTeachingPoint}
-              onRenamePoint={onRenameTeachingPoint}
-              onDeletePoint={onDeleteTeachingPoint}
-              onApplyPoint={onApplyTeachingPoint}
-              onTeachingModeChange={handleTeachingModeChange}
-              onExportProject={onExportTeachingProject}
-              onOpenCapturePage={() => activateInspectorPage('teaching')}
-            />
           </div>
         )}
       </div>

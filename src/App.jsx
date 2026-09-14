@@ -7,6 +7,7 @@ import {
   ChevronDown,
   ChevronUp,
   CircleDot,
+  Database,
   FileJson,
   FolderOpen,
   GitBranch,
@@ -30,6 +31,7 @@ import Map2DView from './components/Map2DView.jsx';
 import PointCloudViewer from './components/PointCloudViewer.jsx';
 import RobotPicker from './components/RobotPicker.jsx';
 import SpaceMouseControl from './components/SpaceMouseControl.jsx';
+import TeachingDataPage from './components/TeachingDataPage.jsx';
 import { inspectConnectivity } from './lib/graph.js';
 import {
   buildExport,
@@ -46,7 +48,6 @@ import {
   normalizeRobotPose,
 } from './lib/robotLoader.js';
 import { normalizeRobotJointLocks } from './lib/robotJointLocks.js';
-import { createRobotCollisionStatus } from './lib/robotCollision.js';
 import { sha256ArrayBuffer } from './lib/hash.js';
 import {
   normalizeMeshRenderQuality,
@@ -65,6 +66,14 @@ import {
 
 const initialValidation = { status: 'idle', unreachableCount: 0, checkedAt: null };
 const pointColorModes = new Set(['height', 'source', 'white']);
+const APP_PAGE_WORKBENCH = 'workbench';
+const APP_PAGE_TEACHING_DATA = 'teaching-data';
+
+const appPageFromLocation = () => {
+  if (typeof window === 'undefined') return APP_PAGE_WORKBENCH;
+  const path = window.location.pathname.replace(/\/+$/, '') || '/';
+  return path.endsWith('/teaching-data') ? APP_PAGE_TEACHING_DATA : APP_PAGE_WORKBENCH;
+};
 
 const defaultLimits = {
   minSpeed: 0.2,
@@ -280,6 +289,7 @@ export default function App() {
   const teachingCaptureBusyRef = useRef(false);
   const spaceMouseInputRef = useRef(createSpaceMouseInputState());
   const main3DCanvasRef = useRef(null);
+  const [appPage, setAppPage] = useState(appPageFromLocation);
   const [mapData, setMapData] = useState(null);
   const [heightRange, setHeightRange] = useState([0, 1]);
   const [waypoints, setWaypoints] = useState([]);
@@ -305,9 +315,6 @@ export default function App() {
   const [lockedRobotJointNames, setLockedRobotJointNames] = useState([]);
   const [robotControlEnabled, setRobotControlEnabled] = useState(false);
   const [robotCollisionProtectionEnabled, setRobotCollisionProtectionEnabled] = useState(false);
-  const [robotCollisionStatus, setRobotCollisionStatus] = useState(
-    () => createRobotCollisionStatus(),
-  );
   const [teachingTasks, setTeachingTasks] = useState([]);
   const [activeTeachingTaskId, setActiveTeachingTaskId] = useState(null);
   const [jointPoses, setJointPoses] = useState([]);
@@ -365,6 +372,21 @@ export default function App() {
     },
     [],
   );
+
+  useEffect(() => {
+    const syncPageFromHistory = () => {
+      const nextPage = appPageFromLocation();
+      setAppPage(nextPage);
+    };
+    window.addEventListener('popstate', syncPageFromHistory);
+    return () => window.removeEventListener('popstate', syncPageFromHistory);
+  }, []);
+
+  useEffect(() => {
+    document.title = appPage === APP_PAGE_TEACHING_DATA
+      ? '示教数据 · Atlas Route Studio'
+      : 'Atlas Route Studio';
+  }, [appPage]);
 
   const notify = useCallback((message, kind = 'success') => {
     if (toastTimerRef.current) window.clearTimeout(toastTimerRef.current);
@@ -525,7 +547,6 @@ export default function App() {
         setLockedRobotJointNames([]);
         setRobotControlEnabled(false);
         setRobotCollisionProtectionEnabled(false);
-        setRobotCollisionStatus(createRobotCollisionStatus());
         setTeachingTasks([]);
         setActiveTeachingTaskId(null);
         setJointPoses([]);
@@ -1030,7 +1051,6 @@ export default function App() {
       );
       setRobotControlEnabled(false);
       setRobotCollisionProtectionEnabled(false);
-      setRobotCollisionStatus(createRobotCollisionStatus());
       setRobotLoadState({ status: importedRobot ? 'pending' : 'idle' });
       setSynchronizedFocus(null);
       setRestoredView2d(project.view2d);
@@ -1710,7 +1730,6 @@ export default function App() {
       setLockedRobotJointNames([]);
       setRobotControlEnabled(false);
       setRobotCollisionProtectionEnabled(false);
-      setRobotCollisionStatus(createRobotCollisionStatus());
       setZividCameraPoses({});
       setCameraTeachingCommand(null);
       setCameraTeachingResult({ status: 'idle', revision: 0 });
@@ -1766,22 +1785,6 @@ export default function App() {
       return unchanged ? current : normalized;
     });
   }, []);
-  const handleRobotCollisionProtectionStatus = useCallback((nextStatus) => {
-    if (!nextStatus || typeof nextStatus !== 'object') return;
-    const normalized = createRobotCollisionStatus({
-      ...nextStatus,
-      collisionLinks: Array.isArray(nextStatus.collisionLinks)
-        ? [...nextStatus.collisionLinks]
-        : [],
-      nearLinks: Array.isArray(nextStatus.nearLinks) ? [...nextStatus.nearLinks] : [],
-      excludedLinks: Array.isArray(nextStatus.excludedLinks)
-        ? [...nextStatus.excludedLinks]
-        : [],
-    });
-    setRobotCollisionStatus((current) => (
-      JSON.stringify(current) === JSON.stringify(normalized) ? current : normalized
-    ));
-  }, []);
   const handleRobotCollisionProtectionChange = useCallback(
     (enabled) => {
       const nextEnabled = Boolean(enabled);
@@ -1793,18 +1796,10 @@ export default function App() {
         return;
       }
       setRobotCollisionProtectionEnabled(nextEnabled);
-      setRobotCollisionStatus(createRobotCollisionStatus(nextEnabled
-        ? {
-            enabled: true,
-            state: 'building',
-            message: '正在建立环境空间索引',
-            detail: '检测将在专用 Worker 中运行',
-          }
-        : {}));
       notify(
         nextEnabled
-          ? '自碰撞保护已开启 · 底盘与轮组已排除'
-          : '自碰撞保护已关闭 · 检测资源已释放',
+          ? '碰撞保护已开启 · 底盘与轮组已排除'
+          : '碰撞保护已关闭 · 检测资源已释放',
         nextEnabled ? 'info' : 'success',
       );
     },
@@ -1928,6 +1923,28 @@ export default function App() {
     notify('2D 与 3D 视角已重置', 'info');
   }, [mapData?.bounds, notify]);
 
+  const navigateAppPage = useCallback((nextPage) => {
+    const normalized = nextPage === APP_PAGE_TEACHING_DATA
+      ? APP_PAGE_TEACHING_DATA
+      : APP_PAGE_WORKBENCH;
+    if (normalized === APP_PAGE_TEACHING_DATA) {
+      if (appPageFromLocation() !== APP_PAGE_TEACHING_DATA) {
+        window.history.pushState(
+          { atlasPage: APP_PAGE_TEACHING_DATA },
+          '',
+          '/teaching-data',
+        );
+      }
+      setAppPage(APP_PAGE_TEACHING_DATA);
+      return;
+    }
+
+    if (window.location.pathname !== '/') {
+      window.history.replaceState({ atlasPage: APP_PAGE_WORKBENCH }, '', '/');
+    }
+    setAppPage(APP_PAGE_WORKBENCH);
+  }, []);
+
   const modeOptions = [
     { id: 'select', label: '选择 / 漫游', icon: MousePointer2 },
     { id: 'box', label: '框选', icon: ScanLine },
@@ -1940,7 +1957,12 @@ export default function App() {
     : 'PROCESS';
 
   return (
-    <div className="app-shell">
+    <>
+    <div
+      className={`app-shell ${appPage === APP_PAGE_TEACHING_DATA ? 'is-route-background' : ''}`}
+      data-app-page="workbench"
+      aria-hidden={appPage === APP_PAGE_TEACHING_DATA}
+    >
       <input ref={mapInputRef} className="visually-hidden" type="file" accept=".ply" onChange={handleMapFile} />
       <input ref={pathInputRef} className="visually-hidden" type="file" accept=".json,application/json" onChange={handlePathFile} />
 
@@ -1983,6 +2005,20 @@ export default function App() {
             onSelect={handleSelectRobot}
           />
           <SpaceMouseControl inputRef={spaceMouseInputRef} onNotify={notify} />
+          <button
+            type="button"
+            className="action-button teaching-data-page-link"
+            aria-label="打开示教数据管理页"
+            onClick={() => navigateAppPage(APP_PAGE_TEACHING_DATA)}
+            disabled={teachingCaptureState.status === 'capturing'}
+            title={teachingCaptureState.status === 'capturing'
+              ? '请等待当前机器人姿态与相机快照完成记录'
+              : '在独立页面中管理示教任务、点位与视觉快照'}
+          >
+            <Database size={15} />
+            <span>示教数据</span>
+            <b>{teachingTasks.length}</b>
+          </button>
           <button
             type="button"
             className="action-button view-reset-action"
@@ -2077,7 +2113,7 @@ export default function App() {
                 onZividCameraPoseChange={handleZividCameraPoseChange}
                 onCameraTeachingResult={handleCameraTeachingResult}
                 onCollisionProtectionChange={handleRobotCollisionProtectionChange}
-                onCollisionProtectionStatus={handleRobotCollisionProtectionStatus}
+                isActive={appPage === APP_PAGE_WORKBENCH}
               />
               <HeightRange
                 bounds={mapData?.bounds}
@@ -2180,8 +2216,6 @@ export default function App() {
           robotJointValues={robotJointValues}
           lockedRobotJointNames={lockedRobotJointNames}
           robotControlEnabled={robotControlEnabled}
-          robotCollisionProtectionEnabled={robotCollisionProtectionEnabled}
-          robotCollisionStatus={robotCollisionStatus}
           meshRenderQuality={meshRenderQuality}
           onMeshRenderQualityChange={setMeshRenderQuality}
           spaceMouseInputRef={spaceMouseInputRef}
@@ -2203,12 +2237,8 @@ export default function App() {
           onDeleteEdge={deleteEdge}
           onCreateTeachingTask={createTeachingTask}
           onSelectTeachingTask={selectTeachingTask}
-          onRenameTeachingTask={renameTeachingTask}
-          onDeleteTeachingTask={deleteTeachingTask}
           onCaptureTeachingPoint={captureTeachingPoint}
-          onRenameTeachingPoint={renameTeachingPoint}
-          onDeleteTeachingPoint={deleteTeachingPoint}
-          onApplyTeachingPoint={applyTeachingPoint}
+          onOpenTeachingDataPage={() => navigateAppPage(APP_PAGE_TEACHING_DATA)}
           onUpdateRobotJointValue={updateRobotJointValue}
           onToggleRobotJointLock={toggleRobotJointLock}
           onUnlockAllRobotJoints={unlockAllRobotJoints}
@@ -2219,7 +2249,7 @@ export default function App() {
           onApplyJointPose={applyJointPose}
           onCameraTeachingMove={requestCameraTeachingMove}
           onZividCaptureProviderChange={handleZividCaptureProviderChange}
-          onExportTeachingProject={exportProject}
+          isWorkbenchActive={appPage === APP_PAGE_WORKBENCH}
         />
       </main>
 
@@ -2249,7 +2279,7 @@ export default function App() {
         <span>SCHEMA 1.0</span>
       </footer>
 
-      {loadState.loading && (
+      {appPage === APP_PAGE_WORKBENCH && loadState.loading && (
         <div className="loading-curtain" role="status" aria-live="polite">
           <div className="loading-module">
             <div className="loading-module__top"><MapIcon size={18} /><span>{loadState.phase}</span><strong>{progressLabel}</strong></div>
@@ -2259,12 +2289,52 @@ export default function App() {
         </div>
       )}
 
-      {toast && (
+      {appPage === APP_PAGE_WORKBENCH && toast && (
         <div className={`toast-message ${toast.kind}`} role="status">
           <span>{toast.kind === 'error' ? <X size={14} /> : <Check size={14} />}</span>
           {toast.message}
         </div>
       )}
     </div>
+    {appPage === APP_PAGE_TEACHING_DATA && (
+      <div className="app-shell is-teaching-data-page" data-app-page="teaching-data">
+        <TeachingDataPage
+          tasks={teachingTasks}
+          activeTaskId={activeTeachingTaskId}
+          mapData={mapData}
+          robot={selectedRobot}
+          robotLoadState={robotLoadState}
+          robotJointValues={robotJointValues}
+          captureState={teachingCaptureState}
+          sessionState={sessionState}
+          onBack={() => navigateAppPage(APP_PAGE_WORKBENCH)}
+          onSelectTask={selectTeachingTask}
+          onRenameTask={renameTeachingTask}
+          onDeleteTask={deleteTeachingTask}
+          onRenamePoint={renameTeachingPoint}
+          onDeletePoint={deleteTeachingPoint}
+          onApplyPoint={applyTeachingPoint}
+          onExportProject={exportProject}
+        />
+
+        {loadState.loading && (
+          <div className="loading-curtain" role="status" aria-live="polite">
+            <div className="loading-module">
+              <div className="loading-module__top"><Database size={18} /><span>{loadState.phase}</span><strong>{progressLabel}</strong></div>
+              <div className="loading-track"><span style={{ width: `${Math.max(loadState.progress * 100, 4)}%` }} /></div>
+              <small>{loadState.detail || '正在恢复示教任务与视觉快照'}</small>
+            </div>
+          </div>
+        )}
+
+        {toast && (
+          <div className={`toast-message ${toast.kind}`} role="status">
+            <span>{toast.kind === 'error' ? <X size={14} /> : <Check size={14} />}</span>
+            {toast.message}
+          </div>
+        )}
+      </div>
+    )}
+    </>
   );
 }

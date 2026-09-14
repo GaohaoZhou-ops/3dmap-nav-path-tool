@@ -23,7 +23,7 @@ export const createRobotCollisionStatus = (overrides = {}) => ({
   indexedPointCount: 0,
   meshSampleCount: 0,
   checkCount: 0,
-  message: '自碰撞保护未开启',
+  message: '碰撞保护未开启',
   detail: '专用空间索引与距离检测尚未占用硬件资源',
   ...overrides,
 });

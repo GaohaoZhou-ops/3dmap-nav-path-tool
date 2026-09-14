@@ -82,6 +82,7 @@ export default function Inspector({
   main3DCanvasRef,
   teachingTasks = [],
   activeTeachingTaskId,
+  activeTeachingParkingPointId,
   jointPoses = [],
   zividCameraPoses,
   cameraTeachingResult,
@@ -97,6 +98,8 @@ export default function Inspector({
   onDeleteEdge,
   onCreateTeachingTask,
   onSelectTeachingTask,
+  onCreateTeachingParkingPoint,
+  onSelectTeachingParkingPoint,
   onCaptureTeachingPoint,
   onOpenTeachingDataPage,
   onUpdateRobotJointValue,
@@ -242,7 +245,6 @@ export default function Inspector({
 
   const activateInspectorPage = (pageId) => {
     setActivePage(pageId);
-    if (pageId === 'teaching') setJointWindowOpen(true);
   };
 
   const handleTabKeyDown = (event, pageIndex) => {
@@ -694,6 +696,7 @@ export default function Inspector({
             <VirtualTeachingPanel
               tasks={teachingTasks}
               activeTaskId={activeTeachingTaskId}
+              activeParkingPointId={activeTeachingParkingPointId}
               mapData={mapData}
               robot={robot}
               robotLoadState={robotLoadState}
@@ -702,6 +705,8 @@ export default function Inspector({
               captureState={teachingCaptureState}
               onCreateTask={onCreateTeachingTask}
               onSelectTask={onSelectTeachingTask}
+              onCreateParkingPoint={onCreateTeachingParkingPoint}
+              onSelectParkingPoint={onSelectTeachingParkingPoint}
               onCapturePoint={onCaptureTeachingPoint}
               onOpenDataPage={onOpenTeachingDataPage}
             />

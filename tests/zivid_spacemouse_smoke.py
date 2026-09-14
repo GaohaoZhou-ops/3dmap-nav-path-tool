@@ -186,7 +186,7 @@ def run():
         assert control.get_attribute("data-spacemouse-selected-axis") == "x"
 
         page.get_by_role("tab", name="虚拟示教与相机").click()
-        page.get_by_role("button", name="隐藏全关节浮动窗口").click()
+        assert page.get_by_label("全关节控制浮动窗口", exact=True).count() == 0
         page.locator('input[type="file"][accept=".ply"]').set_input_files(
             str(ROOT / "tests/fixtures/rotation-map.ply")
         )

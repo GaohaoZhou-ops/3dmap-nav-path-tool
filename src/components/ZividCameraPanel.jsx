@@ -1239,7 +1239,7 @@ const EMPTY_CAMERA_COLLISION_STATUS = Object.freeze({
   checkCount: 0,
 });
 
-function MainViewportThumbnail({ sourceCanvasRef }) {
+function MainViewportPane({ sourceCanvasRef }) {
   const rootRef = useRef(null);
   const videoRef = useRef(null);
   const fallbackCanvasRef = useRef(null);
@@ -1528,7 +1528,8 @@ function MainViewportThumbnail({ sourceCanvasRef }) {
     <aside
       ref={rootRef}
       className={`zivid-main-view-preview is-${preview.status} uses-${preview.transport}`}
-      aria-label="主3D视角缩略图"
+      aria-label="主3D辅助视角"
+      data-preview-layout="below-camera-controls"
       data-preview-status={preview.status}
       data-preview-transport={preview.transport}
       data-preview-fps={MAIN_VIEW_PREVIEW_FPS}
@@ -2589,7 +2590,8 @@ export default function ZividCameraPanel({
       data-spacemouse-control-model="optical-frame-ik"
       data-spacemouse-zoom-policy="mouse-only"
       data-spacemouse-input-count={spaceMouseHud.inputCount}
-      data-main-view-preview={expanded ? 'visible' : 'hidden'}
+      data-expanded-layout={expanded ? 'camera-priority' : 'compact'}
+      data-main-view-preview={expanded ? 'below-camera-controls' : 'hidden'}
       data-collision-protection-enabled={cameraCollisionStatus.enabled ? 'true' : 'false'}
       data-camera-collision-state={cameraCollisionStatus.state}
       data-camera-collision-warning={collisionWarningVisible ? 'visible' : 'hidden'}
@@ -2734,53 +2736,59 @@ export default function ZividCameraPanel({
       </div>
 
       <div
-        className={`zivid-camera-viewport ${dragging ? 'is-dragging' : ''} ${collisionWarningVisible ? `is-collision-warning-${cameraCollisionStatus.state}` : ''}`}
-        aria-label="M70 相机画面交互区"
-        onWheel={(event) => {
-          event.preventDefault();
-          changeZoom((current) => current * Math.exp(-event.deltaY * 0.0018));
-        }}
-        onDoubleClick={resetView}
-        onPointerDown={(event) => {
-          if (event.target.closest('button')) return;
-          event.currentTarget.setPointerCapture(event.pointerId);
-          dragRef.current = {
-            pointerId: event.pointerId,
-            x: event.clientX,
-            y: event.clientY,
-            pan,
-          };
-          setDragging(true);
-        }}
-        onPointerMove={(event) => {
-          const drag = dragRef.current;
-          if (!drag || drag.pointerId !== event.pointerId || zoom <= 1) return;
-          const bounds = event.currentTarget.getBoundingClientRect();
-          setPan({
-            x: THREE.MathUtils.clamp(
-              drag.pan.x - ((event.clientX - drag.x) * 2) / Math.max(bounds.width, 1),
-              -1,
-              1,
-            ),
-            y: THREE.MathUtils.clamp(
-              drag.pan.y - ((event.clientY - drag.y) * 2) / Math.max(bounds.height, 1),
-              -1,
-              1,
-            ),
-          });
-        }}
-        onPointerUp={(event) => {
-          if (dragRef.current?.pointerId === event.pointerId) dragRef.current = null;
-          if (event.currentTarget.hasPointerCapture(event.pointerId)) {
-            event.currentTarget.releasePointerCapture(event.pointerId);
-          }
-          setDragging(false);
-        }}
-        onPointerCancel={() => {
-          dragRef.current = null;
-          setDragging(false);
-        }}
+        className={`zivid-camera-view-deck ${expanded ? 'is-camera-primary' : ''}`}
+        aria-label={expanded ? 'Zivid相机主画面' : undefined}
+        data-view-layout={expanded ? 'native-aspect-camera' : 'camera-only'}
+        data-native-aspect-ratio={`${ZIVID_M70_PROFILE.nativeWidth}:${ZIVID_M70_PROFILE.nativeHeight}`}
       >
+        <div
+          className={`zivid-camera-viewport ${dragging ? 'is-dragging' : ''} ${collisionWarningVisible ? `is-collision-warning-${cameraCollisionStatus.state}` : ''}`}
+          aria-label="M70 相机画面交互区"
+          onWheel={(event) => {
+            event.preventDefault();
+            changeZoom((current) => current * Math.exp(-event.deltaY * 0.0018));
+          }}
+          onDoubleClick={resetView}
+          onPointerDown={(event) => {
+            if (event.target.closest('button')) return;
+            event.currentTarget.setPointerCapture(event.pointerId);
+            dragRef.current = {
+              pointerId: event.pointerId,
+              x: event.clientX,
+              y: event.clientY,
+              pan,
+            };
+            setDragging(true);
+          }}
+          onPointerMove={(event) => {
+            const drag = dragRef.current;
+            if (!drag || drag.pointerId !== event.pointerId || zoom <= 1) return;
+            const bounds = event.currentTarget.getBoundingClientRect();
+            setPan({
+              x: THREE.MathUtils.clamp(
+                drag.pan.x - ((event.clientX - drag.x) * 2) / Math.max(bounds.width, 1),
+                -1,
+                1,
+              ),
+              y: THREE.MathUtils.clamp(
+                drag.pan.y - ((event.clientY - drag.y) * 2) / Math.max(bounds.height, 1),
+                -1,
+                1,
+              ),
+            });
+          }}
+          onPointerUp={(event) => {
+            if (dragRef.current?.pointerId === event.pointerId) dragRef.current = null;
+            if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+              event.currentTarget.releasePointerCapture(event.pointerId);
+            }
+            setDragging(false);
+          }}
+          onPointerCancel={() => {
+            dragRef.current = null;
+            setDragging(false);
+          }}
+        >
         <div ref={mountRef} className="zivid-camera-render-mount" />
         <div className="zivid-camera-scan-grid" aria-hidden="true" />
         {collisionWarningVisible && (
@@ -2804,9 +2812,6 @@ export default function ZividCameraPanel({
               ? `${collisionDistanceMillimeters.toFixed(0)} mm`
               : cameraCollisionStatus.state === 'collision' ? 'CONTACT' : '<100 mm'}</b>
           </div>
-        )}
-        {expanded && (
-          <MainViewportThumbnail sourceCanvasRef={mainViewportCanvasRef} />
         )}
         {expanded && (
           <div
@@ -2918,16 +2923,24 @@ export default function ZividCameraPanel({
             <Plus size={13} />
           </button>
         </div>
+        </div>
       </div>
 
       {expanded && (
-        <CameraTeachingControls
-          enabled={cameraTeachingEnabled}
-          activeSide={activeSide}
-          cameraPoses={cameraPoses}
-          result={cameraTeachingResult}
-          onMove={onCameraTeachingMove}
-        />
+        <aside
+          className="zivid-camera-side-stack"
+          aria-label="相机控制与主3D辅助区"
+          data-stack-order="camera-controls,main-3d"
+        >
+          <CameraTeachingControls
+            enabled={cameraTeachingEnabled}
+            activeSide={activeSide}
+            cameraPoses={cameraPoses}
+            result={cameraTeachingResult}
+            onMove={onCameraTeachingMove}
+          />
+          <MainViewportPane sourceCanvasRef={mainViewportCanvasRef} />
+        </aside>
       )}
 
       <div className="zivid-camera-specs">

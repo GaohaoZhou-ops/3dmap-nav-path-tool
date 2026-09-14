@@ -68,12 +68,12 @@ def run():
         )
 
         page.get_by_role("tab", name="虚拟示教与相机").click()
-        page.get_by_role("button", name="隐藏全关节浮动窗口").click()
+        assert page.get_by_label("全关节控制浮动窗口", exact=True).count() == 0
         page.wait_for_function(
             "document.querySelector('.zivid-camera-canvas')?.dataset.contextState === 'ready'"
         )
         page.get_by_role("button", name="新建示教任务", exact=True).click()
-        capture_button = page.get_by_role("button", name="记录当前机器人姿态")
+        capture_button = page.get_by_role("button", name="记录当前机械臂姿态")
         capture_button.click()
         teaching_panel = page.get_by_label("虚拟示教", exact=True)
         page.wait_for_function(
@@ -89,7 +89,7 @@ def run():
         point_row = page.locator(".teaching-point-row").first
         assert int(point_row.get_attribute("data-joint-count")) == 24
         assert point_row.get_attribute("data-camera-frame-count") == "2"
-        vision = page.get_by_label("示教点双目视觉快照", exact=True)
+        vision = page.get_by_label("机械臂姿态双目视觉快照", exact=True)
         assert vision.get_attribute("data-camera-frame-count") == "2"
         assert vision.get_attribute("data-camera-model") == "Zivid 2 M70"
         frames = vision.locator(".teaching-vision-frame")
@@ -104,7 +104,7 @@ def run():
         for index in range(thumbnails.count()):
             assert thumbnails.nth(index).get_attribute("src").startswith("data:image/")
 
-        page.get_by_role("button", name="查看 T01 左臂RGB 快照").click()
+        page.get_by_role("button", name="查看 A01 左臂RGB 快照").click()
         modal = page.get_by_role("dialog", name="示教视觉快照大图")
         modal.wait_for()
         assert modal.locator("img").get_attribute("src").startswith("data:image/")
@@ -112,7 +112,7 @@ def run():
         page.get_by_role("button", name="关闭示教视觉快照").click()
         modal.wait_for(state="detached")
 
-        page.get_by_role("button", name="查看 T01 左臂XYZ 快照").click()
+        page.get_by_role("button", name="查看 A01 左臂XYZ 快照").click()
         modal = page.get_by_role("dialog", name="示教视觉快照大图")
         modal.wait_for()
         assert "XYZ POINTS" in modal.inner_text()
@@ -122,9 +122,10 @@ def run():
         with page.expect_download() as download_info:
             page.get_by_role("button", name="导出示教工程 JSON").click()
         exported = json.loads(Path(download_info.value.path()).read_text())
-        assert exported["schemaVersion"] == "1.1"
-        capture = exported["virtualTeaching"]["tasks"][0]["points"][0]["cameraCapture"]
-        assert exported["virtualTeaching"]["tasks"][0]["points"][0]["fullBodyJoints"]["count"] == 24
+        assert exported["schemaVersion"] == "1.2"
+        teaching_pose = exported["virtualTeaching"]["tasks"][0]["parkingPoints"][0]["poses"][0]
+        capture = teaching_pose["cameraCapture"]
+        assert teaching_pose["fullBodyJoints"]["count"] == 24
         assert_camera_capture(capture)
         assert max(
             frame["pointCloud"]["pointCount"] for frame in capture["frames"].values()
@@ -146,7 +147,7 @@ def run():
                 request.onerror = () => reject(request.error);
               });
               database.close();
-              return record?.config?.project?.virtualTeaching?.tasks?.[0]?.points?.[0]?.cameraCapture;
+              return record?.config?.project?.virtualTeaching?.tasks?.[0]?.parkingPoints?.[0]?.poses?.[0]?.cameraCapture;
             }
             """
         )
@@ -159,7 +160,7 @@ def run():
             timeout=180_000,
         )
         page.locator(".loading-curtain").wait_for(state="hidden")
-        restored_vision = page.get_by_label("示教点双目视觉快照", exact=True)
+        restored_vision = page.get_by_label("机械臂姿态双目视觉快照", exact=True)
         restored_vision.wait_for()
         assert restored_vision.get_attribute("data-camera-frame-count") == "2"
         assert restored_vision.locator(".teaching-vision-thumbnails img").count() == 4

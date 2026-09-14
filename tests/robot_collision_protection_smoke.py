@@ -57,9 +57,7 @@ def run():
         page.goto(BASE_URL, wait_until="networkidle")
         page.locator('[data-session-state="ready"]').wait_for()
         page.get_by_role("tab", name="虚拟示教与相机").click()
-        joint_toggle = page.get_by_role("button", name="隐藏全关节浮动窗口")
-        if joint_toggle.count() and joint_toggle.is_visible():
-            joint_toggle.click()
+        assert page.get_by_label("全关节控制浮动窗口", exact=True).count() == 0
 
         panel = page.get_by_label("虚拟示教", exact=True)
         assert panel.is_visible()

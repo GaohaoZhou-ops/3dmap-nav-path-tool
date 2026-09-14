@@ -49,6 +49,7 @@ const formatBytes = (value) => {
 export default function VirtualTeachingPanel({
   tasks,
   activeTaskId,
+  activeParkingPointId,
   mapData,
   robot,
   robotLoadState,
@@ -57,6 +58,11 @@ export default function VirtualTeachingPanel({
   captureState = { status: 'idle', message: '' },
   onCreateTask,
   onSelectTask,
+  onCreateParkingPoint,
+  onSelectParkingPoint,
+  onRenameParkingPoint,
+  onDeleteParkingPoint,
+  onApplyParkingPoint,
   onRenameTask,
   onDeleteTask,
   onCapturePoint,
@@ -70,11 +76,19 @@ export default function VirtualTeachingPanel({
   const isDataView = view === 'data';
   const HeaderIcon = isDataView ? Database : Crosshair;
   const activeTask = tasks.find((task) => task.id === activeTaskId) || tasks[0] || null;
+  const parkingPoints = activeTask?.parkingPoints || [];
+  const activeParkingPoint = parkingPoints.find(
+    (parkingPoint) => parkingPoint.id === activeParkingPointId,
+  ) || parkingPoints[0] || null;
+  const activePoses = activeParkingPoint?.poses || [];
   const [taskNameDraft, setTaskNameDraft] = useState(activeTask?.name || '');
-  const [selectedPointId, setSelectedPointId] = useState(
-    activeTask?.points.at(-1)?.id || null,
+  const [parkingPointNameDraft, setParkingPointNameDraft] = useState(
+    activeParkingPoint?.name || '',
   );
-  const selectedPoint = activeTask?.points.find((point) => point.id === selectedPointId) || null;
+  const [selectedPointId, setSelectedPointId] = useState(
+    activePoses.at(-1)?.id || null,
+  );
+  const selectedPoint = activePoses.find((point) => point.id === selectedPointId) || null;
   const [pointNameDraft, setPointNameDraft] = useState(selectedPoint?.name || '');
   const [visionPreview, setVisionPreview] = useState(null);
 
@@ -83,8 +97,12 @@ export default function VirtualTeachingPanel({
   }, [activeTask?.id, activeTask?.name]);
 
   useEffect(() => {
-    setSelectedPointId(activeTask?.points.at(-1)?.id || null);
-  }, [activeTask?.id, activeTask?.points.length]);
+    setParkingPointNameDraft(activeParkingPoint?.name || '');
+  }, [activeParkingPoint?.id, activeParkingPoint?.name]);
+
+  useEffect(() => {
+    setSelectedPointId(activePoses.at(-1)?.id || null);
+  }, [activeParkingPoint?.id, activePoses.length]);
 
   useEffect(() => {
     setPointNameDraft(selectedPoint?.name || '');
@@ -122,11 +140,23 @@ export default function VirtualTeachingPanel({
   const contextMatches = Boolean(activeTask && sameRobot && sameMap);
   const robotReady = robotLoadState?.status === 'loaded' && Boolean(robot);
   const canCreate = Boolean(mapData?.bounds && robotReady);
-  const canCapture = Boolean(activeTask && robotReady && contextMatches);
+  const canCapture = Boolean(activeTask && activeParkingPoint && robotReady && contextMatches);
+  const canCreateParkingPoint = Boolean(activeTask && robotReady && contextMatches);
   const captureInProgress = captureState?.status === 'capturing';
   const canExport = Boolean(mapData?.bounds);
   const teachingPointCount = tasks.reduce(
-    (count, task) => count + (task.points?.length || 0),
+    (count, task) => count + (task.parkingPoints || []).reduce(
+      (poseCount, parkingPoint) => poseCount + (parkingPoint.poses?.length || 0),
+      0,
+    ),
+    0,
+  );
+  const parkingPointCount = tasks.reduce(
+    (count, task) => count + (task.parkingPoints?.length || 0),
+    0,
+  );
+  const activeTaskPoseCount = parkingPoints.reduce(
+    (count, parkingPoint) => count + (parkingPoint.poses?.length || 0),
     0,
   );
 
@@ -141,14 +171,26 @@ export default function VirtualTeachingPanel({
   };
 
   const commitPointName = () => {
-    if (!activeTask || !selectedPoint) return;
+    if (!activeTask || !activeParkingPoint || !selectedPoint) return;
     const nextName = pointNameDraft.trim();
     if (!nextName) {
       setPointNameDraft(selectedPoint.name);
       return;
     }
     if (nextName !== selectedPoint.name) {
-      onRenamePoint(activeTask.id, selectedPoint.id, nextName);
+      onRenamePoint(activeTask.id, activeParkingPoint.id, selectedPoint.id, nextName);
+    }
+  };
+
+  const commitParkingPointName = () => {
+    if (!activeTask || !activeParkingPoint) return;
+    const nextName = parkingPointNameDraft.trim();
+    if (!nextName) {
+      setParkingPointNameDraft(activeParkingPoint.name);
+      return;
+    }
+    if (nextName !== activeParkingPoint.name) {
+      onRenameParkingPoint(activeTask.id, activeParkingPoint.id, nextName);
     }
   };
 
@@ -160,6 +202,8 @@ export default function VirtualTeachingPanel({
       data-teaching-view={isDataView ? 'data' : 'capture'}
       data-teaching-task-count={tasks.length}
       data-active-teaching-task={activeTask?.id || ''}
+      data-parking-point-count={parkingPointCount}
+      data-active-parking-point={activeParkingPoint?.id || ''}
       data-teaching-context-match={contextMatches ? 'true' : 'false'}
       data-current-joint-count={currentJointCount}
       data-camera-inverse-mode="automatic"
@@ -199,13 +243,14 @@ export default function VirtualTeachingPanel({
       {isDataView && <div
         className="teaching-project-export"
         data-export-task-count={tasks.length}
+        data-export-parking-point-count={parkingPointCount}
         data-export-point-count={teachingPointCount}
       >
         <div className="teaching-project-export__identity">
           <span><FileJson size={14} /></span>
           <div>
             <strong>示教工程包</strong>
-            <small>{tasks.length} TASKS · {teachingPointCount} POSES · JSON</small>
+            <small>{tasks.length} TASKS · {parkingPointCount} STOPS · {teachingPointCount} POSES</small>
           </div>
         </div>
         <button
@@ -241,7 +286,7 @@ export default function VirtualTeachingPanel({
               {!tasks.length && <option value="">暂无已有任务</option>}
               {tasks.map((task, index) => (
                 <option key={task.id} value={task.id}>
-                  {String(index + 1).padStart(2, '0')} · {task.name} · {task.points.length} 姿态
+                  {String(index + 1).padStart(2, '0')} · {task.name} · {task.parkingPoints.length} 停车点
                 </option>
               ))}
             </select>
@@ -279,7 +324,7 @@ export default function VirtualTeachingPanel({
               >
                 {tasks.map((task, index) => (
                   <option key={task.id} value={task.id}>
-                    {String(index + 1).padStart(2, '0')} · {task.name} · {task.points.length} 点
+                    {String(index + 1).padStart(2, '0')} · {task.name} · {task.parkingPoints.length} 停车点
                   </option>
                 ))}
               </select>
@@ -289,7 +334,7 @@ export default function VirtualTeachingPanel({
               aria-label="删除当前示教任务"
               title="删除当前示教任务"
               onClick={() => {
-                if (window.confirm(`删除 ${activeTask.name} 及全部示教点？`)) {
+                if (window.confirm(`删除 ${activeTask.name} 及其全部停车点和机械臂姿态？`)) {
                   onDeleteTask(activeTask.id);
                 }
               }}
@@ -325,6 +370,142 @@ export default function VirtualTeachingPanel({
             <em>{contextMatches ? 'CONTEXT OK' : 'CONTEXT MISMATCH'}</em>
           </div>}
 
+          {!isDataView && (
+            <section
+              className={`teaching-parking-selector ${activeParkingPoint ? 'has-selection' : 'is-empty'}`}
+              aria-label="当前停车点"
+              data-active-parking-point={activeParkingPoint?.id || ''}
+            >
+              <div className="teaching-parking-selector__top">
+                <span><MapPin size={13} /></span>
+                <div>
+                  <small>PARKING / MAP POSE</small>
+                  <strong>当前停车点</strong>
+                </div>
+                <button
+                  type="button"
+                  onClick={onCreateParkingPoint}
+                  disabled={!canCreateParkingPoint || captureInProgress}
+                  aria-label="新增停车点"
+                  title="以机器人当前地图位姿新增停车点"
+                >
+                  <CirclePlus size={11} /> 新增
+                </button>
+              </div>
+              <label>
+                <span className="visually-hidden">选择当前停车点</span>
+                <select
+                  aria-label="选择当前停车点"
+                  value={activeParkingPoint?.id || ''}
+                  disabled={!parkingPoints.length || captureInProgress}
+                  onChange={(event) => onSelectParkingPoint(event.target.value)}
+                >
+                  {!parkingPoints.length && <option value="">暂无停车点</option>}
+                  {parkingPoints.map((parkingPoint, index) => (
+                    <option key={parkingPoint.id} value={parkingPoint.id}>
+                      P{String(index + 1).padStart(2, '0')} · {parkingPoint.name} · {parkingPoint.poses.length} 姿态
+                    </option>
+                  ))}
+                </select>
+              </label>
+              {activeParkingPoint ? (
+                <div className="teaching-parking-selector__pose">
+                  <span>X <b>{formatValue(activeParkingPoint.mapPose.position.x, 2)}</b></span>
+                  <span>Y <b>{formatValue(activeParkingPoint.mapPose.position.y, 2)}</b></span>
+                  <span>Z <b>{formatValue(activeParkingPoint.mapPose.position.z, 2)}</b></span>
+                  <span>YAW <b>{formatValue(activeParkingPoint.mapPose.rpy.yaw, 1)}°</b></span>
+                </div>
+              ) : (
+                <p>新增停车点后，机械臂姿态会归档到该位置下。</p>
+              )}
+            </section>
+          )}
+
+          {isDataView && (
+            <section
+              className="teaching-parking-manager"
+              aria-label="停车点管理"
+              data-parking-point-count={parkingPoints.length}
+            >
+              <div className="teaching-sequence-heading teaching-parking-heading">
+                <span>停车点</span>
+                <i />
+                <small>{parkingPoints.length} STOPS</small>
+              </div>
+              {!parkingPoints.length && (
+                <div className="teaching-points-empty">
+                  <MapPin size={18} strokeWidth={1.3} />
+                  <span>当前任务还没有停车点，请返回主工作台按当前底盘位置新增。</span>
+                </div>
+              )}
+              {!!parkingPoints.length && (
+                <div className="teaching-parking-tabs" role="group" aria-label="任务停车点">
+                  {parkingPoints.map((parkingPoint, index) => (
+                    <button
+                      type="button"
+                      key={parkingPoint.id}
+                      className={parkingPoint.id === activeParkingPoint?.id ? 'is-selected' : ''}
+                      data-parking-point-id={parkingPoint.id}
+                      aria-label={`选择停车点 ${parkingPoint.name}`}
+                      onClick={() => onSelectParkingPoint(parkingPoint.id)}
+                    >
+                      <i>P{String(index + 1).padStart(2, '0')}</i>
+                      <span><strong>{parkingPoint.name}</strong><small>{parkingPoint.poses.length} ARM POSES</small></span>
+                    </button>
+                  ))}
+                </div>
+              )}
+              {activeParkingPoint && (
+                <div
+                  className="teaching-parking-detail"
+                  data-selected-parking-point={activeParkingPoint.id}
+                >
+                  <label>
+                    <span>停车点名称</span>
+                    <input
+                      aria-label="停车点名称"
+                      value={parkingPointNameDraft}
+                      onChange={(event) => setParkingPointNameDraft(event.target.value)}
+                      onBlur={commitParkingPointName}
+                      onKeyDown={(event) => {
+                        if (event.key === 'Enter') event.currentTarget.blur();
+                      }}
+                    />
+                  </label>
+                  <div className="teaching-parking-detail__pose" aria-label="停车点地图位姿">
+                    <span>X <b>{formatValue(activeParkingPoint.mapPose.position.x, 2)}</b> m</span>
+                    <span>Y <b>{formatValue(activeParkingPoint.mapPose.position.y, 2)}</b> m</span>
+                    <span>Z <b>{formatValue(activeParkingPoint.mapPose.position.z, 2)}</b> m</span>
+                    <span>YAW <b>{formatValue(activeParkingPoint.mapPose.rpy.yaw, 1)}</b>°</span>
+                  </div>
+                  <div className="teaching-parking-detail__actions">
+                    <button
+                      type="button"
+                      disabled={!contextMatches || !robotReady}
+                      onClick={() => onApplyParkingPoint(activeTask.id, activeParkingPoint.id)}
+                    >
+                      <Play size={11} /> 定位到停车点
+                    </button>
+                    <button
+                      type="button"
+                      aria-label="删除当前停车点"
+                      onClick={() => {
+                        const poseNotice = activeParkingPoint.poses.length
+                          ? `及其 ${activeParkingPoint.poses.length} 组机械臂姿态`
+                          : '';
+                        if (window.confirm(`删除 ${activeParkingPoint.name}${poseNotice}？`)) {
+                          onDeleteParkingPoint(activeTask.id, activeParkingPoint.id);
+                        }
+                      }}
+                    >
+                      <Trash2 size={11} />
+                    </button>
+                  </div>
+                </div>
+              )}
+            </section>
+          )}
+
           {!isDataView && <>
           <button
             type="button"
@@ -332,21 +513,21 @@ export default function VirtualTeachingPanel({
             onClick={onCapturePoint}
             disabled={!canCapture || captureInProgress}
             aria-busy={captureInProgress}
-            aria-label="记录当前机器人姿态"
+            aria-label="记录当前机械臂姿态"
             title={canCapture
-              ? '保存地图位姿、全部关节与左右 Zivid RGB/XYZ 快照'
-              : '当前地图或机器人与任务不匹配'}
+              ? `保存到 ${activeParkingPoint.name}：地图位姿、全部关节与左右 Zivid RGB/XYZ 快照`
+              : activeParkingPoint ? '当前地图或机器人与任务不匹配' : '请先新增或选择停车点'}
           >
             <span><Save size={15} /></span>
             <div>
-              <strong>{captureInProgress ? '正在冻结双目视觉…' : '记录当前机器人姿态'}</strong>
+              <strong>{captureInProgress ? '正在冻结双目视觉…' : '记录当前机械臂姿态'}</strong>
               <small>
                 {captureInProgress
                   ? 'CAM-L + CAM-R · RGB + XYZ CLOUD'
                   : `MAP 6DOF + ${currentJointCount} JOINTS + DUAL VISION`}
               </small>
             </div>
-            <kbd>T{String(activeTask.points.length + 1).padStart(2, '0')}</kbd>
+            <kbd>A{String(activePoses.length + 1).padStart(2, '0')}</kbd>
           </button>
 
           {captureState?.message && (
@@ -362,24 +543,22 @@ export default function VirtualTeachingPanel({
 
           {isDataView ? <>
           <div className="teaching-sequence-heading">
-            <span>示教序列</span>
+            <span>机械臂姿态</span>
             <i />
-            <small>{activeTask.points.length} POINTS</small>
+            <small>{activePoses.length} POSES · {activeParkingPoint?.name || 'NO STOP'}</small>
           </div>
 
-          {!activeTask.points.length && (
+          {activeParkingPoint && !activePoses.length && (
             <div className="teaching-points-empty">
               <ClipboardCheck size={18} strokeWidth={1.3} />
               <span>
-                {isDataView
-                  ? '当前任务还没有点位，请返回主工作台完成采集。'
-                  : '调整机器人后，点击上方按钮采集第一个示教点。'}
+                当前停车点还没有机械臂姿态，请返回主工作台完成采集。
               </span>
             </div>
           )}
 
           <div className="teaching-point-list">
-            {activeTask.points.map((point, index) => (
+            {activePoses.map((point, index) => (
               <div
                 className={`teaching-point-row ${point.id === selectedPointId ? 'is-selected' : ''}`}
                 key={point.id}
@@ -390,7 +569,7 @@ export default function VirtualTeachingPanel({
                 <button
                   type="button"
                   className="teaching-point-select"
-                  aria-label={`查看示教点 ${point.name}`}
+                  aria-label={`查看机械臂姿态 ${point.name}`}
                   onClick={() => setSelectedPointId(point.id)}
                 >
                   <i>{String(index + 1).padStart(2, '0')}</i>
@@ -409,10 +588,10 @@ export default function VirtualTeachingPanel({
                 <button
                   type="button"
                   className="teaching-point-quick-apply"
-                  aria-label={`应用示教点 ${point.name}`}
+                  aria-label={`应用机械臂姿态 ${point.name}`}
                   title="恢复地图定位与全身关节"
                   disabled={!contextMatches || !robotReady}
-                  onClick={() => onApplyPoint(activeTask.id, point.id)}
+                  onClick={() => onApplyPoint(activeTask.id, activeParkingPoint.id, point.id)}
                 >
                   <Play size={11} />
                 </button>
@@ -433,9 +612,9 @@ export default function VirtualTeachingPanel({
             >
               <div className="teaching-point-detail__top">
                 <label>
-                  <span>点位名称</span>
+                  <span>姿态名称</span>
                   <input
-                    aria-label="示教点名称"
+                    aria-label="机械臂姿态名称"
                     value={pointNameDraft}
                     onChange={(event) => setPointNameDraft(event.target.value)}
                     onBlur={commitPointName}
@@ -447,7 +626,7 @@ export default function VirtualTeachingPanel({
                 <small>{formatCapturedAt(selectedPoint.capturedAt)}</small>
               </div>
 
-              <div className="teaching-pose-grid" aria-label="示教点地图位姿">
+              <div className="teaching-pose-grid" aria-label="机械臂姿态记录位姿">
                 {[
                   ['X', selectedPoint.mapPose.position.x, 'm'],
                   ['Y', selectedPoint.mapPose.position.y, 'm'],
@@ -467,7 +646,7 @@ export default function VirtualTeachingPanel({
               {selectedCameraFrames.length > 0 && (
                 <section
                   className="teaching-vision-capture"
-                  aria-label="示教点双目视觉快照"
+                  aria-label="机械臂姿态双目视觉快照"
                   data-camera-frame-count={selectedCameraFrames.length}
                   data-camera-model={selectedPoint.cameraCapture.cameraModel || ''}
                 >
@@ -555,17 +734,21 @@ export default function VirtualTeachingPanel({
                   type="button"
                   className="teaching-apply-button"
                   disabled={!contextMatches || !robotReady}
-                  onClick={() => onApplyPoint(activeTask.id, selectedPoint.id)}
+                  onClick={() => onApplyPoint(
+                    activeTask.id,
+                    activeParkingPoint.id,
+                    selectedPoint.id,
+                  )}
                 >
                   <Play size={12} /> 应用到机器人
                 </button>
                 <button
                   type="button"
                   className="teaching-delete-point"
-                  aria-label="删除当前示教点"
+                  aria-label="删除当前机械臂姿态"
                   onClick={() => {
-                    if (window.confirm(`删除示教点 ${selectedPoint.name}？`)) {
-                      onDeletePoint(activeTask.id, selectedPoint.id);
+                    if (window.confirm(`删除机械臂姿态 ${selectedPoint.name}？`)) {
+                      onDeletePoint(activeTask.id, activeParkingPoint.id, selectedPoint.id);
                     }
                   }}
                 >
@@ -577,15 +760,16 @@ export default function VirtualTeachingPanel({
           </> : (
             <div
               className="teaching-data-handoff"
-              data-teaching-point-count={activeTask.points.length}
+              data-parking-point-count={parkingPoints.length}
+              data-teaching-point-count={activeTaskPoseCount}
             >
               <span className="teaching-data-handoff__count">
-                <b>{activeTask.points.length}</b>
+                <b>{activeTaskPoseCount}</b>
                 <small>POSES</small>
               </span>
               <div>
                 <strong>当前已归档姿态</strong>
-                <small>姿态查看、双目快照与工程导出由示教数据页统一管理</small>
+                <small>{parkingPoints.length} 个停车点 · 姿态与双目快照由示教数据页统一管理</small>
               </div>
               <button
                 type="button"

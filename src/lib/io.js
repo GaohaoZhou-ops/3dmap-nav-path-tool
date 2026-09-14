@@ -253,6 +253,59 @@ const normalizeTeachingCameraCapture = (value) => {
   };
 };
 
+const normalizeTeachingPoint = (point, pointIndex) => {
+  const joints = normalizeTeachingJoints(
+    point?.fullBodyJoints || point?.joints || point?.jointValues,
+  );
+  return {
+    id: String(point?.id || createId('teach-pose')),
+    name: String(
+      point?.name
+      || point?.label
+      || `A${String(pointIndex + 1).padStart(2, '0')}`,
+    ),
+    sequence: pointIndex + 1,
+    capturedAt: String(point?.capturedAt || point?.createdAt || ''),
+    mapPose: normalizeTeachingPose(
+      point?.mapPose || point?.robotPose || point?.pose,
+    ),
+    fullBodyJoints: joints,
+    cameraCapture: normalizeTeachingCameraCapture(
+      point?.cameraCapture || point?.visionCapture || point?.cameraFrames,
+    ),
+  };
+};
+
+const normalizeTeachingParkingPoint = (parkingPoint, parkingIndex) => {
+  const rawPoses = Array.isArray(parkingPoint?.poses)
+    ? parkingPoint.poses
+    : Array.isArray(parkingPoint?.points)
+      ? parkingPoint.points
+      : Array.isArray(parkingPoint?.teachingPoses)
+        ? parkingPoint.teachingPoses
+        : [];
+  const poses = rawPoses.map(normalizeTeachingPoint);
+  return {
+    id: String(parkingPoint?.id || createId('parking-point')),
+    name: String(
+      parkingPoint?.name
+      || parkingPoint?.label
+      || `停车点 P${String(parkingIndex + 1).padStart(2, '0')}`,
+    ),
+    sequence: parkingIndex + 1,
+    createdAt: String(parkingPoint?.createdAt || ''),
+    updatedAt: String(parkingPoint?.updatedAt || parkingPoint?.createdAt || ''),
+    mapPose: normalizeTeachingPose(
+      parkingPoint?.mapPose
+      || parkingPoint?.robotPose
+      || parkingPoint?.pose
+      || parkingPoint?.location
+      || poses[0]?.mapPose,
+    ),
+    poses,
+  };
+};
+
 export function normalizeTeachingTasks(payload) {
   const rawTasks = Array.isArray(payload)
     ? payload
@@ -262,31 +315,26 @@ export function normalizeTeachingTasks(payload) {
       || [];
   if (!Array.isArray(rawTasks)) return [];
   return rawTasks.map((task, taskIndex) => {
-    const rawPoints = Array.isArray(task?.points)
+    const nestedParkingPoints = Array.isArray(task?.parkingPoints)
+      ? task.parkingPoints
+      : Array.isArray(task?.parking_points)
+        ? task.parking_points
+        : Array.isArray(task?.stops) ? task.stops : [];
+    const legacyPoints = Array.isArray(task?.points)
       ? task.points
       : Array.isArray(task?.teachingPoints) ? task.teachingPoints : [];
-    const points = rawPoints.map((point, pointIndex) => {
-      const joints = normalizeTeachingJoints(
-        point?.fullBodyJoints || point?.joints || point?.jointValues,
-      );
-      return {
-        id: String(point?.id || createId('teach-point')),
-        name: String(
-          point?.name
-          || point?.label
-          || `T${String(pointIndex + 1).padStart(2, '0')}`,
-        ),
-        sequence: pointIndex + 1,
-        capturedAt: String(point?.capturedAt || point?.createdAt || ''),
-        mapPose: normalizeTeachingPose(
-          point?.mapPose || point?.robotPose || point?.pose,
-        ),
-        fullBodyJoints: joints,
-        cameraCapture: normalizeTeachingCameraCapture(
-          point?.cameraCapture || point?.visionCapture || point?.cameraFrames,
-        ),
-      };
-    });
+    const parkingPoints = nestedParkingPoints.length
+      ? nestedParkingPoints.map(normalizeTeachingParkingPoint)
+      : legacyPoints.length
+        ? [normalizeTeachingParkingPoint({
+            id: task?.legacyParkingPointId,
+            name: '停车点 P01',
+            createdAt: task?.createdAt,
+            updatedAt: task?.updatedAt,
+            mapPose: legacyPoints[0]?.mapPose || legacyPoints[0]?.robotPose || legacyPoints[0]?.pose,
+            poses: legacyPoints,
+          }, 0)]
+        : [];
     const robot = task?.robot && typeof task.robot === 'object' ? task.robot : {};
     const map = task?.map && typeof task.map === 'object' ? task.map : {};
     return {
@@ -305,7 +353,7 @@ export function normalizeTeachingTasks(payload) {
         fileName: String(map.fileName || map.name || ''),
         sourceHash: map.sourceHash ? String(map.sourceHash) : null,
       },
-      points,
+      parkingPoints,
     };
   });
 }
@@ -499,7 +547,7 @@ export function buildExport({
   const pointById = new Map(waypoints.map((point) => [point.id, point]));
   const exportedRobotPose = robotPose || robot?.origin || {};
   return {
-    schemaVersion: '1.1',
+    schemaVersion: '1.2',
     exportedAt: new Date().toISOString(),
     coordinateSystem: {
       horizontalPlane: 'XY',
@@ -576,19 +624,28 @@ export function buildExport({
       })),
       tasks: normalizeTeachingTasks(teachingTasks).map((task) => ({
         ...task,
-        points: task.points.map((point, index) => ({
-          ...point,
-          sequence: index + 1,
+        parkingPoints: task.parkingPoints.map((parkingPoint, parkingIndex) => ({
+          ...parkingPoint,
+          sequence: parkingIndex + 1,
           mapPose: {
             frameId: 'map',
-            position: { ...point.mapPose.position },
-            rpy: { ...point.mapPose.rpy },
+            position: { ...parkingPoint.mapPose.position },
+            rpy: { ...parkingPoint.mapPose.rpy },
           },
-          fullBodyJoints: {
-            ...point.fullBodyJoints,
-            count: Object.keys(point.fullBodyJoints.values).length,
-            values: { ...point.fullBodyJoints.values },
-          },
+          poses: parkingPoint.poses.map((point, pointIndex) => ({
+            ...point,
+            sequence: pointIndex + 1,
+            mapPose: {
+              frameId: 'map',
+              position: { ...point.mapPose.position },
+              rpy: { ...point.mapPose.rpy },
+            },
+            fullBodyJoints: {
+              ...point.fullBodyJoints,
+              count: Object.keys(point.fullBodyJoints.values).length,
+              values: { ...point.fullBodyJoints.values },
+            },
+          })),
         })),
       })),
     },

@@ -22,6 +22,7 @@ const formatBytes = (value) => {
 export default function TeachingDataPage({
   tasks = [],
   activeTaskId,
+  activeParkingPointId,
   mapData,
   robot,
   robotLoadState,
@@ -32,25 +33,49 @@ export default function TeachingDataPage({
   onSelectTask,
   onRenameTask,
   onDeleteTask,
+  onSelectParkingPoint,
+  onRenameParkingPoint,
+  onDeleteParkingPoint,
+  onApplyParkingPoint,
   onRenamePoint,
   onDeletePoint,
   onApplyPoint,
   onExportProject,
 }) {
   const activeTask = tasks.find((task) => task.id === activeTaskId) || tasks[0] || null;
-  const pointCount = tasks.reduce((total, task) => total + (task.points?.length || 0), 0);
+  const parkingPointCount = tasks.reduce(
+    (total, task) => total + (task.parkingPoints?.length || 0),
+    0,
+  );
+  const pointCount = tasks.reduce(
+    (total, task) => total + (task.parkingPoints || []).reduce(
+      (parkingTotal, parkingPoint) => parkingTotal + (parkingPoint.poses?.length || 0),
+      0,
+    ),
+    0,
+  );
   const cameraFrameCount = tasks.reduce(
-    (total, task) => total + (task.points || []).reduce(
-      (pointTotal, point) => pointTotal + Object.keys(point.cameraCapture?.frames || {}).length,
+    (total, task) => total + (task.parkingPoints || []).reduce(
+      (parkingTotal, parkingPoint) => parkingTotal + (parkingPoint.poses || []).reduce(
+        (pointTotal, point) => pointTotal + Object.keys(point.cameraCapture?.frames || {}).length,
+        0,
+      ),
       0,
     ),
     0,
   );
   const archiveBytes = tasks.reduce(
-    (total, task) => total + (task.points || []).reduce(
-      (pointTotal, point) => pointTotal + Number(point.cameraCapture?.storageByteLength || 0),
+    (total, task) => total + (task.parkingPoints || []).reduce(
+      (parkingTotal, parkingPoint) => parkingTotal + (parkingPoint.poses || []).reduce(
+        (pointTotal, point) => pointTotal + Number(point.cameraCapture?.storageByteLength || 0),
+        0,
+      ),
       0,
     ),
+    0,
+  );
+  const activeTaskPoseCount = (activeTask?.parkingPoints || []).reduce(
+    (total, parkingPoint) => total + (parkingPoint.poses?.length || 0),
     0,
   );
 
@@ -60,6 +85,7 @@ export default function TeachingDataPage({
       aria-label="示教数据子网页"
       data-page="teaching-data"
       data-teaching-task-count={tasks.length}
+      data-parking-point-count={parkingPointCount}
       data-teaching-point-count={pointCount}
       data-active-teaching-task={activeTask?.id || ''}
     >
@@ -94,12 +120,12 @@ export default function TeachingDataPage({
             <div>
               <span className="eyebrow">TEACHING DATA / OPERATIONS ARCHIVE</span>
               <h1>示教数据中心</h1>
-              <p>集中管理任务、点位、全身关节与双目视觉快照；实时姿态采集留在主工作台。</p>
+              <p>按“任务 → 停车点 → 机械臂姿态”管理全身关节与双目视觉快照；实时采集留在主工作台。</p>
             </div>
             <dl aria-label="示教数据统计">
               <div><dt>TASKS</dt><dd>{String(tasks.length).padStart(2, '0')}</dd><span>示教任务</span></div>
+              <div><dt>STOPS</dt><dd>{String(parkingPointCount).padStart(2, '0')}</dd><span>停车点</span></div>
               <div><dt>POSES</dt><dd>{String(pointCount).padStart(2, '0')}</dd><span>全身姿态</span></div>
-              <div><dt>FRAMES</dt><dd>{String(cameraFrameCount).padStart(2, '0')}</dd><span>相机帧</span></div>
               <div><dt>ARCHIVE</dt><dd>{formatBytes(archiveBytes)}</dd><span>视觉数据</span></div>
             </dl>
           </section>
@@ -110,7 +136,7 @@ export default function TeachingDataPage({
               <section>
                 <small>ACTIVE TASK</small>
                 <strong>{activeTask?.name || '暂无示教任务'}</strong>
-                <span>{activeTask ? `${activeTask.points?.length || 0} 个已记录姿态` : '请返回工作台建立第一项任务'}</span>
+                <span>{activeTask ? `${activeTask.parkingPoints?.length || 0} 个停车点 · ${activeTaskPoseCount} 组姿态` : '请返回工作台建立第一项任务'}</span>
               </section>
               <dl>
                 <div>
@@ -140,6 +166,7 @@ export default function TeachingDataPage({
               <VirtualTeachingPanel
                 tasks={tasks}
                 activeTaskId={activeTaskId}
+                activeParkingPointId={activeParkingPointId}
                 mapData={mapData}
                 robot={robot}
                 robotLoadState={robotLoadState}
@@ -149,6 +176,10 @@ export default function TeachingDataPage({
                 onSelectTask={onSelectTask}
                 onRenameTask={onRenameTask}
                 onDeleteTask={onDeleteTask}
+                onSelectParkingPoint={onSelectParkingPoint}
+                onRenameParkingPoint={onRenameParkingPoint}
+                onDeleteParkingPoint={onDeleteParkingPoint}
+                onApplyParkingPoint={onApplyParkingPoint}
                 onRenamePoint={onRenamePoint}
                 onDeletePoint={onDeletePoint}
                 onApplyPoint={onApplyPoint}
@@ -162,7 +193,7 @@ export default function TeachingDataPage({
 
       <footer className="teaching-data-page__statusbar">
         <span><CircleDot size={9} /> TEACHING ARCHIVE</span>
-        <span>{tasks.length} TASKS / {pointCount} POSES / {cameraFrameCount} CAMERA FRAMES</span>
+        <span>{tasks.length} TASKS / {parkingPointCount} STOPS / {pointCount} POSES / {cameraFrameCount} CAMERA FRAMES</span>
         <strong>MAP FRAME · ABSOLUTE POSE</strong>
       </footer>
     </div>

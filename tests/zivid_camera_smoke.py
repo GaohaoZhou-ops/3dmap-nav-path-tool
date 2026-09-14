@@ -39,11 +39,11 @@ def run():
         teaching_tab = page.get_by_role("tab", name="虚拟示教与相机")
         teaching_tab.click()
         assert teaching_tab.get_attribute("aria-selected") == "true"
-        page.get_by_role("button", name="隐藏全关节浮动窗口").click()
+        assert page.get_by_label("全关节控制浮动窗口", exact=True).count() == 0
         panel = page.get_by_label("Zivid 2 M70 相机视图")
         panel.scroll_into_view_if_needed()
         panel.wait_for()
-        assert page.get_by_label("主3D视角缩略图").count() == 0
+        assert page.get_by_label("主3D辅助视角").count() == 0
         assert panel.get_attribute("data-zivid-model") == "zivid-2-m70"
         assert panel.get_attribute("data-horizontal-fov") == "56.6"
         assert panel.get_attribute("data-vertical-fov") == "35.6"
@@ -98,8 +98,46 @@ def run():
         expanded_panel = dialog.get_by_label("Zivid 2 M70 相机视图")
         assert expanded_panel.is_visible()
         assert expanded_panel.locator(".zivid-camera-canvas").is_visible()
-        preview = dialog.get_by_label("主3D视角缩略图")
+        camera_stage = dialog.get_by_label("Zivid相机主画面", exact=True)
+        side_stack = dialog.get_by_label("相机控制与主3D辅助区", exact=True)
+        camera_controls = dialog.get_by_label("相机视角反算示教", exact=True)
+        preview = dialog.get_by_label("主3D辅助视角", exact=True)
         preview.wait_for()
+        camera_viewport = dialog.get_by_label("M70 相机画面交互区", exact=True)
+        stage_bounds = camera_stage.bounding_box()
+        side_stack_bounds = side_stack.bounding_box()
+        controls_bounds = camera_controls.bounding_box()
+        camera_bounds = camera_viewport.bounding_box()
+        preview_bounds = preview.bounding_box()
+        assert all((stage_bounds, side_stack_bounds, controls_bounds, camera_bounds, preview_bounds))
+        assert abs(side_stack_bounds["x"] - (stage_bounds["x"] + stage_bounds["width"])) < 3
+        assert stage_bounds["width"] > side_stack_bounds["width"] * 1.75
+        assert controls_bounds["y"] < preview_bounds["y"]
+        assert controls_bounds["y"] + controls_bounds["height"] <= preview_bounds["y"] + 3
+        assert abs(controls_bounds["x"] - preview_bounds["x"]) < 3
+        assert abs(controls_bounds["width"] - preview_bounds["width"]) < 3
+        assert camera_bounds["x"] >= stage_bounds["x"] - 1
+        assert camera_bounds["y"] >= stage_bounds["y"] - 1
+        assert camera_bounds["x"] + camera_bounds["width"] <= stage_bounds["x"] + stage_bounds["width"] + 1
+        assert camera_bounds["y"] + camera_bounds["height"] <= stage_bounds["y"] + stage_bounds["height"] + 1
+        assert abs((camera_bounds["width"] / camera_bounds["height"]) - (1944 / 1200)) < 0.01
+        assert camera_stage.get_attribute("data-native-aspect-ratio") == "1944:1200"
+        assert camera_stage.get_attribute("data-view-layout") == "native-aspect-camera"
+        assert side_stack.get_attribute("data-stack-order") == "camera-controls,main-3d"
+        assert preview.get_attribute("data-preview-layout") == "below-camera-controls"
+        assert expanded_panel.get_attribute("data-expanded-layout") == "camera-priority"
+        assert expanded_panel.get_attribute("data-main-view-preview") == "below-camera-controls"
+        expanded_camera_canvas = expanded_panel.locator(".zivid-camera-canvas")
+        page.wait_for_function(
+            """() => {
+              const canvas = document.querySelector('.zivid-camera-panel.is-expanded .zivid-camera-canvas');
+              return canvas?.height > 0 && Math.abs((canvas.width / canvas.height) - (1944 / 1200)) < 0.02;
+            }"""
+        )
+        canvas_bounds = expanded_camera_canvas.bounding_box()
+        assert canvas_bounds
+        assert abs(canvas_bounds["width"] - camera_bounds["width"]) < 1
+        assert abs(canvas_bounds["height"] - camera_bounds["height"]) < 1
         page.wait_for_function(
             """() => document.querySelector('.zivid-main-view-preview')
               ?.dataset.previewStatus === 'live'"""

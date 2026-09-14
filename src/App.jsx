@@ -317,6 +317,7 @@ export default function App() {
   const [robotCollisionProtectionEnabled, setRobotCollisionProtectionEnabled] = useState(false);
   const [teachingTasks, setTeachingTasks] = useState([]);
   const [activeTeachingTaskId, setActiveTeachingTaskId] = useState(null);
+  const [activeTeachingParkingPointId, setActiveTeachingParkingPointId] = useState(null);
   const [jointPoses, setJointPoses] = useState([]);
   const [zividCameraPoses, setZividCameraPoses] = useState({});
   const [cameraTeachingCommand, setCameraTeachingCommand] = useState(null);
@@ -357,6 +358,7 @@ export default function App() {
     lockedRobotJointNames,
     teachingTasks,
     activeTeachingTaskId,
+    activeTeachingParkingPointId,
     jointPoses,
   };
 
@@ -444,6 +446,7 @@ export default function App() {
         selectedWaypointId: current.selectedWaypointId,
         selectedEdgeId: current.selectedEdgeId,
         activeTeachingTaskId: current.activeTeachingTaskId,
+        activeTeachingParkingPointId: current.activeTeachingParkingPointId,
         validation: current.validation,
         pointColorMode: current.pointColorMode,
         meshRenderQuality: current.meshRenderQuality,
@@ -549,6 +552,7 @@ export default function App() {
         setRobotCollisionProtectionEnabled(false);
         setTeachingTasks([]);
         setActiveTeachingTaskId(null);
+        setActiveTeachingParkingPointId(null);
         setJointPoses([]);
         setCameraTeachingCommand(null);
         setCameraTeachingResult({ status: 'idle', revision: 0 });
@@ -812,10 +816,20 @@ export default function App() {
             setEdges(project.edges);
             setTeachingTasks(project.teachingTasks);
             setJointPoses(project.jointPoses);
-            setActiveTeachingTaskId(
-              teachingTaskIds.has(snapshot?.ui?.activeTeachingTaskId)
-                ? snapshot.ui.activeTeachingTaskId
-                : project.teachingTasks[0]?.id || null,
+            const restoredTeachingTaskId = teachingTaskIds.has(snapshot?.ui?.activeTeachingTaskId)
+              ? snapshot.ui.activeTeachingTaskId
+              : project.teachingTasks[0]?.id || null;
+            const restoredTeachingTask = project.teachingTasks.find(
+              (task) => task.id === restoredTeachingTaskId,
+            );
+            const restoredParkingPointIds = new Set(
+              (restoredTeachingTask?.parkingPoints || []).map((parkingPoint) => parkingPoint.id),
+            );
+            setActiveTeachingTaskId(restoredTeachingTaskId);
+            setActiveTeachingParkingPointId(
+              restoredParkingPointIds.has(snapshot?.ui?.activeTeachingParkingPointId)
+                ? snapshot.ui.activeTeachingParkingPointId
+                : restoredTeachingTask?.parkingPoints?.[0]?.id || null,
             );
             if (!stored.map && project.slice) {
               setHeightRange(
@@ -884,6 +898,7 @@ export default function App() {
           setRobotControlEnabled(false);
           setTeachingTasks([]);
           setActiveTeachingTaskId(null);
+          setActiveTeachingParkingPointId(null);
           setJointPoses([]);
           setRobotLoadState({ status: 'idle' });
           setRestoredView2d(null);
@@ -938,6 +953,7 @@ export default function App() {
     lockedRobotJointNames,
     teachingTasks,
     activeTeachingTaskId,
+    activeTeachingParkingPointId,
     jointPoses,
     sessionState.status,
     showWaypoints3D,
@@ -1027,6 +1043,7 @@ export default function App() {
       setTeachingTasks(project.teachingTasks);
       setJointPoses(project.jointPoses);
       setActiveTeachingTaskId(project.teachingTasks[0]?.id || null);
+      setActiveTeachingParkingPointId(project.teachingTasks[0]?.parkingPoints?.[0]?.id || null);
       setSelectedWaypointId(null);
       setSelectedEdgeId(null);
       setConnectionSourceId(null);
@@ -1354,6 +1371,20 @@ export default function App() {
       return;
     }
     const timestamp = new Date().toISOString();
+    const pose = normalizeRobotPose(robotPose);
+    const initialParkingPoint = {
+      id: createId('parking-point'),
+      name: '停车点 P01',
+      sequence: 1,
+      createdAt: timestamp,
+      updatedAt: timestamp,
+      mapPose: {
+        frameId: 'map',
+        position: { ...pose.position },
+        rpy: { ...pose.rpy },
+      },
+      poses: [],
+    };
     const task = {
       id: createId('teach-task'),
       name: `示教任务 ${String(teachingTasks.length + 1).padStart(2, '0')}`,
@@ -1370,18 +1401,21 @@ export default function App() {
         fileName: mapData.name || '',
         sourceHash: mapData.sourceHash || null,
       },
-      points: [],
+      parkingPoints: [initialParkingPoint],
     };
     setTeachingTasks((current) => [...current, task]);
     setActiveTeachingTaskId(task.id);
+    setActiveTeachingParkingPointId(initialParkingPoint.id);
     setTeachingCaptureState({ status: 'idle', message: '' });
-    notify(`${task.name} 已创建 · 已绑定当前地图与机器人`, 'success');
-  }, [mapData, notify, robotLoadState.status, selectedRobot, teachingTasks.length]);
+    notify(`${task.name} 已创建 · ${initialParkingPoint.name} 已记录`, 'success');
+  }, [mapData, notify, robotLoadState.status, robotPose, selectedRobot, teachingTasks.length]);
 
   const selectTeachingTask = useCallback((id) => {
+    const task = teachingTasks.find((item) => item.id === id);
     setActiveTeachingTaskId(id);
+    setActiveTeachingParkingPointId(task?.parkingPoints?.[0]?.id || null);
     setTeachingCaptureState({ status: 'idle', message: '' });
-  }, []);
+  }, [teachingTasks]);
 
   const renameTeachingTask = useCallback((id, name) => {
     const nextName = String(name || '').trim();
@@ -1399,16 +1433,128 @@ export default function App() {
       setTeachingTasks(remaining);
       if (activeTeachingTaskId === id) {
         setActiveTeachingTaskId(remaining[0]?.id || null);
+        setActiveTeachingParkingPointId(remaining[0]?.parkingPoints?.[0]?.id || null);
       }
       notify(`${task?.name || '示教任务'} 已删除`, 'info');
     },
     [activeTeachingTaskId, notify, teachingTasks],
   );
 
+  const createTeachingParkingPoint = useCallback(() => {
+    const task = teachingTasks.find((item) => item.id === activeTeachingTaskId);
+    if (!task) {
+      notify('请先新建或选择一个示教任务', 'warning');
+      return;
+    }
+    if (robotLoadState.status !== 'loaded' || !teachingContextMatches(task)) {
+      notify('当前地图或机器人与该示教任务不一致，无法记录停车点', 'warning');
+      return;
+    }
+    const timestamp = new Date().toISOString();
+    const pose = normalizeRobotPose(robotPose);
+    const parkingPoints = task.parkingPoints || [];
+    const parkingPoint = {
+      id: createId('parking-point'),
+      name: `停车点 P${String(parkingPoints.length + 1).padStart(2, '0')}`,
+      sequence: parkingPoints.length + 1,
+      createdAt: timestamp,
+      updatedAt: timestamp,
+      mapPose: {
+        frameId: 'map',
+        position: { ...pose.position },
+        rpy: { ...pose.rpy },
+      },
+      poses: [],
+    };
+    setTeachingTasks((current) => current.map((item) => (
+      item.id === task.id
+        ? {
+            ...item,
+            parkingPoints: [...(item.parkingPoints || []), parkingPoint],
+            updatedAt: timestamp,
+          }
+        : item
+    )));
+    setActiveTeachingParkingPointId(parkingPoint.id);
+    setTeachingCaptureState({ status: 'idle', message: '' });
+    notify(`${parkingPoint.name} 已记录 · MAP XYZ/RPY`, 'success');
+  }, [
+    activeTeachingTaskId,
+    notify,
+    robotLoadState.status,
+    robotPose,
+    teachingContextMatches,
+    teachingTasks,
+  ]);
+
+  const selectTeachingParkingPoint = useCallback((id) => {
+    setActiveTeachingParkingPointId(id);
+    setTeachingCaptureState({ status: 'idle', message: '' });
+  }, []);
+
+  const renameTeachingParkingPoint = useCallback((taskId, parkingPointId, name) => {
+    const nextName = String(name || '').trim();
+    if (!nextName) return;
+    const updatedAt = new Date().toISOString();
+    setTeachingTasks((current) => current.map((task) => (
+      task.id === taskId
+        ? {
+            ...task,
+            updatedAt,
+            parkingPoints: (task.parkingPoints || []).map((parkingPoint) => (
+              parkingPoint.id === parkingPointId
+                ? { ...parkingPoint, name: nextName, updatedAt }
+                : parkingPoint
+            )),
+          }
+        : task
+    )));
+  }, []);
+
+  const deleteTeachingParkingPoint = useCallback((taskId, parkingPointId) => {
+    const task = teachingTasks.find((item) => item.id === taskId);
+    if (!task) return;
+    const removed = task.parkingPoints?.find((item) => item.id === parkingPointId);
+    const remaining = (task.parkingPoints || [])
+      .filter((item) => item.id !== parkingPointId)
+      .map((item, index) => ({ ...item, sequence: index + 1 }));
+    const updatedAt = new Date().toISOString();
+    setTeachingTasks((current) => current.map((item) => (
+      item.id === taskId ? { ...item, parkingPoints: remaining, updatedAt } : item
+    )));
+    if (activeTeachingParkingPointId === parkingPointId) {
+      setActiveTeachingParkingPointId(remaining[0]?.id || null);
+    }
+    notify(`${removed?.name || '停车点'} 已删除`, 'info');
+  }, [activeTeachingParkingPointId, notify, teachingTasks]);
+
+  const applyTeachingParkingPoint = useCallback(
+    (taskId, parkingPointId) => {
+      const task = teachingTasks.find((item) => item.id === taskId);
+      const parkingPoint = task?.parkingPoints?.find((item) => item.id === parkingPointId);
+      if (!task || !parkingPoint) return;
+      if (robotLoadState.status !== 'loaded' || !teachingContextMatches(task)) {
+        notify('当前地图或机器人与该停车点不一致，无法应用', 'warning');
+        return;
+      }
+      setRobotControlEnabled(false);
+      setRobotPose(normalizeRobotPose(parkingPoint.mapPose));
+      notify(`${parkingPoint.name} 已应用 · 机器人底盘已恢复到停车位置`, 'success');
+    },
+    [notify, robotLoadState.status, teachingContextMatches, teachingTasks],
+  );
+
   const captureTeachingPoint = useCallback(async () => {
     const task = teachingTasks.find((item) => item.id === activeTeachingTaskId);
     if (!task) {
       notify('请先新建或选择一个示教任务', 'warning');
+      return;
+    }
+    const parkingPoint = task.parkingPoints?.find(
+      (item) => item.id === activeTeachingParkingPointId,
+    );
+    if (!parkingPoint) {
+      notify('请先新增或选择一个停车点', 'warning');
       return;
     }
     if (robotLoadState.status !== 'loaded' || !teachingContextMatches(task)) {
@@ -1448,9 +1594,9 @@ export default function App() {
       }
     }
     const point = {
-      id: createId('teach-point'),
-      name: `T${String(task.points.length + 1).padStart(2, '0')}`,
-      sequence: task.points.length + 1,
+      id: createId('teach-pose'),
+      name: `A${String(parkingPoint.poses.length + 1).padStart(2, '0')}`,
+      sequence: parkingPoint.poses.length + 1,
       capturedAt: timestamp,
       mapPose: {
         frameId: 'map',
@@ -1468,22 +1614,36 @@ export default function App() {
     };
     setTeachingTasks((current) => current.map((item) => (
       item.id === task.id
-        ? { ...item, points: [...item.points, point], updatedAt: timestamp }
+        ? {
+            ...item,
+            parkingPoints: item.parkingPoints.map((candidate) => (
+              candidate.id === parkingPoint.id
+                ? {
+                    ...candidate,
+                    poses: [...candidate.poses, point],
+                    updatedAt: timestamp,
+                  }
+                : candidate
+            )),
+            updatedAt: timestamp,
+          }
         : item
     )));
     notify(
-      `${point.name} 已示教 · MAP 6DOF + ${point.fullBodyJoints.count} 个全身关节${cameraCapture ? ' + 双目 RGB/XYZ' : ''}`,
+      `${parkingPoint.name} / ${point.name} 已示教 · ${point.fullBodyJoints.count} 个全身关节${cameraCapture ? ' + 双目 RGB/XYZ' : ''}`,
       'success',
     );
     setTeachingCaptureState({
       status: 'complete',
       message: cameraCapture
-        ? '左右 RGB 与点云已随示教点保存'
-        : '机器人位姿与全身关节已保存',
+        ? '左右 RGB 与点云已随机械臂姿态保存'
+        : '机械臂姿态与全身关节已保存',
       pointId: point.id,
+      parkingPointId: parkingPoint.id,
       frameCount: cameraCapture ? Object.keys(cameraCapture.frames || {}).length : 0,
     });
   }, [
+    activeTeachingParkingPointId,
     activeTeachingTaskId,
     notify,
     robotJointValues,
@@ -1494,7 +1654,7 @@ export default function App() {
     teachingTasks,
   ]);
 
-  const renameTeachingPoint = useCallback((taskId, pointId, name) => {
+  const renameTeachingPoint = useCallback((taskId, parkingPointId, pointId, name) => {
     const nextName = String(name || '').trim();
     if (!nextName) return;
     const updatedAt = new Date().toISOString();
@@ -1503,36 +1663,53 @@ export default function App() {
         ? {
             ...task,
             updatedAt,
-            points: task.points.map((point) => (
-              point.id === pointId ? { ...point, name: nextName } : point
+            parkingPoints: task.parkingPoints.map((parkingPoint) => (
+              parkingPoint.id === parkingPointId
+                ? {
+                    ...parkingPoint,
+                    updatedAt,
+                    poses: parkingPoint.poses.map((point) => (
+                      point.id === pointId ? { ...point, name: nextName } : point
+                    )),
+                  }
+                : parkingPoint
             )),
           }
         : task
     )));
   }, []);
 
-  const deleteTeachingPoint = useCallback((taskId, pointId) => {
+  const deleteTeachingPoint = useCallback((taskId, parkingPointId, pointId) => {
     const updatedAt = new Date().toISOString();
     setTeachingTasks((current) => current.map((task) => {
       if (task.id !== taskId) return task;
       return {
         ...task,
         updatedAt,
-        points: task.points
-          .filter((point) => point.id !== pointId)
-          .map((point, index) => ({ ...point, sequence: index + 1 })),
+        parkingPoints: task.parkingPoints.map((parkingPoint) => (
+          parkingPoint.id === parkingPointId
+            ? {
+                ...parkingPoint,
+                updatedAt,
+                poses: parkingPoint.poses
+                  .filter((point) => point.id !== pointId)
+                  .map((point, index) => ({ ...point, sequence: index + 1 })),
+              }
+            : parkingPoint
+        )),
       };
     }));
-    notify('示教点位已删除', 'info');
+    notify('机械臂示教姿态已删除', 'info');
   }, [notify]);
 
   const applyTeachingPoint = useCallback(
-    (taskId, pointId) => {
+    (taskId, parkingPointId, pointId) => {
       const task = teachingTasks.find((item) => item.id === taskId);
-      const point = task?.points.find((item) => item.id === pointId);
+      const parkingPoint = task?.parkingPoints?.find((item) => item.id === parkingPointId);
+      const point = parkingPoint?.poses?.find((item) => item.id === pointId);
       if (!task || !point) return;
       if (robotLoadState.status !== 'loaded' || !teachingContextMatches(task)) {
-        notify('当前地图或机器人与该示教点不一致，无法应用姿态', 'warning');
+        notify('当前地图或机器人与该机械臂姿态不一致，无法应用', 'warning');
         return;
       }
       setRobotControlEnabled(false);
@@ -1540,7 +1717,7 @@ export default function App() {
       setRobotJointValues(
         normalizeRobotJointValues(point.fullBodyJoints?.values),
       );
-      notify(`${point.name} 已应用到机器人 · 地图定位与全身关节已恢复`, 'success');
+      notify(`${parkingPoint.name} / ${point.name} 已应用 · 地图定位与全身关节已恢复`, 'success');
     },
     [notify, robotLoadState.status, teachingContextMatches, teachingTasks],
   );
@@ -2222,6 +2399,7 @@ export default function App() {
           main3DCanvasRef={main3DCanvasRef}
           teachingTasks={teachingTasks}
           activeTeachingTaskId={activeTeachingTaskId}
+          activeTeachingParkingPointId={activeTeachingParkingPointId}
           jointPoses={jointPoses}
           zividCameraPoses={zividCameraPoses}
           cameraTeachingResult={cameraTeachingResult}
@@ -2237,6 +2415,8 @@ export default function App() {
           onDeleteEdge={deleteEdge}
           onCreateTeachingTask={createTeachingTask}
           onSelectTeachingTask={selectTeachingTask}
+          onCreateTeachingParkingPoint={createTeachingParkingPoint}
+          onSelectTeachingParkingPoint={selectTeachingParkingPoint}
           onCaptureTeachingPoint={captureTeachingPoint}
           onOpenTeachingDataPage={() => navigateAppPage(APP_PAGE_TEACHING_DATA)}
           onUpdateRobotJointValue={updateRobotJointValue}
@@ -2276,7 +2456,7 @@ export default function App() {
         <span className="statusbar__hint">
           {mode === 'connect' && connectionSourceId ? '起点已锁定 · 请选择终点' : mode === 'add' ? '点击二维截面添加导航点' : mode === 'box' ? '二维图左键拉框 · Delete 删除所选' : '拖动二维地图平移 · 滚轮缩放'}
         </span>
-        <span>SCHEMA 1.0</span>
+        <span>SCHEMA 1.2</span>
       </footer>
 
       {appPage === APP_PAGE_WORKBENCH && loadState.loading && (
@@ -2301,6 +2481,7 @@ export default function App() {
         <TeachingDataPage
           tasks={teachingTasks}
           activeTaskId={activeTeachingTaskId}
+          activeParkingPointId={activeTeachingParkingPointId}
           mapData={mapData}
           robot={selectedRobot}
           robotLoadState={robotLoadState}
@@ -2311,6 +2492,10 @@ export default function App() {
           onSelectTask={selectTeachingTask}
           onRenameTask={renameTeachingTask}
           onDeleteTask={deleteTeachingTask}
+          onSelectParkingPoint={selectTeachingParkingPoint}
+          onRenameParkingPoint={renameTeachingParkingPoint}
+          onDeleteParkingPoint={deleteTeachingParkingPoint}
+          onApplyParkingPoint={applyTeachingParkingPoint}
           onRenamePoint={renameTeachingPoint}
           onDeletePoint={deleteTeachingPoint}
           onApplyPoint={applyTeachingPoint}

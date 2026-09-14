@@ -43,6 +43,11 @@ def run():
         page.get_by_role("tab", name="虚拟示教与相机").click()
 
         floating_window = page.get_by_label("全关节控制浮动窗口", exact=True)
+        assert floating_window.count() == 0
+        joint_toggle = page.get_by_role("button", name="打开全关节浮动窗口")
+        assert joint_toggle.get_attribute("aria-pressed") == "false"
+        joint_toggle.click()
+        floating_window = page.get_by_label("全关节控制浮动窗口", exact=True)
         floating_window.wait_for()
         assert floating_window.is_visible()
         assert floating_window.get_attribute("data-floating-window") == "robot-joints"
@@ -182,17 +187,27 @@ def run():
         assert camera_teach.get_attribute("data-attached-to-camera") == "true"
         assert camera_teach.evaluate(
             "node => node.parentElement?.getAttribute('aria-label')"
-        ) == "Zivid 2 M70 相机视图"
+        ) == "相机控制与主3D辅助区"
         assert camera_teach.evaluate(
-            "node => node.previousElementSibling?.getAttribute('aria-label')"
-        ) == "M70 相机画面交互区"
+            "node => node.nextElementSibling?.getAttribute('aria-label')"
+        ) == "主3D辅助视角"
+        view_deck = zivid_panel.get_by_label("Zivid相机主画面", exact=True)
+        side_stack = zivid_panel.get_by_label("相机控制与主3D辅助区", exact=True)
         camera_viewport = zivid_panel.get_by_label("M70 相机画面交互区", exact=True)
+        main_viewport = zivid_panel.get_by_label("主3D辅助视角", exact=True)
+        deck_box = view_deck.bounding_box()
+        side_stack_box = side_stack.bounding_box()
         viewport_box = camera_viewport.bounding_box()
+        main_viewport_box = main_viewport.bounding_box()
         controls_box = camera_teach.bounding_box()
-        assert viewport_box and controls_box
+        assert deck_box and side_stack_box and viewport_box and main_viewport_box and controls_box
         assert abs(
-            controls_box["x"] - (viewport_box["x"] + viewport_box["width"])
+            side_stack_box["x"] - (deck_box["x"] + deck_box["width"])
         ) < 3
+        assert controls_box["y"] + controls_box["height"] <= main_viewport_box["y"] + 3
+        assert abs(controls_box["x"] - main_viewport_box["x"]) < 3
+        assert abs(controls_box["width"] - main_viewport_box["width"]) < 3
+        assert abs((viewport_box["width"] / viewport_box["height"]) - (1944 / 1200)) < 0.01
         page.wait_for_function(
             "document.querySelector('[aria-label=\"相机视角反算示教\"]')?.dataset.cameraReady === 'true'"
         )
@@ -206,8 +221,29 @@ def run():
             "yaw-left", "yaw-right", "pitch-up", "pitch-down",
             "roll-left", "roll-right",
         }
-        assert camera_teach.get_attribute("data-linear-step") == "0.025"
+        linear_step_slider = camera_teach.get_by_role("slider", name="相机位移步进")
+        angular_step_slider = camera_teach.get_by_role("slider", name="相机旋转步进")
+        assert linear_step_slider.get_attribute("min") == "5"
+        assert linear_step_slider.get_attribute("max") == "10"
+        assert linear_step_slider.get_attribute("step") == "1"
+        assert linear_step_slider.input_value() == "5"
+        assert angular_step_slider.get_attribute("min") == "1"
+        assert angular_step_slider.get_attribute("max") == "10"
+        assert angular_step_slider.get_attribute("step") == "1"
+        assert angular_step_slider.input_value() == "3"
+        assert camera_teach.locator(".camera-teach-step-grid button").count() == 0
+        assert camera_teach.get_attribute("data-linear-step") == "0.05"
+        assert camera_teach.get_attribute("data-linear-step-cm") == "5"
         assert camera_teach.get_attribute("data-angular-step") == "3"
+
+        linear_step_slider.fill("7")
+        angular_step_slider.fill("8")
+        assert camera_teach.get_attribute("data-linear-step") == "0.07"
+        assert camera_teach.get_attribute("data-linear-step-cm") == "7"
+        assert camera_teach.get_attribute("data-angular-step") == "8"
+        assert camera_teach.get_by_role("button", name="左臂相机靠近").get_attribute(
+            "title"
+        ) == "靠近 · 70 mm"
 
         left_pose_before = csv_vector(canvas, "data-zivid-left-optical-position")
         joints_before_camera_move = scene_joint_values(page)
@@ -241,6 +277,9 @@ def run():
         )
         right_quaternion_before = csv_vector(canvas, "data-zivid-right-optical-quaternion")
         first_revision = int(canvas.get_attribute("data-camera-teaching-revision"))
+        assert camera_teach.get_by_role("button", name="右臂相机右转").get_attribute(
+            "title"
+        ) == "右转 · 8°"
         camera_teach.get_by_role("button", name="右臂相机右转").click()
         page.wait_for_function(
             """
@@ -283,7 +322,7 @@ def run():
         assert expanded_viewport_box and expanded_controls_box
         assert abs(
             expanded_controls_box["x"]
-            - (expanded_viewport_box["x"] + expanded_viewport_box["width"])
+            - side_stack_box["x"]
         ) < 3
         camera_modal.screenshot(
             path="/tmp/atlas-camera-teaching-expanded.png",

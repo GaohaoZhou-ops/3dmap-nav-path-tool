@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useId, useState } from 'react';
 import {
   ArrowDown,
   ArrowLeft,
@@ -14,8 +14,10 @@ import {
   ZoomOut,
 } from 'lucide-react';
 
-const LINEAR_STEPS = [0.01, 0.025, 0.05];
-const ANGULAR_STEPS = [1, 3, 5];
+const LINEAR_STEP_MIN_CM = 5;
+const LINEAR_STEP_MAX_CM = 10;
+const ANGULAR_STEP_MIN_DEG = 1;
+const ANGULAR_STEP_MAX_DEG = 10;
 
 const CAMERA_TRANSLATION_ROWS = [
   {
@@ -91,8 +93,11 @@ export default function CameraTeachingControls({
   result,
   onMove,
 }) {
-  const [linearStep, setLinearStep] = useState(0.025);
+  const linearStepSliderId = useId();
+  const angularStepSliderId = useId();
+  const [linearStepCm, setLinearStepCm] = useState(LINEAR_STEP_MIN_CM);
   const [angularStep, setAngularStep] = useState(3);
+  const linearStep = linearStepCm / 100;
   const side = activeSide === 'right' ? 'right' : 'left';
   const sideLabel = side === 'left' ? '左臂' : '右臂';
   const activePose = cameraPoses?.[side] || null;
@@ -136,6 +141,7 @@ export default function CameraTeachingControls({
       data-camera-teaching-status={activeResult?.status || 'idle'}
       data-camera-teaching-revision={activeResult?.revision || 0}
       data-linear-step={linearStep}
+      data-linear-step-cm={linearStepCm}
       data-angular-step={angularStep}
     >
       <header className="camera-teach-console__header">
@@ -156,36 +162,58 @@ export default function CameraTeachingControls({
       </div>
 
       <div className="camera-teach-step-grid">
-        <div>
-          <span>位移步进</span>
-          <div role="group" aria-label="相机位移步进">
-            {LINEAR_STEPS.map((step) => (
-              <button
-                type="button"
-                key={step}
-                className={linearStep === step ? 'is-active' : ''}
-                aria-pressed={linearStep === step}
-                onClick={() => setLinearStep(step)}
-              >
-                {Math.round(step * 1000)}<small>mm</small>
-              </button>
-            ))}
+        <div className="camera-teach-step-slider is-linear">
+          <div className="camera-teach-step-slider__header">
+            <label htmlFor={linearStepSliderId}>位移步进</label>
+            <output htmlFor={linearStepSliderId} aria-live="polite">
+              <strong>{linearStepCm}</strong><small>cm</small>
+            </output>
+          </div>
+          <div className="camera-teach-step-slider__rail">
+            <input
+              id={linearStepSliderId}
+              type="range"
+              min={LINEAR_STEP_MIN_CM}
+              max={LINEAR_STEP_MAX_CM}
+              step="1"
+              value={linearStepCm}
+              aria-label="相机位移步进"
+              aria-valuetext={`${linearStepCm} 厘米`}
+              style={{
+                '--step-progress': `${((linearStepCm - LINEAR_STEP_MIN_CM) / (LINEAR_STEP_MAX_CM - LINEAR_STEP_MIN_CM)) * 100}%`,
+              }}
+              onChange={(event) => setLinearStepCm(Number(event.target.value))}
+            />
+            <div className="camera-teach-step-slider__scale" aria-hidden="true">
+              <span>{LINEAR_STEP_MIN_CM}</span><i>每格 1 cm</i><span>{LINEAR_STEP_MAX_CM}</span>
+            </div>
           </div>
         </div>
-        <div>
-          <span>旋转步进</span>
-          <div role="group" aria-label="相机旋转步进">
-            {ANGULAR_STEPS.map((step) => (
-              <button
-                type="button"
-                key={step}
-                className={angularStep === step ? 'is-active' : ''}
-                aria-pressed={angularStep === step}
-                onClick={() => setAngularStep(step)}
-              >
-                {step}<small>°</small>
-              </button>
-            ))}
+        <div className="camera-teach-step-slider is-angular">
+          <div className="camera-teach-step-slider__header">
+            <label htmlFor={angularStepSliderId}>旋转步进</label>
+            <output htmlFor={angularStepSliderId} aria-live="polite">
+              <strong>{angularStep}</strong><small>°</small>
+            </output>
+          </div>
+          <div className="camera-teach-step-slider__rail">
+            <input
+              id={angularStepSliderId}
+              type="range"
+              min={ANGULAR_STEP_MIN_DEG}
+              max={ANGULAR_STEP_MAX_DEG}
+              step="1"
+              value={angularStep}
+              aria-label="相机旋转步进"
+              aria-valuetext={`${angularStep} 度`}
+              style={{
+                '--step-progress': `${((angularStep - ANGULAR_STEP_MIN_DEG) / (ANGULAR_STEP_MAX_DEG - ANGULAR_STEP_MIN_DEG)) * 100}%`,
+              }}
+              onChange={(event) => setAngularStep(Number(event.target.value))}
+            />
+            <div className="camera-teach-step-slider__scale" aria-hidden="true">
+              <span>{ANGULAR_STEP_MIN_DEG}</span><i>每格 1°</i><span>{ANGULAR_STEP_MAX_DEG}</span>
+            </div>
           </div>
         </div>
       </div>

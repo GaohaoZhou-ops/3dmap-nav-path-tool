@@ -34,7 +34,7 @@ def run():
         teaching_tab = page.get_by_role("tab", name="虚拟示教与相机")
         teaching_tab.click()
         assert teaching_tab.get_attribute("aria-selected") == "true"
-        page.get_by_role("button", name="隐藏全关节浮动窗口").click()
+        assert page.get_by_label("全关节控制浮动窗口", exact=True).count() == 0
         teaching_panel = page.get_by_label("虚拟示教", exact=True)
         new_task = page.get_by_role("button", name="新建示教任务", exact=True)
         assert new_task.is_disabled()
@@ -65,6 +65,8 @@ def run():
         )
         assert teaching_panel.get_attribute("data-teaching-context-match") == "true"
         assert teaching_panel.get_attribute("data-camera-inverse-mode") == "automatic"
+        assert teaching_panel.get_attribute("data-parking-point-count") == "1"
+        assert page.get_by_label("选择当前停车点").input_value()
         assert page.get_by_label("打开已有示教任务").input_value()
         assert page.locator(".teaching-context").count() == 0
         assert page.get_by_role("tab", name="相机反算", exact=True).count() == 0
@@ -85,13 +87,14 @@ def run():
         assert first_pose["y"] > 0.04
         assert first_pose["yaw"] > 4
 
-        page.get_by_role("button", name="记录当前机器人姿态").click()
+        page.get_by_role("button", name="记录当前机械臂姿态").click()
         page.wait_for_function(
             "document.querySelector('.teaching-data-handoff')?.dataset.teachingPointCount === '1'"
         )
         assert page.get_by_role("button", name="新建示教任务", exact=True).is_visible()
         assert page.get_by_label("打开已有示教任务", exact=True).is_visible()
-        assert page.get_by_role("button", name="记录当前机器人姿态", exact=True).is_visible()
+        assert page.get_by_role("button", name="新增停车点", exact=True).is_visible()
+        assert page.get_by_role("button", name="记录当前机械臂姿态", exact=True).is_visible()
         assert page.get_by_text("当前已归档姿态", exact=True).is_visible()
         assert page.locator(".teaching-point-row").count() == 0
         page.screenshot(path="/tmp/atlas-virtual-teaching-capture.png", full_page=True)
@@ -120,30 +123,42 @@ def run():
         assert_pose_close(captured_first_pose, first_pose)
         assert page.locator(".teaching-joint-list > div").count() == movable_joint_count
 
-        point_name = page.get_by_role("textbox", name="示教点名称")
+        point_name = page.get_by_role("textbox", name="机械臂姿态名称")
         point_name.fill("抓取准备位")
         point_name.press("Enter")
 
         page.get_by_role("button", name="返回主工作台继续示教").click()
         page.locator('[data-app-page="teaching-data"]').wait_for(state="detached")
         teaching_tab.click()
-        page.get_by_role("button", name="隐藏全关节浮动窗口").click()
+        assert page.get_by_label("全关节控制浮动窗口", exact=True).count() == 0
+        page.get_by_role("button", name="记录当前机械臂姿态").click()
+        page.wait_for_function(
+            "document.querySelector('.teaching-data-handoff')?.dataset.teachingPointCount === '2'"
+        )
         page.keyboard.press("w")
         page.keyboard.press("d")
         page.wait_for_timeout(160)
         second_pose = read_pose(canvas)
         assert abs(second_pose["x"] - first_pose["x"]) > 0.04
-        page.get_by_role("button", name="记录当前机器人姿态").click()
+        page.get_by_role("button", name="新增停车点", exact=True).click()
         page.wait_for_function(
-            "document.querySelector('.teaching-data-handoff')?.dataset.teachingPointCount === '2'"
+            "document.querySelector('[aria-label=\"虚拟示教\"]')?.dataset.parkingPointCount === '2'"
         )
+        assert "P02" in page.get_by_label("选择当前停车点").locator("option:checked").inner_text()
+        page.get_by_role("button", name="记录当前机械臂姿态").click()
+        page.wait_for_function(
+            "document.querySelector('.teaching-data-handoff')?.dataset.teachingPointCount === '3'"
+        )
+        assert page.locator(".teaching-data-handoff").get_attribute("data-parking-point-count") == "2"
 
         page.get_by_role("button", name="打开数据页", exact=False).click()
         page.locator('[data-app-page="teaching-data"]').wait_for()
-        page.wait_for_function("document.querySelectorAll('.teaching-point-row').length === 2")
-        assert page.get_by_role("textbox", name="示教点名称").input_value() == "T02"
+        page.wait_for_function("document.querySelectorAll('.teaching-parking-tabs button').length === 2")
+        assert page.locator(".teaching-point-row").count() == 1
+        assert page.get_by_role("textbox", name="机械臂姿态名称").input_value() == "A01"
 
-        page.get_by_role("button", name="查看示教点 抓取准备位").click()
+        page.get_by_role("button", name="选择停车点 停车点 P01").click()
+        page.get_by_role("button", name="查看机械臂姿态 抓取准备位").click()
         page.get_by_role("button", name="应用到机器人", exact=True).click()
         page.wait_for_function(
             "([x, y, yaw]) => { const d = document.querySelector('.three-canvas')?.dataset; return d && Math.abs(Number(d.robotX)-x)<1e-5 && Math.abs(Number(d.robotY)-y)<1e-5 && Math.abs(Number(d.robotYaw)-yaw)<1e-5; }",
@@ -165,14 +180,19 @@ def run():
         assert task["map"]["fileName"] == "rotation-map.ply"
         assert task["map"]["sourceHash"]
         assert task["robot"]["relativePath"].endswith("botx_abx_zivid_m70.urdf")
-        assert [point["name"] for point in task["points"]] == ["抓取准备位", "T02"]
-        assert [point["sequence"] for point in task["points"]] == [1, 2]
-        first_export = task["points"][0]
+        assert len(task["parkingPoints"]) == 2
+        assert [parking["sequence"] for parking in task["parkingPoints"]] == [1, 2]
+        assert [len(parking["poses"]) for parking in task["parkingPoints"]] == [2, 1]
+        assert task["parkingPoints"][0]["poses"][0]["name"] == "抓取准备位"
+        assert task["parkingPoints"][0]["poses"][1]["name"] == "A02"
+        assert task["parkingPoints"][1]["poses"][0]["name"] == "A01"
+        first_export = task["parkingPoints"][0]["poses"][0]
         assert first_export["mapPose"]["frameId"] == "map"
         assert abs(first_export["mapPose"]["position"]["x"] - first_pose["x"]) < 1e-5
         assert abs(first_export["mapPose"]["rpy"]["yaw"] - first_pose["yaw"]) < 1e-5
         assert first_export["fullBodyJoints"]["count"] == movable_joint_count
         assert len(first_export["fullBodyJoints"]["values"]) == movable_joint_count
+        assert abs(task["parkingPoints"][1]["mapPose"]["position"]["x"] - second_pose["x"]) < 1e-5
 
         page.wait_for_timeout(550)
         stored_tasks = page.evaluate(
@@ -195,7 +215,8 @@ def run():
             """
         )
         assert len(stored_tasks) == 1
-        assert len(stored_tasks[0]["points"]) == 2
+        assert len(stored_tasks[0]["parkingPoints"]) == 2
+        assert [len(item["poses"]) for item in stored_tasks[0]["parkingPoints"]] == [2, 1]
 
         page.reload(wait_until="domcontentloaded")
         page.locator(".teaching-data-page__session.is-ready").wait_for()
@@ -206,16 +227,21 @@ def run():
         page.locator(".loading-curtain").wait_for(state="hidden")
         teaching_panel = page.locator('section[aria-label="示教数据管理"]')
         assert teaching_panel.get_attribute("data-teaching-task-count") == "1"
+        assert teaching_panel.get_attribute("data-parking-point-count") == "2"
         assert teaching_panel.get_attribute("data-teaching-context-match") == "true"
         assert page.get_by_role("textbox", name="示教任务名称").input_value() == "双臂装配演示"
+        assert page.locator(".teaching-parking-tabs button").count() == 2
         assert page.locator(".teaching-point-row").count() == 2
-        assert page.get_by_role("button", name="查看示教点 抓取准备位").is_visible()
-        assert page.get_by_role("button", name="查看示教点 T02").is_visible()
+        assert page.get_by_role("button", name="查看机械臂姿态 抓取准备位").is_visible()
+        assert page.get_by_role("button", name="查看机械臂姿态 A02").is_visible()
+        page.get_by_role("button", name="选择停车点 停车点 P02").click()
+        assert page.get_by_role("button", name="查看机械臂姿态 A01").is_visible()
         assert page.locator(".session-guard").get_attribute("data-session-restored") == "true"
 
         page.screenshot(path="/tmp/atlas-virtual-teaching.png", full_page=True)
         print("teaching_task=", task["name"])
-        print("teaching_points=", len(task["points"]))
+        print("parking_points=", len(task["parkingPoints"]))
+        print("teaching_poses=", sum(len(item["poses"]) for item in task["parkingPoints"]))
         print("movable_joints=", movable_joint_count)
         print("page_errors=", errors)
         assert not errors

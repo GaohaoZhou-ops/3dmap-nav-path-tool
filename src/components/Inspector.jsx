@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ArrowLeft,
   ArrowRight,
@@ -82,6 +82,7 @@ export default function Inspector({
   meshRenderQuality = 'auto',
   onMeshRenderQualityChange,
   spaceMouseInputRef,
+  main3DCanvasRef,
   teachingTasks = [],
   activeTeachingTaskId,
   jointPoses = [],
@@ -245,6 +246,10 @@ export default function Inspector({
   useEffect(() => {
     if (scrollRef.current) scrollRef.current.scrollTop = 0;
   }, [activePage]);
+
+  const handleZividExpandedChange = useCallback((isExpanded) => {
+    if (isExpanded) setJointWindowOpen(false);
+  }, []);
 
   const handleTeachingModeChange = (nextMode) => {
     const normalized = nextMode === 'camera' ? 'camera' : 'pose';
@@ -757,6 +762,10 @@ export default function Inspector({
                 meshRenderQuality={meshRenderQuality}
                 onMeshRenderQualityChange={onMeshRenderQualityChange}
                 spaceMouseInputRef={spaceMouseInputRef}
+                mainViewportCanvasRef={main3DCanvasRef}
+                jointControlOpen={jointWindowOpen}
+                onExpandedChange={handleZividExpandedChange}
+                onOpenJointControl={() => setJointWindowOpen(true)}
                 onCameraTeachingMove={onCameraTeachingMove}
                 onCaptureProviderChange={onZividCaptureProviderChange}
               />

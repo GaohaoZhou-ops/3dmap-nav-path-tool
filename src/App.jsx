@@ -279,6 +279,7 @@ export default function App() {
   const zividCaptureProviderRef = useRef(null);
   const teachingCaptureBusyRef = useRef(false);
   const spaceMouseInputRef = useRef(createSpaceMouseInputState());
+  const main3DCanvasRef = useRef(null);
   const [mapData, setMapData] = useState(null);
   const [heightRange, setHeightRange] = useState([0, 1]);
   const [waypoints, setWaypoints] = useState([]);
@@ -2066,6 +2067,7 @@ export default function App() {
                 lockedRobotJointNames={lockedRobotJointNames}
                 robotControlEnabled={robotControlEnabled}
                 spaceMouseInputRef={spaceMouseInputRef}
+                viewportCanvasRef={main3DCanvasRef}
                 cameraTeachingCommand={cameraTeachingCommand}
                 collisionProtectionEnabled={robotCollisionProtectionEnabled}
                 onRobotLoadState={handleRobotLoadState}
@@ -2183,6 +2185,7 @@ export default function App() {
           meshRenderQuality={meshRenderQuality}
           onMeshRenderQualityChange={setMeshRenderQuality}
           spaceMouseInputRef={spaceMouseInputRef}
+          main3DCanvasRef={main3DCanvasRef}
           teachingTasks={teachingTasks}
           activeTeachingTaskId={activeTeachingTaskId}
           jointPoses={jointPoses}

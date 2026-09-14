@@ -77,6 +77,7 @@ export default function FloatingRobotJointPanel({
     if (!open) {
       dragRef.current = null;
       setDragging(false);
+      setMinimized(false);
       return undefined;
     }
     const keepWindowVisible = () => {

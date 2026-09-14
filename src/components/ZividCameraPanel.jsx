@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import * as THREE from 'three';
 import {
+  Box,
   Camera,
   Cloud,
   Focus,
@@ -11,6 +12,7 @@ import {
   Move3D,
   Plus,
   RotateCcw,
+  SlidersHorizontal,
   X,
 } from 'lucide-react';
 import CameraTeachingControls from './CameraTeachingControls.jsx';
@@ -53,6 +55,8 @@ const ZIVID_SPACEMOUSE_INPUT_STALE_MS = 180;
 const ZIVID_SPACEMOUSE_LINEAR_SPEED = 0.2;
 const ZIVID_SPACEMOUSE_ANGULAR_SPEED = 48;
 const ZIVID_SPACEMOUSE_HUD_HOLD_MS = 1000;
+const MAIN_VIEW_PREVIEW_FPS = 12;
+const MAIN_VIEW_PREVIEW_FRAME_INTERVAL_MS = 1000 / MAIN_VIEW_PREVIEW_FPS;
 const ZIVID_SPACEMOUSE_AXES = Object.freeze(['x', 'y', 'z', 'roll', 'pitch', 'yaw']);
 const ZIVID_SPACEMOUSE_ACTIONS = Object.freeze({
   x: {
@@ -1223,6 +1227,219 @@ const EMPTY_CAMERA_MESH_STATS = Object.freeze({
   surfaceSelectionMode: 'none',
 });
 
+function MainViewportThumbnail({ sourceCanvasRef }) {
+  const rootRef = useRef(null);
+  const videoRef = useRef(null);
+  const fallbackCanvasRef = useRef(null);
+  const [preview, setPreview] = useState({ status: 'waiting', transport: 'none' });
+
+  useEffect(() => {
+    let disposed = false;
+    let sourceCanvas = null;
+    let stream = null;
+    let retryTimer = null;
+    let readinessTimer = null;
+    let videoFrameId = null;
+    let snapshotFrameId = null;
+    let lastSnapshotAt = Number.NEGATIVE_INFINITY;
+    let frameCount = 0;
+    let streamReady = false;
+    let snapshotActive = false;
+
+    const updateFrameMetadata = () => {
+      const root = rootRef.current;
+      if (!root || !sourceCanvas) return;
+      frameCount += 1;
+      root.dataset.previewFrameCount = String(frameCount);
+      root.dataset.previewSourceWidth = String(sourceCanvas.width || 0);
+      root.dataset.previewSourceHeight = String(sourceCanvas.height || 0);
+      root.dataset.sourceViewSignature = sourceCanvas.dataset.viewSignature || '';
+      root.dataset.sourceRobotOrigin = sourceCanvas.dataset.robotOrigin || '';
+    };
+
+    const stopStream = () => {
+      if (videoFrameId !== null && videoRef.current?.cancelVideoFrameCallback) {
+        videoRef.current.cancelVideoFrameCallback(videoFrameId);
+      }
+      videoFrameId = null;
+      stream?.getTracks?.().forEach((track) => track.stop());
+      stream = null;
+      if (videoRef.current) {
+        videoRef.current.pause();
+        videoRef.current.srcObject = null;
+      }
+    };
+
+    const startSnapshotFallback = () => {
+      if (disposed || snapshotActive || !sourceCanvas) return;
+      snapshotActive = true;
+      stopStream();
+      setPreview({ status: 'connecting', transport: 'canvas-copy' });
+
+      const paint = (timestamp) => {
+        if (disposed || !snapshotActive) return;
+        if (timestamp - lastSnapshotAt >= MAIN_VIEW_PREVIEW_FRAME_INTERVAL_MS) {
+          const canvas = fallbackCanvasRef.current;
+          const source = sourceCanvasRef?.current || sourceCanvas;
+          if (!source?.isConnected) {
+            setPreview({ status: 'waiting', transport: 'canvas-copy' });
+          } else if (canvas) {
+            sourceCanvas = source;
+            const bounds = canvas.getBoundingClientRect();
+            const pixelRatio = Math.min(window.devicePixelRatio || 1, 1.5);
+            const width = Math.max(1, Math.round(bounds.width * pixelRatio));
+            const height = Math.max(1, Math.round(bounds.height * pixelRatio));
+            if (canvas.width !== width || canvas.height !== height) {
+              canvas.width = width;
+              canvas.height = height;
+            }
+            try {
+              const context = canvas.getContext('2d', { alpha: false });
+              const sourceWidth = Math.max(1, source.width || source.clientWidth);
+              const sourceHeight = Math.max(1, source.height || source.clientHeight);
+              const scale = Math.min(width / sourceWidth, height / sourceHeight);
+              const drawWidth = sourceWidth * scale;
+              const drawHeight = sourceHeight * scale;
+              const offsetX = (width - drawWidth) / 2;
+              const offsetY = (height - drawHeight) / 2;
+              context.fillStyle = '#020709';
+              context.fillRect(0, 0, width, height);
+              context.drawImage(source, offsetX, offsetY, drawWidth, drawHeight);
+              updateFrameMetadata();
+              setPreview((current) => current.status === 'live'
+                ? current
+                : { status: 'live', transport: 'canvas-copy' });
+            } catch {
+              snapshotActive = false;
+              setPreview({ status: 'unavailable', transport: 'canvas-copy' });
+              return;
+            }
+          }
+          lastSnapshotAt = timestamp;
+        }
+        snapshotFrameId = window.requestAnimationFrame(paint);
+      };
+      snapshotFrameId = window.requestAnimationFrame(paint);
+    };
+
+    const connect = () => {
+      if (disposed) return;
+      sourceCanvas = sourceCanvasRef?.current
+        || document.querySelector('.three-canvas');
+      if (!sourceCanvas?.isConnected) {
+        setPreview({ status: 'waiting', transport: 'none' });
+        retryTimer = window.setTimeout(connect, 220);
+        return;
+      }
+
+      const root = rootRef.current;
+      if (root) {
+        root.dataset.previewSource = sourceCanvas.classList.contains('three-canvas')
+          ? 'three-canvas'
+          : 'canvas';
+        root.dataset.previewSourceWidth = String(sourceCanvas.width || 0);
+        root.dataset.previewSourceHeight = String(sourceCanvas.height || 0);
+      }
+
+      if (typeof sourceCanvas.captureStream !== 'function') {
+        startSnapshotFallback();
+        return;
+      }
+
+      try {
+        stream = sourceCanvas.captureStream(MAIN_VIEW_PREVIEW_FPS);
+        const video = videoRef.current;
+        if (!video || !stream.getVideoTracks().length) {
+          startSnapshotFallback();
+          return;
+        }
+        setPreview({ status: 'connecting', transport: 'capture-stream' });
+        video.srcObject = stream;
+
+        const markStreamReady = () => {
+          if (disposed || snapshotActive) return;
+          if (streamReady) {
+            updateFrameMetadata();
+            return;
+          }
+          streamReady = true;
+          updateFrameMetadata();
+          setPreview({ status: 'live', transport: 'capture-stream' });
+        };
+        video.addEventListener('loadeddata', markStreamReady, { once: true });
+        video.addEventListener('playing', markStreamReady, { once: true });
+
+        if (typeof video.requestVideoFrameCallback === 'function') {
+          const observeFrame = () => {
+            if (disposed || snapshotActive) return;
+            markStreamReady();
+            videoFrameId = video.requestVideoFrameCallback(observeFrame);
+          };
+          videoFrameId = video.requestVideoFrameCallback(observeFrame);
+        }
+
+        const playRequest = video.play();
+        playRequest?.catch?.(() => startSnapshotFallback());
+        readinessTimer = window.setTimeout(() => {
+          if (!streamReady) startSnapshotFallback();
+        }, 1800);
+      } catch {
+        startSnapshotFallback();
+      }
+    };
+
+    connect();
+    return () => {
+      disposed = true;
+      snapshotActive = false;
+      if (retryTimer) window.clearTimeout(retryTimer);
+      if (readinessTimer) window.clearTimeout(readinessTimer);
+      if (snapshotFrameId !== null) window.cancelAnimationFrame(snapshotFrameId);
+      stopStream();
+    };
+  }, [sourceCanvasRef]);
+
+  const statusLabel = preview.status === 'live'
+    ? `LIVE · ${MAIN_VIEW_PREVIEW_FPS} FPS`
+    : preview.status === 'unavailable'
+      ? 'UNAVAILABLE'
+      : 'SYNCING';
+
+  return (
+    <aside
+      ref={rootRef}
+      className={`zivid-main-view-preview is-${preview.status} uses-${preview.transport}`}
+      aria-label="主3D视角缩略图"
+      data-preview-status={preview.status}
+      data-preview-transport={preview.transport}
+      data-preview-fps={MAIN_VIEW_PREVIEW_FPS}
+      data-preview-frame-count="0"
+      onPointerDown={(event) => event.stopPropagation()}
+      onDoubleClick={(event) => event.stopPropagation()}
+      onWheel={(event) => event.stopPropagation()}
+    >
+      <header>
+        <span><Box size={11} /><strong>主 3D 视角</strong><small>MAP FRAME</small></span>
+        <b aria-live="polite"><i />{statusLabel}</b>
+      </header>
+      <div className="zivid-main-view-preview__frame">
+        <video ref={videoRef} muted autoPlay playsInline aria-hidden="true" />
+        <canvas ref={fallbackCanvasRef} aria-hidden="true" />
+        <div className="zivid-main-view-preview__grid" aria-hidden="true" />
+        {preview.status !== 'live' && (
+          <div className="zivid-main-view-preview__empty">
+            <Focus size={13} />
+            <span>{preview.status === 'unavailable' ? '主视角不可用' : '正在同步主视角'}</span>
+          </div>
+        )}
+        <div className="zivid-main-view-preview__axes" aria-hidden="true">
+          <i className="x">X</i><i className="y">Y</i><i className="z">Z</i>
+        </div>
+      </div>
+    </aside>
+  );
+}
+
 export default function ZividCameraPanel({
   mapData,
   robot,
@@ -1236,6 +1453,10 @@ export default function ZividCameraPanel({
   meshRenderQuality = 'auto',
   onMeshRenderQualityChange,
   spaceMouseInputRef,
+  mainViewportCanvasRef,
+  jointControlOpen = false,
+  onExpandedChange,
+  onOpenJointControl,
   onCameraTeachingMove,
   onCaptureProviderChange,
 }) {
@@ -2040,6 +2261,7 @@ export default function ZividCameraPanel({
       data-spacemouse-control-model="optical-frame-ik"
       data-spacemouse-zoom-policy="mouse-only"
       data-spacemouse-input-count={spaceMouseHud.inputCount}
+      data-main-view-preview={expanded ? 'visible' : 'hidden'}
     >
       <header className="zivid-camera-panel__header">
         <div className="zivid-camera-panel__identity">
@@ -2050,6 +2272,25 @@ export default function ZividCameraPanel({
           </div>
         </div>
         <div className="zivid-camera-panel__live"><i /> OPTICAL LINK</div>
+        {expanded && (
+          <button
+            type="button"
+            className={`zivid-camera-joint-toggle ${jointControlOpen ? 'is-active' : ''}`}
+            aria-label={jointControlOpen ? '全关节控制已打开' : '打开全关节控制'}
+            aria-pressed={jointControlOpen}
+            title={jointControlOpen
+              ? '全关节控制浮窗已打开'
+              : '打开全关节控制浮窗，并在观察相机画面时调整机器人姿态'}
+            disabled={!onOpenJointControl}
+            onClick={() => onOpenJointControl?.()}
+          >
+            <SlidersHorizontal size={13} />
+            <span>
+              <strong>关节调整</strong>
+              <small>{jointControlOpen ? '窗口已打开' : '打开控制卡片'}</small>
+            </span>
+          </button>
+        )}
         {expanded && (
           <button
             type="button"
@@ -2078,7 +2319,11 @@ export default function ZividCameraPanel({
           className="zivid-camera-expand"
           aria-label={expanded ? '关闭 Zivid 相机大图' : '放大 Zivid 相机视图'}
           title={expanded ? '关闭大图' : '放大查看'}
-          onClick={() => setExpanded((current) => !current)}
+          onClick={() => {
+            const nextExpanded = !expanded;
+            onExpandedChange?.(nextExpanded);
+            setExpanded(nextExpanded);
+          }}
         >
           {expanded ? <X size={14} /> : <Maximize2 size={13} />}
         </button>
@@ -2191,6 +2436,9 @@ export default function ZividCameraPanel({
       >
         <div ref={mountRef} className="zivid-camera-render-mount" />
         <div className="zivid-camera-scan-grid" aria-hidden="true" />
+        {expanded && (
+          <MainViewportThumbnail sourceCanvasRef={mainViewportCanvasRef} />
+        )}
         {expanded && spaceMouseViewEnabled && (
           <div
             className={`zivid-camera-spacemouse-route ${spaceMouseStatus.controlEnabled ? 'is-linked' : 'is-paused'}`}

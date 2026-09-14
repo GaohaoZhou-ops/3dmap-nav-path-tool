@@ -43,6 +43,7 @@ def run():
         panel = page.get_by_label("Zivid 2 M70 相机视图")
         panel.scroll_into_view_if_needed()
         panel.wait_for()
+        assert page.get_by_label("主3D视角缩略图").count() == 0
         assert panel.get_attribute("data-zivid-model") == "zivid-2-m70"
         assert panel.get_attribute("data-horizontal-fov") == "56.6"
         assert panel.get_attribute("data-vertical-fov") == "35.6"
@@ -97,6 +98,33 @@ def run():
         expanded_panel = dialog.get_by_label("Zivid 2 M70 相机视图")
         assert expanded_panel.is_visible()
         assert expanded_panel.locator(".zivid-camera-canvas").is_visible()
+        preview = dialog.get_by_label("主3D视角缩略图")
+        preview.wait_for()
+        page.wait_for_function(
+            """() => document.querySelector('.zivid-main-view-preview')
+              ?.dataset.previewStatus === 'live'"""
+        )
+        assert preview.get_attribute("data-preview-transport") in {
+            "capture-stream",
+            "canvas-copy",
+        }
+        assert preview.get_attribute("data-preview-source") == "three-canvas"
+        assert int(preview.get_attribute("data-preview-source-width")) > 0
+        assert int(preview.get_attribute("data-preview-source-height")) > 0
+        initial_preview_frame = int(preview.get_attribute("data-preview-frame-count"))
+        page.wait_for_function(
+            """frame => Number(document.querySelector('.zivid-main-view-preview')
+              ?.dataset.previewFrameCount) > frame""",
+            arg=initial_preview_frame,
+        )
+        page.wait_for_function(
+            """() => {
+              const preview = document.querySelector('.zivid-main-view-preview');
+              const source = document.querySelector('.three-canvas');
+              return Boolean(preview?.dataset.sourceViewSignature)
+                && preview.dataset.sourceViewSignature === source?.dataset.viewSignature;
+            }"""
+        )
         page.screenshot(path="/tmp/atlas-zivid-m70-camera.png", full_page=True)
         expanded_panel.get_by_role("button", name="关闭 Zivid 相机大图").click()
         dialog.wait_for(state="detached")

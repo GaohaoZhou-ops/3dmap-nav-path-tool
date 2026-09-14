@@ -128,7 +128,10 @@ def run():
         assert panel.is_visible()
         assert page.locator(".three-canvas").is_visible()
         camera_canvas = zivid_panel.get_by_label("Zivid 2 M70 仿真相机画面", exact=True)
-        assert camera_canvas.get_attribute("data-gpu-buffer-strategy") == "dedicated-downsample"
+        camera_buffer_strategies = camera_canvas.get_attribute(
+            "data-gpu-buffer-strategy"
+        ).split("+")
+        assert "dedicated-downsample" in camera_buffer_strategies
         assert camera_canvas.get_attribute("data-source-buffer-reused") == "false"
         source_point_count = int(camera_canvas.get_attribute("data-source-point-count"))
         render_point_count = int(camera_canvas.get_attribute("data-render-point-count"))
@@ -246,7 +249,25 @@ def run():
         zivid_panel.get_by_role("button", name="放大 Zivid 相机视图").click()
         camera_modal = page.get_by_label("Zivid 2 M70 相机大图", exact=True)
         camera_modal.wait_for()
+        floating_window.wait_for(state="hidden")
+        joint_adjust_button = camera_modal.get_by_role(
+            "button", name="打开全关节控制"
+        )
+        joint_adjust_button.wait_for()
+        space_mouse_button = camera_modal.get_by_role(
+            "button", name="启用 SpaceMouse 相机视角控制"
+        )
+        joint_button_box = joint_adjust_button.bounding_box()
+        space_mouse_button_box = space_mouse_button.bounding_box()
+        assert joint_button_box and space_mouse_button_box
+        assert joint_button_box["x"] + joint_button_box["width"] <= space_mouse_button_box["x"]
+        joint_adjust_button.click()
+        floating_window.wait_for()
         assert floating_window.is_visible()
+        assert floating_window.get_attribute("data-window-state") == "open"
+        assert camera_modal.get_by_role(
+            "button", name="全关节控制已打开"
+        ).get_attribute("aria-pressed") == "true"
         assert int(floating_window.evaluate("node => getComputedStyle(node).zIndex")) > int(
             camera_modal.evaluate("node => getComputedStyle(node).zIndex")
         )

@@ -1018,6 +1018,7 @@ export default function PointCloudViewer({
   lockedRobotJointNames = [],
   robotControlEnabled = false,
   spaceMouseInputRef,
+  viewportCanvasRef,
   cameraTeachingCommand,
   collisionProtectionEnabled = false,
   onRobotLoadState,
@@ -1881,6 +1882,7 @@ export default function PointCloudViewer({
       'aria-keyshortcuts',
       'W A S D Q E ArrowUp ArrowDown ArrowLeft ArrowRight Escape Shift+W Shift+A Shift+S Shift+D Shift+Q Shift+E Shift+ArrowUp Shift+ArrowDown Shift+ArrowLeft Shift+ArrowRight',
     );
+    if (viewportCanvasRef) viewportCanvasRef.current = renderer.domElement;
     writeRobotJointLockDataset(renderer.domElement, lockedRobotJointNamesRef.current);
     renderer.domElement.dataset.geometrySource =
       mapData.geometrySource || geometry.userData.geometrySource || 'ply-parse';
@@ -3847,6 +3849,9 @@ export default function PointCloudViewer({
       disposeObject(routeGroup);
       disposeObject(waypointGroup);
       renderer.dispose();
+      if (viewportCanvasRef?.current === renderer.domElement) {
+        viewportCanvasRef.current = null;
+      }
       renderer.domElement.remove();
       sceneRef.current = null;
       sliceGroupRef.current = null;
@@ -3889,7 +3894,7 @@ export default function PointCloudViewer({
       if (cloudMaterialRef.current === material) cloudMaterialRef.current = null;
       if (meshMaterialRef.current === meshMaterial) meshMaterialRef.current = null;
     };
-  }, [mapData?.geometry]);
+  }, [mapData?.geometry, viewportCanvasRef]);
 
   useEffect(() => {
     const layer = robotLayerRef.current;

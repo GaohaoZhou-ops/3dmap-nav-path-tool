@@ -379,6 +379,7 @@ export default function App() {
   const [meshRenderQuality, setMeshRenderQuality] = useState('auto');
   const [showWaypoints3D, setShowWaypoints3D] = useState(true);
   const [collapsedPanel, setCollapsedPanel] = useState(null);
+  const [inspectorCollapsed, setInspectorCollapsed] = useState(false);
   const [mapDetailsOpen, setMapDetailsOpen] = useState(false);
   const [synchronizedFocus, setSynchronizedFocus] = useState(null);
   const [viewResetRequest, setViewResetRequest] = useState(null);
@@ -434,6 +435,7 @@ export default function App() {
     meshRenderQuality,
     showWaypoints3D,
     collapsedPanel,
+    inspectorCollapsed,
     selectedRobot,
     robotPose,
     robotJointValues,
@@ -576,6 +578,7 @@ export default function App() {
         meshRenderQuality: current.meshRenderQuality,
         showWaypoints3D: current.showWaypoints3D,
         collapsedPanel: current.collapsedPanel,
+        inspectorCollapsed: current.inspectorCollapsed,
         selectedRobot: current.selectedRobot
           ? {
               ...current.selectedRobot,
@@ -841,6 +844,7 @@ export default function App() {
               ? snapshot.ui.collapsedPanel
               : null,
           );
+          setInspectorCollapsed(snapshot?.ui?.inspectorCollapsed === true);
           setMeshRenderQuality(normalizeMeshRenderQuality(
             snapshot?.ui?.meshRenderQuality ?? project?.rendering?.meshQuality,
           ));
@@ -1050,6 +1054,7 @@ export default function App() {
           setMeshRenderQuality('auto');
           setShowWaypoints3D(true);
           setCollapsedPanel(null);
+          setInspectorCollapsed(false);
           setSelectedRobot(null);
           setRobotPose(normalizeRobotPose(null));
           setRobotJointValues({});
@@ -1099,6 +1104,7 @@ export default function App() {
     connectionSourceId,
     edges,
     heightRange,
+    inspectorCollapsed,
     mapData?.mapId,
     meshRenderQuality,
     mode,
@@ -1321,21 +1327,69 @@ export default function App() {
   };
 
   const addWaypoint = useCallback(
-    (pose) => {
+    (pose, options = {}) => {
+      const source = options.source || 'point-cloud-slice';
+      const finitePoseValue = (value) => {
+        const parsed = Number(value);
+        return Number.isFinite(parsed) ? parsed : 0;
+      };
       const point = {
         id: createId('wp'),
         name: `P${String(waypoints.length + 1).padStart(2, '0')}`,
-        pose: { ...pose, roll: 0, pitch: 0, yaw: 0 },
-        source: 'point-cloud-slice',
+        pose: {
+          x: finitePoseValue(pose?.x),
+          y: finitePoseValue(pose?.y),
+          z: finitePoseValue(pose?.z),
+          roll: finitePoseValue(pose?.roll),
+          pitch: finitePoseValue(pose?.pitch),
+          yaw: finitePoseValue(pose?.yaw),
+        },
+        source,
       };
       setWaypoints((current) => [...current, point]);
       setSelectedWaypointId(point.id);
       setSelectedEdgeId(null);
       invalidateConnectivity();
-      notify(`${point.name} 已绑定原始三维坐标`, 'success');
+      notify(
+        options.message
+          || (source === 'robot-current-pose'
+            ? `${point.name} 已记录机器人当前 MAP 位姿`
+            : `${point.name} 已绑定原始三维坐标`),
+        'success',
+      );
     },
     [invalidateConnectivity, notify, waypoints.length],
   );
+
+  const addWaypointFromToolbar = useCallback(() => {
+    setMode('add');
+    setConnectionSourceId(null);
+
+    if (!selectedRobot || robotLoadState.status !== 'loaded') {
+      notify(
+        '二维点选模式已开启；加载机器人后再次点击可直接记录机器人当前位置',
+        'info',
+      );
+      return;
+    }
+
+    const currentPose = normalizeRobotPose(robotPose);
+    setShowWaypoints3D(true);
+    addWaypoint(
+      {
+        x: currentPose.position.x,
+        y: currentPose.position.y,
+        z: currentPose.position.z,
+        roll: currentPose.rpy.roll,
+        pitch: currentPose.rpy.pitch,
+        yaw: currentPose.rpy.yaw,
+      },
+      {
+        source: 'robot-current-pose',
+        message: `已记录机器人当前位置 · 可继续点击二维截面添加导航点`,
+      },
+    );
+  }, [addWaypoint, notify, robotLoadState.status, robotPose, selectedRobot]);
 
   const selectWaypoint = useCallback((id) => {
     setSelectedWaypointId(id);
@@ -2949,7 +3003,10 @@ export default function App() {
         </div>
       </header>
 
-      <main className="workspace">
+      <main
+        className={`workspace ${inspectorCollapsed ? 'is-inspector-collapsed' : ''}`}
+        data-inspector-collapsed={inspectorCollapsed ? 'true' : 'false'}
+      >
         <div
           className={`visual-workspace ${collapsedPanel ? `is-${collapsedPanel}-collapsed` : ''}`}
           data-collapsed-panel={collapsedPanel || 'none'}
@@ -3077,12 +3134,26 @@ export default function App() {
               <div className="mode-switcher" role="toolbar" aria-label="二维地图工具">
                 {modeOptions.map((option) => {
                   const Icon = option.icon;
+                  const robotWaypointReady = option.id === 'add'
+                    && Boolean(selectedRobot)
+                    && robotLoadState.status === 'loaded';
                   return (
                     <button
                       type="button"
                       key={option.id}
                       className={mode === option.id ? 'is-active' : ''}
-                      onClick={() => setActiveMode(option.id)}
+                      aria-label={option.label}
+                      aria-pressed={mode === option.id}
+                      data-robot-waypoint-ready={robotWaypointReady ? 'true' : undefined}
+                      title={option.id === 'add'
+                        ? robotWaypointReady
+                          ? '记录机器人当前 MAP 位姿，并保持二维地图点选添加模式'
+                          : '进入二维地图点选添加模式；加载机器人后可直接记录当前位置'
+                        : undefined}
+                      onClick={() => {
+                        if (option.id === 'add') addWaypointFromToolbar();
+                        else setActiveMode(option.id);
+                      }}
                       disabled={!mapData?.bounds}
                     >
                       <Icon size={14} /> {option.label}
@@ -3164,6 +3235,8 @@ export default function App() {
           zividCameraPoses={zividCameraPoses}
           cameraTeachingResult={cameraTeachingResult}
           teachingCaptureState={teachingCaptureState}
+          collapsed={inspectorCollapsed}
+          onCollapsedChange={setInspectorCollapsed}
           onRunConnectivity={runConnectivity}
           onSelectWaypoint={focusWaypointFromInspector}
           onSearchWaypoint={focusWaypointFromInspector}
@@ -3213,7 +3286,15 @@ export default function App() {
               : 'SESSION AUTO-SAVE'}
         </span>
         <span className="statusbar__hint">
-          {mode === 'connect' && connectionSourceId ? '起点已锁定 · 请选择终点' : mode === 'add' ? '点击二维截面添加导航点' : mode === 'box' ? '二维图左键拉框 · Delete 删除所选' : '拖动二维地图平移 · 滚轮缩放'}
+          {mode === 'connect' && connectionSourceId
+            ? '起点已锁定 · 请选择终点'
+            : mode === 'add'
+              ? selectedRobot && robotLoadState.status === 'loaded'
+                ? '再次点击“添加导航点”记录机器人 · 或点击二维截面继续添加'
+                : '点击二维截面添加导航点'
+              : mode === 'box'
+                ? '二维图左键拉框 · Delete 删除所选'
+                : '拖动二维地图平移 · 滚轮缩放'}
         </span>
         <span>SCHEMA 1.3</span>
       </footer>

@@ -28,7 +28,11 @@ def return_to_workbench(page):
 def run():
     errors = []
     with sync_playwright() as playwright:
-        browser = playwright.chromium.launch(headless=True)
+        executable_path = os.environ.get("PLAYWRIGHT_CHROMIUM_EXECUTABLE")
+        browser = playwright.chromium.launch(
+            headless=True,
+            executable_path=executable_path or None,
+        )
         page = browser.new_page(viewport={"width": 1440, "height": 900})
         page.set_default_timeout(30_000)
         page.on("pageerror", lambda error: errors.append(str(error)))
@@ -54,6 +58,44 @@ def run():
         assert page.locator(".project-overview").is_visible()
         assert data_page_link.is_visible()
         assert page.locator('section[aria-label="示教数据管理"]').count() == 0
+
+        # The control deck collapses into a right-side recovery rail and gives
+        # the released width to both map viewports.
+        workspace = page.locator(".workspace")
+        visual_workspace = page.locator(".visual-workspace")
+        inspector_content = page.locator("#inspector-panel-content")
+        expanded_visual_width = visual_workspace.bounding_box()["width"]
+        collapse_button = page.get_by_role("button", name="折叠图谱控制台")
+        assert collapse_button.get_attribute("aria-expanded") == "true"
+        collapse_button.click()
+        page.wait_for_function(
+            "document.querySelector('.workspace')?.dataset.inspectorCollapsed === 'true'"
+        )
+        page.wait_for_timeout(280)
+        assert workspace.get_attribute("data-inspector-collapsed") == "true"
+        assert inspector.get_attribute("data-collapsed") == "true"
+        assert inspector_content.get_attribute("aria-hidden") == "true"
+        assert inspector.bounding_box()["width"] <= 38
+        assert visual_workspace.bounding_box()["width"] > expanded_visual_width + 250
+        assert not tabs.is_visible()
+        assert page.get_by_role("button", name="展开图谱控制台").is_visible()
+        page.screenshot(path="/tmp/atlas-inspector-collapsed.png", full_page=True)
+
+        page.wait_for_timeout(420)
+        page.reload(wait_until="networkidle")
+        page.locator('[data-session-state="ready"]').wait_for()
+        page.locator(".loading-curtain").wait_for(state="hidden")
+        assert workspace.get_attribute("data-inspector-collapsed") == "true"
+        assert inspector.get_attribute("data-collapsed") == "true"
+        expand_button = page.get_by_role("button", name="展开图谱控制台")
+        assert expand_button.get_attribute("aria-expanded") == "false"
+        expand_button.click()
+        page.wait_for_function(
+            "document.querySelector('.workspace')?.dataset.inspectorCollapsed === 'false'"
+        )
+        page.wait_for_timeout(280)
+        assert inspector.bounding_box()["width"] > 300
+        assert tabs.is_visible()
 
         navigation_tab.click()
         assert inspector.get_attribute("data-active-page") == "navigation"

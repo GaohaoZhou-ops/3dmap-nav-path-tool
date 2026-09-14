@@ -8,6 +8,8 @@ import {
   CircleGauge,
   Compass,
   MoveHorizontal,
+  PanelRightClose,
+  PanelRightOpen,
   Route,
   Ruler,
   ScanLine,
@@ -112,6 +114,8 @@ export default function Inspector({
   onApplyJointPose,
   onCameraTeachingMove,
   onZividCaptureProviderChange,
+  collapsed = false,
+  onCollapsedChange,
   isWorkbenchActive = true,
 }) {
   const [activePage, setActivePage] = useState('project');
@@ -263,7 +267,18 @@ export default function Inspector({
 
   return (
     <>
-      <aside className="inspector-panel" data-active-page={activePage}>
+      <aside
+        className={`inspector-panel ${collapsed ? 'is-collapsed' : ''}`}
+        data-active-page={activePage}
+        data-collapsed={collapsed ? 'true' : 'false'}
+        aria-label="图谱控制台"
+      >
+      <div
+        id="inspector-panel-content"
+        className="inspector-panel__content"
+        aria-hidden={collapsed ? 'true' : 'false'}
+        inert={collapsed ? '' : undefined}
+      >
       <div className="inspector-heading">
         <div>
           <span className="eyebrow">CONTROL DECK / {activePageMeta.index}</span>
@@ -411,7 +426,11 @@ export default function Inspector({
 
             <div className="capture-note">
               <CrosshairMark />
-              <span>Z 值取自点击位置附近的原始点云；导出时同时写入 <code>pose</code>、<code>xzy</code> 与 <code>rpy</code>。</span>
+              {selectedWaypoint.source === 'robot-current-pose' ? (
+                <span>XYZ 与 RPY 取自机器人当前 MAP 位姿；导出时同时写入 <code>pose</code>、<code>xzy</code> 与 <code>rpy</code>。</span>
+              ) : (
+                <span>Z 值取自点击位置附近的原始点云；导出时同时写入 <code>pose</code>、<code>xzy</code> 与 <code>rpy</code>。</span>
+              )}
             </div>
 
             <button
@@ -741,6 +760,19 @@ export default function Inspector({
           </div>
         )}
       </div>
+      </div>
+      <button
+        type="button"
+        className="inspector-collapse-toggle"
+        aria-label={collapsed ? '展开图谱控制台' : '折叠图谱控制台'}
+        aria-expanded={!collapsed}
+        aria-controls="inspector-panel-content"
+        title={collapsed ? '向左展开图谱控制台' : '向右收起图谱控制台'}
+        onClick={() => onCollapsedChange?.(!collapsed)}
+      >
+        {collapsed ? <PanelRightOpen size={14} /> : <PanelRightClose size={13} />}
+        <span>{collapsed ? '展开控制台' : '折叠'}</span>
+      </button>
       </aside>
 
       <FloatingRobotJointPanel

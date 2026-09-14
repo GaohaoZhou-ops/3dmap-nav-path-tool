@@ -1032,6 +1032,7 @@ export default function Map2DView({
               type="button"
               key={point.id}
               data-waypoint-id={point.id}
+              data-waypoint-source={point.source || 'point-cloud-slice'}
               className={`waypoint-marker ${selected ? 'is-selected' : ''} ${boxSelected ? 'is-box-selected' : ''} ${source ? 'is-source' : ''}`}
               style={{ left: screen.x, top: screen.y }}
               onPointerDown={(event) => event.stopPropagation()}

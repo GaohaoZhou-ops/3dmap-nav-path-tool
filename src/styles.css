@@ -1532,6 +1532,14 @@ code {
   padding: 10px;
   gap: 10px;
   overflow: hidden;
+  transition:
+    grid-template-columns 240ms cubic-bezier(.2, .75, .25, 1),
+    gap 240ms cubic-bezier(.2, .75, .25, 1);
+}
+
+.workspace.is-inspector-collapsed {
+  grid-template-columns: minmax(0, 1fr) 36px;
+  gap: 6px;
 }
 
 .visual-workspace {
@@ -4472,9 +4480,47 @@ input[type="number"]::-webkit-inner-spin-button {
 }
 
 .inspector-panel {
+  display: block;
+  animation: panel-enter 0.55s 0.13s ease-out both;
+  transition:
+    border-color 180ms ease,
+    background-color 180ms ease,
+    box-shadow 180ms ease;
+}
+
+.inspector-panel__content {
   display: grid;
   grid-template-rows: 67px 62px minmax(0, 1fr);
-  animation: panel-enter 0.55s 0.13s ease-out both;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  opacity: 1;
+  transform: translateX(0);
+  transition:
+    opacity 130ms ease,
+    transform 220ms cubic-bezier(.2, .75, .25, 1),
+    visibility 0s linear;
+}
+
+.inspector-panel.is-collapsed {
+  border-color: rgba(89, 219, 232, 0.22);
+  background:
+    linear-gradient(180deg, rgba(89, 219, 232, 0.06), transparent 38%),
+    #071014;
+  box-shadow:
+    inset 1px 0 rgba(89, 219, 232, 0.06),
+    0 10px 26px rgba(0, 0, 0, 0.28);
+}
+
+.inspector-panel.is-collapsed .inspector-panel__content {
+  visibility: hidden;
+  opacity: 0;
+  transform: translateX(32px);
+  transition:
+    opacity 110ms ease,
+    transform 210ms cubic-bezier(.4, 0, 1, 1),
+    visibility 0s linear 170ms;
 }
 
 .inspector-pagination {
@@ -6653,7 +6699,7 @@ input[type="number"]::-webkit-inner-spin-button {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 0 17px;
+  padding: 0 64px 0 17px;
   border-bottom: 1px solid var(--line);
   background: linear-gradient(120deg, rgba(19, 39, 43, 0.9), rgba(9, 18, 22, 0.9));
 }
@@ -6716,6 +6762,77 @@ input[type="number"]::-webkit-inner-spin-button {
   border: 1px solid var(--line);
   color: var(--muted);
   font: 9px "SFMono-Regular", Menlo, monospace;
+}
+
+.inspector-collapse-toggle {
+  position: absolute;
+  top: 20px;
+  right: 8px;
+  z-index: 10;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  width: 48px;
+  height: 27px;
+  padding: 0;
+  border: 1px solid rgba(89, 219, 232, 0.2);
+  color: #77999b;
+  background: rgba(89, 219, 232, 0.035);
+  font: 6px "SFMono-Regular", Menlo, monospace;
+  cursor: pointer;
+  transition:
+    color 150ms ease,
+    border-color 150ms ease,
+    background-color 150ms ease;
+}
+
+.inspector-collapse-toggle:hover {
+  border-color: rgba(89, 219, 232, 0.48);
+  color: #b8eff1;
+  background: rgba(89, 219, 232, 0.09);
+}
+
+.inspector-collapse-toggle:focus-visible {
+  outline: 1px solid rgba(89, 219, 232, 0.72);
+  outline-offset: 2px;
+}
+
+.inspector-collapse-toggle svg { flex: 0 0 auto; }
+
+.inspector-panel.is-collapsed .inspector-collapse-toggle {
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  flex-direction: column;
+  gap: 10px;
+  border: 0;
+  color: rgba(116, 199, 204, 0.78);
+  background:
+    linear-gradient(180deg, rgba(89, 219, 232, 0.09), transparent 24%, transparent 76%, rgba(89, 219, 232, 0.045)),
+    transparent;
+}
+
+.inspector-panel.is-collapsed .inspector-collapse-toggle::before,
+.inspector-panel.is-collapsed .inspector-collapse-toggle::after {
+  content: "";
+  width: 1px;
+  height: 34px;
+  background: linear-gradient(transparent, rgba(89, 219, 232, 0.36), transparent);
+}
+
+.inspector-panel.is-collapsed .inspector-collapse-toggle span {
+  writing-mode: vertical-rl;
+  color: rgba(151, 202, 202, 0.58);
+  font-size: 6px;
+  letter-spacing: .17em;
+}
+
+.inspector-panel.is-collapsed .inspector-collapse-toggle:hover {
+  color: #c5f5f6;
+  background:
+    linear-gradient(180deg, rgba(89, 219, 232, 0.15), transparent 28%, transparent 72%, rgba(89, 219, 232, 0.08)),
+    rgba(89, 219, 232, 0.025);
 }
 
 .connectivity-card {

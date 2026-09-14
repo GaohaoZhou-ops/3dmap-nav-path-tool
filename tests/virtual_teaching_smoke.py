@@ -60,17 +60,33 @@ def run():
         assert movable_joint_count > 0
 
         new_task.click()
+        create_dialog = page.get_by_role("dialog", name="新建示教任务")
+        create_dialog.wait_for()
+        task_name_input = create_dialog.get_by_role("textbox", name="新示教任务名称")
+        assert task_name_input.input_value() == "示教任务 01"
+        task_name_input.fill("双臂装配演示（新建）")
+        parking_option = create_dialog.get_by_role("button", name="添加当前位置为停车点")
+        assert parking_option.get_attribute("aria-pressed") == "false"
+        page.screenshot(path="/tmp/atlas-teaching-task-create.png", full_page=True)
+        create_dialog.get_by_role("button", name="创建任务", exact=True).click()
         page.wait_for_function(
             "document.querySelector('[aria-label=\"虚拟示教\"]')?.dataset.teachingTaskCount === '1'"
         )
         assert teaching_panel.get_attribute("data-teaching-context-match") == "true"
         assert teaching_panel.get_attribute("data-camera-inverse-mode") == "automatic"
-        assert teaching_panel.get_attribute("data-parking-point-count") == "1"
-        assert page.get_by_label("选择当前停车点").input_value()
+        assert teaching_panel.get_attribute("data-parking-point-count") == "0"
+        assert page.get_by_label("选择当前停车点").input_value() == ""
         assert page.get_by_label("打开已有示教任务").input_value()
         assert page.locator(".teaching-context").count() == 0
         assert page.get_by_role("tab", name="相机反算", exact=True).count() == 0
         assert page.get_by_label("自碰撞保护", exact=True).count() == 0
+        assert page.get_by_role("button", name="记录当前机械臂姿态").is_disabled()
+
+        page.get_by_role("button", name="新增停车点", exact=True).click()
+        page.wait_for_function(
+            "document.querySelector('[aria-label=\"虚拟示教\"]')?.dataset.parkingPointCount === '1'"
+        )
+        assert page.get_by_label("选择当前停车点").input_value()
 
         robot_button = page.get_by_role("button", name="定位机器人模型")
         robot_button.click()
@@ -104,9 +120,13 @@ def run():
         assert page.url.endswith("/teaching-data")
         data_panel = page.locator('section[aria-label="示教数据管理"]')
         assert data_panel.get_attribute("data-teaching-view") == "data"
+        assert page.get_by_role("tree", name="任务停车点与机械臂姿态").is_visible()
+        page.get_by_role("button", name="选择示教任务 双臂装配演示（新建）").click()
         task_name = page.get_by_role("textbox", name="示教任务名称")
+        assert task_name.input_value() == "双臂装配演示（新建）"
         task_name.fill("双臂装配演示")
         task_name.press("Enter")
+        page.get_by_role("button", name="查看机械臂姿态 A01").click()
         first_row = page.locator(".teaching-point-row").first
         first_row.wait_for()
         assert first_row.get_attribute("data-joint-count") == str(movable_joint_count)
@@ -153,9 +173,14 @@ def run():
 
         page.get_by_role("button", name="打开数据页", exact=False).click()
         page.locator('[data-app-page="teaching-data"]').wait_for()
-        page.wait_for_function("document.querySelectorAll('.teaching-parking-tabs button').length === 2")
+        page.wait_for_function("document.querySelectorAll('.teaching-tree-node--parking').length === 2")
         assert page.locator(".teaching-point-row").count() == 1
         assert page.get_by_role("textbox", name="机械臂姿态名称").input_value() == "A01"
+
+        page.get_by_role("button", name="展开停车点 停车点 P01").click()
+        assert page.locator(".teaching-point-row").count() == 3
+        page.get_by_role("button", name="折叠停车点 停车点 P01").click()
+        assert page.locator(".teaching-point-row").count() == 1
 
         page.get_by_role("button", name="选择停车点 停车点 P01").click()
         page.get_by_role("button", name="查看机械臂姿态 抓取准备位").click()
@@ -229,9 +254,11 @@ def run():
         assert teaching_panel.get_attribute("data-teaching-task-count") == "1"
         assert teaching_panel.get_attribute("data-parking-point-count") == "2"
         assert teaching_panel.get_attribute("data-teaching-context-match") == "true"
+        page.get_by_role("button", name="选择示教任务 双臂装配演示").click()
         assert page.get_by_role("textbox", name="示教任务名称").input_value() == "双臂装配演示"
-        assert page.locator(".teaching-parking-tabs button").count() == 2
-        assert page.locator(".teaching-point-row").count() == 2
+        assert page.locator(".teaching-tree-node--parking").count() == 2
+        page.get_by_role("button", name="选择停车点 停车点 P01").click()
+        page.wait_for_function("document.querySelectorAll('.teaching-point-row').length >= 2")
         assert page.get_by_role("button", name="查看机械臂姿态 抓取准备位").is_visible()
         assert page.get_by_role("button", name="查看机械臂姿态 A02").is_visible()
         page.get_by_role("button", name="选择停车点 停车点 P02").click()

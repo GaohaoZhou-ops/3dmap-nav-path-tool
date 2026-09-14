@@ -1361,7 +1361,7 @@ export default function App() {
     [mapData, selectedRobot],
   );
 
-  const createTeachingTask = useCallback(() => {
+  const createTeachingTask = useCallback((options = {}) => {
     if (!mapData?.bounds) {
       notify('请先加载地图，再创建虚拟示教任务', 'warning');
       return;
@@ -1372,22 +1372,26 @@ export default function App() {
     }
     const timestamp = new Date().toISOString();
     const pose = normalizeRobotPose(robotPose);
-    const initialParkingPoint = {
-      id: createId('parking-point'),
-      name: '停车点 P01',
-      sequence: 1,
-      createdAt: timestamp,
-      updatedAt: timestamp,
-      mapPose: {
-        frameId: 'map',
-        position: { ...pose.position },
-        rpy: { ...pose.rpy },
-      },
-      poses: [],
-    };
+    const includeCurrentParkingPoint = Boolean(options?.includeCurrentParkingPoint);
+    const requestedName = String(options?.name || '').trim();
+    const initialParkingPoint = includeCurrentParkingPoint
+      ? {
+          id: createId('parking-point'),
+          name: '停车点 P01',
+          sequence: 1,
+          createdAt: timestamp,
+          updatedAt: timestamp,
+          mapPose: {
+            frameId: 'map',
+            position: { ...pose.position },
+            rpy: { ...pose.rpy },
+          },
+          poses: [],
+        }
+      : null;
     const task = {
       id: createId('teach-task'),
-      name: `示教任务 ${String(teachingTasks.length + 1).padStart(2, '0')}`,
+      name: requestedName || `示教任务 ${String(teachingTasks.length + 1).padStart(2, '0')}`,
       createdAt: timestamp,
       updatedAt: timestamp,
       coordinateFrame: 'map',
@@ -1401,13 +1405,18 @@ export default function App() {
         fileName: mapData.name || '',
         sourceHash: mapData.sourceHash || null,
       },
-      parkingPoints: [initialParkingPoint],
+      parkingPoints: initialParkingPoint ? [initialParkingPoint] : [],
     };
     setTeachingTasks((current) => [...current, task]);
     setActiveTeachingTaskId(task.id);
-    setActiveTeachingParkingPointId(initialParkingPoint.id);
+    setActiveTeachingParkingPointId(initialParkingPoint?.id || null);
     setTeachingCaptureState({ status: 'idle', message: '' });
-    notify(`${task.name} 已创建 · ${initialParkingPoint.name} 已记录`, 'success');
+    notify(
+      initialParkingPoint
+        ? `${task.name} 已创建 · ${initialParkingPoint.name} 已记录`
+        : `${task.name} 已创建 · 可随时添加停车点`,
+      'success',
+    );
   }, [mapData, notify, robotLoadState.status, robotPose, selectedRobot, teachingTasks.length]);
 
   const selectTeachingTask = useCallback((id) => {

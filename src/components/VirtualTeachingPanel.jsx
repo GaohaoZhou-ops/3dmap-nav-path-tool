@@ -14,6 +14,7 @@ import {
   FolderOpen,
   MapPin,
   Maximize2,
+  Navigation,
   Play,
   Save,
   Trash2,
@@ -53,6 +54,7 @@ export default function VirtualTeachingPanel({
   mapData,
   robot,
   robotLoadState,
+  robotPose,
   robotJointValues,
   view = 'capture',
   captureState = { status: 'idle', message: '' },
@@ -91,6 +93,9 @@ export default function VirtualTeachingPanel({
   const selectedPoint = activePoses.find((point) => point.id === selectedPointId) || null;
   const [pointNameDraft, setPointNameDraft] = useState(selectedPoint?.name || '');
   const [visionPreview, setVisionPreview] = useState(null);
+  const [taskCreateOpen, setTaskCreateOpen] = useState(false);
+  const [taskCreateName, setTaskCreateName] = useState('');
+  const [includeCurrentParkingPoint, setIncludeCurrentParkingPoint] = useState(false);
 
   useEffect(() => {
     setTaskNameDraft(activeTask?.name || '');
@@ -120,6 +125,15 @@ export default function VirtualTeachingPanel({
     window.addEventListener('keydown', closeOnEscape);
     return () => window.removeEventListener('keydown', closeOnEscape);
   }, [visionPreview]);
+
+  useEffect(() => {
+    if (!taskCreateOpen) return undefined;
+    const closeOnEscape = (event) => {
+      if (event.key === 'Escape') setTaskCreateOpen(false);
+    };
+    window.addEventListener('keydown', closeOnEscape);
+    return () => window.removeEventListener('keydown', closeOnEscape);
+  }, [taskCreateOpen]);
 
   const jointEntries = useMemo(
     () => Object.entries(selectedPoint?.fullBodyJoints?.values || {})
@@ -194,6 +208,20 @@ export default function VirtualTeachingPanel({
     }
   };
 
+  const openTaskCreateDialog = () => {
+    if (!canCreate) return;
+    setTaskCreateName(`示教任务 ${String(tasks.length + 1).padStart(2, '0')}`);
+    setIncludeCurrentParkingPoint(false);
+    setTaskCreateOpen(true);
+  };
+
+  const submitTaskCreate = () => {
+    const name = taskCreateName.trim();
+    if (!name || !canCreate) return;
+    onCreateTask({ name, includeCurrentParkingPoint });
+    setTaskCreateOpen(false);
+  };
+
   return (
     <>
     <section
@@ -231,7 +259,7 @@ export default function VirtualTeachingPanel({
           <button
             type="button"
             className="teaching-new-task"
-            onClick={onCreateTask}
+            onClick={openTaskCreateDialog}
             disabled={!canCreate}
             title={canCreate ? '以当前地图和机器人新建示教任务' : '请先加载地图与机器人'}
           >
@@ -784,6 +812,99 @@ export default function VirtualTeachingPanel({
         </>
       )}
     </section>
+    {taskCreateOpen && createPortal(
+      <div
+        className="teaching-task-create-modal"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="teaching-task-create-title"
+        onPointerDown={(event) => {
+          if (event.target === event.currentTarget) setTaskCreateOpen(false);
+        }}
+      >
+        <form
+          className="teaching-task-create-dialog"
+          onSubmit={(event) => {
+            event.preventDefault();
+            submitTaskCreate();
+          }}
+        >
+          <header>
+            <div>
+              <small>NEW TEACHING TASK</small>
+              <h2 id="teaching-task-create-title">新建示教任务</h2>
+              <p>任务将绑定当前地图与机器人，创建后可随时继续补充停车点。</p>
+            </div>
+            <button
+              type="button"
+              aria-label="关闭新建示教任务弹窗"
+              onClick={() => setTaskCreateOpen(false)}
+            >
+              <X size={15} />
+            </button>
+          </header>
+
+          <div className="teaching-task-create-dialog__body">
+            <label className="teaching-task-create-name">
+              <span>任务名称</span>
+              <input
+                autoFocus
+                aria-label="新示教任务名称"
+                value={taskCreateName}
+                maxLength={80}
+                onChange={(event) => setTaskCreateName(event.target.value)}
+                placeholder="请输入示教任务名称"
+              />
+              <small>{taskCreateName.trim().length}/80 · 创建后仍可在示教数据中心修改</small>
+            </label>
+
+            <button
+              type="button"
+              className={`teaching-task-parking-option ${includeCurrentParkingPoint ? 'is-selected' : ''}`}
+              aria-pressed={includeCurrentParkingPoint}
+              aria-label="添加当前位置为停车点"
+              onClick={() => setIncludeCurrentParkingPoint((current) => !current)}
+            >
+              <span className="teaching-task-parking-option__icon">
+                <MapPin size={16} />
+              </span>
+              <span className="teaching-task-parking-option__copy">
+                <strong>添加当前位置为停车点</strong>
+                <small>记录机器人当前 MAP XYZ / RPY，建立停车点 P01</small>
+              </span>
+              <span className="teaching-task-parking-option__state" aria-hidden="true">
+                {includeCurrentParkingPoint ? '已选择' : '可选'}
+              </span>
+            </button>
+
+            <div className="teaching-task-current-pose" aria-label="机器人当前位置">
+              <span><Navigation size={11} /> CURRENT MAP POSE</span>
+              <dl>
+                <div><dt>X</dt><dd>{formatValue(robotPose?.position?.x, 2)} m</dd></div>
+                <div><dt>Y</dt><dd>{formatValue(robotPose?.position?.y, 2)} m</dd></div>
+                <div><dt>Z</dt><dd>{formatValue(robotPose?.position?.z, 2)} m</dd></div>
+                <div><dt>YAW</dt><dd>{formatValue(robotPose?.rpy?.yaw, 1)}°</dd></div>
+              </dl>
+            </div>
+          </div>
+
+          <footer>
+            <span>
+              {includeCurrentParkingPoint
+                ? '创建任务并记录当前位置'
+                : '仅创建任务，稍后手动添加停车点'}
+            </span>
+            <div>
+              <button type="button" onClick={() => setTaskCreateOpen(false)}>取消</button>
+              <button type="submit" disabled={!taskCreateName.trim()}>
+                <CirclePlus size={12} /> 创建任务
+              </button>
+            </div>
+          </footer>
+        </form>
+      </div>,
+      document.body,
+    )}
     {visionPreview && createPortal(
       <div
         className="teaching-vision-modal"

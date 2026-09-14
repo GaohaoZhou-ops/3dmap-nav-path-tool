@@ -1,20 +1,47 @@
-# Dependencies and package-manager caches
+# JavaScript dependencies and package-manager caches
 node_modules/
 .npm-cache/
+.npm/
+.pnpm-store/
+.yarn/cache/
+.yarn/unplugged/
+.yarn/install-state.gz
 
-# Build output and tool caches
+# Build output and frontend tool caches
 dist/
 .vite/
-coverage/
-playwright-report/
-test-results/
 *.tsbuildinfo
+
+# Test and coverage output
+coverage/
+.nyc_output/
+playwright-report/
+blob-report/
+test-results/
+*.lcov
+
+# Python bytecode, environments, and test caches
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.pyre/
+.coverage
+.coverage.*
+htmlcov/
+.venv/
+venv/
+env/
 
 # Local service runtime files
 .atlas-route.pid
 .atlas-route.log
 .atlas-cache/
 *.log
+*.pid
+*.pid.lock
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
@@ -27,16 +54,20 @@ pnpm-debug.log*
 
 # Editor and operating-system metadata
 .DS_Store
+.AppleDouble
+.LSOverride
+Thumbs.db
+Desktop.ini
 .idea/
 .vscode/
 *.swp
 *.swo
 *~
 
-# robot
+# Local robot assets can be large and machine-specific
 robots/
 
-# resources
+# Point-cloud assets are ignored by default; keep compact repository fixtures
 *.ply
-!tests/fixtures/hybrid-map.ply
-!tests/fixtures/hybrid-camera-surface-map.ply
+!maps/xian_map.ply
+!tests/fixtures/*.ply

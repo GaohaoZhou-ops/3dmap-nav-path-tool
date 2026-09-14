@@ -197,6 +197,9 @@ def run():
             "document.querySelector('.three-canvas')?.dataset.robotModelState === 'loaded'"
         )
         page.get_by_role("button", name="新建示教任务", exact=True).click()
+        page.get_by_role("dialog", name="新建示教任务").get_by_role(
+            "button", name="创建任务", exact=True
+        ).click()
         page.wait_for_function(
             "document.querySelector('[aria-label=\"虚拟示教\"]')?.dataset.teachingTaskCount === '1'"
         )

@@ -700,6 +700,7 @@ export default function Inspector({
               mapData={mapData}
               robot={robot}
               robotLoadState={robotLoadState}
+              robotPose={robotPose}
               robotJointValues={robotJointValues}
               view="capture"
               captureState={teachingCaptureState}

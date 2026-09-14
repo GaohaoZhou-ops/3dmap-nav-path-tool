@@ -9,7 +9,7 @@ import {
   Route,
   ShieldCheck,
 } from 'lucide-react';
-import VirtualTeachingPanel from './VirtualTeachingPanel.jsx';
+import TeachingArchiveTree from './TeachingArchiveTree.jsx';
 
 const formatBytes = (value) => {
   const bytes = Math.max(0, Number(value) || 0);
@@ -163,16 +163,13 @@ export default function TeachingDataPage({
             </aside>
 
             <section className="teaching-data-page__archive" aria-label="示教任务管理工作区">
-              <VirtualTeachingPanel
+              <TeachingArchiveTree
                 tasks={tasks}
                 activeTaskId={activeTaskId}
                 activeParkingPointId={activeParkingPointId}
                 mapData={mapData}
                 robot={robot}
                 robotLoadState={robotLoadState}
-                robotJointValues={robotJointValues}
-                view="data"
-                captureState={captureState}
                 onSelectTask={onSelectTask}
                 onRenameTask={onRenameTask}
                 onDeleteTask={onDeleteTask}

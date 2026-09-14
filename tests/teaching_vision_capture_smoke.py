@@ -73,6 +73,12 @@ def run():
             "document.querySelector('.zivid-camera-canvas')?.dataset.contextState === 'ready'"
         )
         page.get_by_role("button", name="新建示教任务", exact=True).click()
+        create_dialog = page.get_by_role("dialog", name="新建示教任务")
+        create_dialog.get_by_role("textbox", name="新示教任务名称").fill("双目视觉采集")
+        parking_option = create_dialog.get_by_role("button", name="添加当前位置为停车点")
+        parking_option.click()
+        assert parking_option.get_attribute("aria-pressed") == "true"
+        create_dialog.get_by_role("button", name="创建任务", exact=True).click()
         capture_button = page.get_by_role("button", name="记录当前机械臂姿态")
         capture_button.click()
         teaching_panel = page.get_by_label("虚拟示教", exact=True)

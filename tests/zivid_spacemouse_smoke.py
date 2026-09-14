@@ -230,10 +230,13 @@ def run():
         assert panel.get_by_role(
             "button", name="关闭 SpaceMouse 相机视角控制"
         ).get_attribute("aria-pressed") == "true"
-        route = panel.get_by_label("SpaceMouse 相机路由状态")
-        assert route.is_visible()
-        assert "CAM-L" in route.inner_text()
-        assert "OPTICAL FRAME · IK" in route.inner_text()
+        assert panel.locator(".zivid-camera-spacemouse-route").count() == 0
+        axis_indicator = panel.locator(".zivid-camera-spacemouse-axis")
+        assert axis_indicator.is_visible()
+        assert axis_indicator.get_attribute("data-axis") == "x"
+        assert axis_indicator.get_attribute("data-axis-code") == "X"
+        assert "XYZ" in axis_indicator.inner_text()
+        assert "X" in axis_indicator.inner_text()
 
         emit_motion(page, 1, [190, 0, 0])
         page.wait_for_function(
@@ -275,6 +278,13 @@ def run():
         )
         assert hud.get_attribute("data-axis") == "yaw"
         assert "左偏航" in hud.inner_text()
+        page.wait_for_function(
+            """() => document.querySelector('.zivid-camera-spacemouse-axis')
+              ?.dataset.axis === 'yaw'"""
+        )
+        assert axis_indicator.get_attribute("data-axis-code") == "YAW"
+        assert "RPY" in axis_indicator.inner_text()
+        assert "YAW" in axis_indicator.inner_text()
         left_quaternion_after = vector_attribute(
             main_canvas, "data-zivid-left-optical-quaternion"
         )

@@ -90,6 +90,7 @@ const SPACEMOUSE_FORWARD_SPEED_RATIO = 0.9;
 const SPACEMOUSE_PAN_PIXELS_PER_SECOND = 640;
 const SPACEMOUSE_ROTATION_SPEED = THREE.MathUtils.degToRad(125);
 const SPACEMOUSE_AXIS_HUD_HOLD_MS = 1000;
+const MAIN_VIEW_PREVIEW_CONTROL_EVENT = 'atlas-main-view-preview-control';
 const SPACEMOUSE_VIEW_AXES = Object.freeze(['x', 'y', 'z', 'roll', 'pitch', 'yaw']);
 const SPACEMOUSE_TRANSLATION_AXES = Object.freeze(['x', 'y', 'z']);
 const SPACEMOUSE_ROTATION_AXES = Object.freeze(['roll', 'pitch', 'yaw']);
@@ -2606,6 +2607,86 @@ export default function PointCloudViewer({
       return renderer.domElement.dataset.panImplementation;
     };
 
+    const previewOrbitOffset = new THREE.Vector3();
+    const previewOrbitAxis = new THREE.Vector3();
+    const previewOrbitQuaternion = new THREE.Quaternion();
+    const rotateFromPreview = (deltaX, deltaY, sourceWidth, sourceHeight) => {
+      const width = Math.max(Number(sourceWidth) || renderer.domElement.clientWidth, 1);
+      const height = Math.max(Number(sourceHeight) || renderer.domElement.clientHeight, 1);
+      const yaw = -(Number(deltaX) || 0) * Math.PI * controls.rotateSpeed / width;
+      const pitch = -(Number(deltaY) || 0) * Math.PI * controls.rotateSpeed / height;
+      if (Math.abs(yaw) < 1e-9 && Math.abs(pitch) < 1e-9) return false;
+
+      previewOrbitOffset.copy(camera.position).sub(controls.target);
+      if (previewOrbitOffset.lengthSq() < 1e-18) return false;
+      if (Math.abs(yaw) >= 1e-9) {
+        previewOrbitAxis.copy(camera.up).normalize();
+        previewOrbitQuaternion.setFromAxisAngle(previewOrbitAxis, yaw);
+        previewOrbitOffset.applyQuaternion(previewOrbitQuaternion);
+        camera.position.copy(controls.target).add(previewOrbitOffset);
+        camera.lookAt(controls.target);
+        camera.updateMatrixWorld(true);
+      }
+      if (Math.abs(pitch) >= 1e-9) {
+        previewOrbitAxis.setFromMatrixColumn(camera.matrixWorld, 0).normalize();
+        previewOrbitQuaternion.setFromAxisAngle(previewOrbitAxis, pitch);
+        previewOrbitOffset.copy(camera.position).sub(controls.target)
+          .applyQuaternion(previewOrbitQuaternion);
+        camera.up.applyQuaternion(previewOrbitQuaternion).normalize();
+        camera.position.copy(controls.target).add(previewOrbitOffset);
+        camera.lookAt(controls.target);
+      }
+      camera.updateMatrixWorld(true);
+      controls.update();
+      syncDetailView();
+      reportCameraView();
+      return true;
+    };
+
+    const onMainViewPreviewControl = (event) => {
+      const detail = event.detail || {};
+      const kind = detail.kind === 'pan' ? 'pan' : 'rotate';
+      const deltaX = Number(detail.deltaX) || 0;
+      const deltaY = Number(detail.deltaY) || 0;
+      if (!deltaX && !deltaY) return;
+      if (focusAnimationRef.current) {
+        cancelAnimationFrame(focusAnimationRef.current);
+        focusAnimationRef.current = null;
+        renderer.domElement.dataset.synchronizedFocusState = 'interrupted-by-preview';
+      }
+      let changed = false;
+      if (kind === 'pan') {
+        const sourceWidth = Math.max(Number(detail.sourceWidth) || 1, 1);
+        const sourceHeight = Math.max(Number(detail.sourceHeight) || 1, 1);
+        changed = Boolean(panByPixels(
+          deltaX * renderer.domElement.clientWidth / sourceWidth,
+          deltaY * renderer.domElement.clientHeight / sourceHeight,
+        ));
+      } else {
+        changed = rotateFromPreview(
+          deltaX,
+          deltaY,
+          detail.sourceWidth,
+          detail.sourceHeight,
+        );
+      }
+      if (!changed) return;
+      renderer.domElement.dataset.previewControlMode = kind;
+      renderer.domElement.dataset.previewControlCount = String(
+        Number(renderer.domElement.dataset.previewControlCount || 0) + 1,
+      );
+      const countKey = kind === 'pan'
+        ? 'previewPanControlCount'
+        : 'previewRotateControlCount';
+      renderer.domElement.dataset[countKey] = String(
+        Number(renderer.domElement.dataset[countKey] || 0) + 1,
+      );
+    };
+    renderer.domElement.addEventListener(
+      MAIN_VIEW_PREVIEW_CONTROL_EVENT,
+      onMainViewPreviewControl,
+    );
+
     const selectionAtPointer = (event) => {
       const rect = renderer.domElement.getBoundingClientRect();
       if (!rect.width || !rect.height) return null;
@@ -3830,6 +3911,10 @@ export default function PointCloudViewer({
       renderer.domElement.removeEventListener('pointercancel', resetPickPointer);
       renderer.domElement.removeEventListener('pointerleave', onPickPointerLeave);
       renderer.domElement.removeEventListener('dblclick', onRobotDoubleClick, true);
+      renderer.domElement.removeEventListener(
+        MAIN_VIEW_PREVIEW_CONTROL_EVENT,
+        onMainViewPreviewControl,
+      );
       transformControls.removeEventListener('dragging-changed', onTransformDraggingChanged);
       transformControls.removeEventListener('objectChange', onTransformObjectChange);
       transformControls.detach();

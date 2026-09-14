@@ -11,6 +11,7 @@ import {
   Minus,
   Move3D,
   Plus,
+  Rotate3D,
   RotateCcw,
   SlidersHorizontal,
   X,
@@ -57,6 +58,8 @@ const ZIVID_SPACEMOUSE_ANGULAR_SPEED = 48;
 const ZIVID_SPACEMOUSE_HUD_HOLD_MS = 1000;
 const MAIN_VIEW_PREVIEW_FPS = 12;
 const MAIN_VIEW_PREVIEW_FRAME_INTERVAL_MS = 1000 / MAIN_VIEW_PREVIEW_FPS;
+const MAIN_VIEW_PREVIEW_MAX_ZOOM = 8;
+const MAIN_VIEW_PREVIEW_CONTROL_EVENT = 'atlas-main-view-preview-control';
 const ZIVID_SPACEMOUSE_AXES = Object.freeze(['x', 'y', 'z', 'roll', 'pitch', 'yaw']);
 const ZIVID_SPACEMOUSE_ACTIONS = Object.freeze({
   x: {
@@ -1231,7 +1234,13 @@ function MainViewportThumbnail({ sourceCanvasRef }) {
   const rootRef = useRef(null);
   const videoRef = useRef(null);
   const fallbackCanvasRef = useRef(null);
+  const previewDragRef = useRef(null);
+  const previewControlCountRef = useRef(0);
   const [preview, setPreview] = useState({ status: 'waiting', transport: 'none' });
+  const [previewZoom, setPreviewZoom] = useState(1);
+  const [previewZoomOrigin, setPreviewZoomOrigin] = useState({ x: 50, y: 50 });
+  const [previewInteractionMode, setPreviewInteractionMode] = useState('rotate');
+  const [previewDragging, setPreviewDragging] = useState(false);
 
   useEffect(() => {
     let disposed = false;
@@ -1285,10 +1294,9 @@ function MainViewportThumbnail({ sourceCanvasRef }) {
             setPreview({ status: 'waiting', transport: 'canvas-copy' });
           } else if (canvas) {
             sourceCanvas = source;
-            const bounds = canvas.getBoundingClientRect();
             const pixelRatio = Math.min(window.devicePixelRatio || 1, 1.5);
-            const width = Math.max(1, Math.round(bounds.width * pixelRatio));
-            const height = Math.max(1, Math.round(bounds.height * pixelRatio));
+            const width = Math.max(1, Math.round(canvas.clientWidth * pixelRatio));
+            const height = Math.max(1, Math.round(canvas.clientHeight * pixelRatio));
             if (canvas.width !== width || canvas.height !== height) {
               canvas.width = width;
               canvas.height = height;
@@ -1405,6 +1413,108 @@ function MainViewportThumbnail({ sourceCanvasRef }) {
       ? 'UNAVAILABLE'
       : 'SYNCING';
 
+  const changePreviewZoom = (change) => {
+    setPreviewZoom((current) => THREE.MathUtils.clamp(
+      typeof change === 'function' ? change(current) : change,
+      1,
+      MAIN_VIEW_PREVIEW_MAX_ZOOM,
+    ));
+  };
+
+  const resetPreviewZoom = () => {
+    setPreviewZoom(1);
+    setPreviewZoomOrigin({ x: 50, y: 50 });
+  };
+
+  const handlePreviewWheel = (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    if (event.target.closest('button')) return;
+    const bounds = event.currentTarget.getBoundingClientRect();
+    if (bounds.width > 0 && bounds.height > 0) {
+      setPreviewZoomOrigin({
+        x: THREE.MathUtils.clamp(((event.clientX - bounds.left) / bounds.width) * 100, 0, 100),
+        y: THREE.MathUtils.clamp(((event.clientY - bounds.top) / bounds.height) * 100, 0, 100),
+      });
+    }
+    changePreviewZoom((current) => current * Math.exp(-event.deltaY * 0.0018));
+  };
+
+  const dispatchPreviewControl = (kind, deltaX, deltaY, frame) => {
+    const sourceCanvas = sourceCanvasRef?.current
+      || document.querySelector('.three-canvas');
+    if (!sourceCanvas?.isConnected || (!deltaX && !deltaY)) return;
+    previewControlCountRef.current += 1;
+    sourceCanvas.dispatchEvent(new CustomEvent(MAIN_VIEW_PREVIEW_CONTROL_EVENT, {
+      detail: {
+        kind,
+        deltaX,
+        deltaY,
+        sourceWidth: Math.max(frame?.clientWidth || 1, 1),
+        sourceHeight: Math.max(frame?.clientHeight || 1, 1),
+      },
+    }));
+    if (rootRef.current) {
+      rootRef.current.dataset.previewControlCount = String(previewControlCountRef.current);
+      rootRef.current.dataset.previewLastControl = kind;
+    }
+  };
+
+  const finishPreviewDrag = (frame, pointerId, state = 'ended') => {
+    previewDragRef.current = null;
+    if (frame?.hasPointerCapture?.(pointerId)) {
+      try {
+        frame.releasePointerCapture(pointerId);
+      } catch {
+        // The browser can release capture before React receives pointercancel.
+      }
+    }
+    setPreviewDragging(false);
+    if (rootRef.current) rootRef.current.dataset.previewGestureState = state;
+  };
+
+  const handlePreviewPointerDown = (event) => {
+    if (event.button !== 0 || event.target.closest('button')) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const effectiveMode = event.shiftKey ? 'pan' : previewInteractionMode;
+    previewDragRef.current = {
+      pointerId: event.pointerId,
+      lastX: event.clientX,
+      lastY: event.clientY,
+      effectiveMode,
+    };
+    event.currentTarget.setPointerCapture?.(event.pointerId);
+    setPreviewDragging(true);
+    if (rootRef.current) {
+      rootRef.current.dataset.previewGestureState = 'active';
+      rootRef.current.dataset.previewEffectiveMode = effectiveMode;
+    }
+  };
+
+  const handlePreviewPointerMove = (event) => {
+    const drag = previewDragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    const bounds = event.currentTarget.getBoundingClientRect();
+    const outside = event.clientX < bounds.left
+      || event.clientX > bounds.right
+      || event.clientY < bounds.top
+      || event.clientY > bounds.bottom;
+    if (outside) {
+      finishPreviewDrag(event.currentTarget, event.pointerId, 'cancelled-on-leave');
+      return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+    const deltaX = event.clientX - drag.lastX;
+    const deltaY = event.clientY - drag.lastY;
+    drag.lastX = event.clientX;
+    drag.lastY = event.clientY;
+    const effectiveMode = event.shiftKey ? 'pan' : drag.effectiveMode;
+    if (rootRef.current) rootRef.current.dataset.previewEffectiveMode = effectiveMode;
+    dispatchPreviewControl(effectiveMode, deltaX, deltaY, event.currentTarget);
+  };
+
   return (
     <aside
       ref={rootRef}
@@ -1414,6 +1524,17 @@ function MainViewportThumbnail({ sourceCanvasRef }) {
       data-preview-transport={preview.transport}
       data-preview-fps={MAIN_VIEW_PREVIEW_FPS}
       data-preview-frame-count="0"
+      data-preview-zoom={previewZoom.toFixed(2)}
+      data-preview-max-zoom={MAIN_VIEW_PREVIEW_MAX_ZOOM}
+      data-preview-interaction-mode={previewInteractionMode}
+      data-preview-effective-mode={previewInteractionMode}
+      data-preview-dragging={previewDragging ? 'true' : 'false'}
+      data-preview-control-count={String(previewControlCountRef.current)}
+      style={{
+        '--main-preview-zoom': previewZoom,
+        '--main-preview-origin-x': `${previewZoomOrigin.x}%`,
+        '--main-preview-origin-y': `${previewZoomOrigin.y}%`,
+      }}
       onPointerDown={(event) => event.stopPropagation()}
       onDoubleClick={(event) => event.stopPropagation()}
       onWheel={(event) => event.stopPropagation()}
@@ -1422,7 +1543,31 @@ function MainViewportThumbnail({ sourceCanvasRef }) {
         <span><Box size={11} /><strong>主 3D 视角</strong><small>MAP FRAME</small></span>
         <b aria-live="polite"><i />{statusLabel}</b>
       </header>
-      <div className="zivid-main-view-preview__frame">
+      <div
+        className={`zivid-main-view-preview__frame is-${previewInteractionMode} ${previewDragging ? 'is-dragging' : ''}`}
+        title={`${previewInteractionMode === 'rotate' ? '拖拽旋转' : '拖拽平移'} · Shift 临时平移 · 滚轮缩放 · 双击恢复 1×`}
+        onWheel={handlePreviewWheel}
+        onContextMenu={(event) => event.preventDefault()}
+        onPointerDown={handlePreviewPointerDown}
+        onPointerMove={handlePreviewPointerMove}
+        onPointerUp={(event) => {
+          if (previewDragRef.current?.pointerId !== event.pointerId) return;
+          event.stopPropagation();
+          finishPreviewDrag(event.currentTarget, event.pointerId);
+        }}
+        onPointerCancel={(event) => {
+          if (previewDragRef.current?.pointerId !== event.pointerId) return;
+          finishPreviewDrag(event.currentTarget, event.pointerId, 'cancelled');
+        }}
+        onPointerLeave={(event) => {
+          if (previewDragRef.current?.pointerId !== event.pointerId) return;
+          finishPreviewDrag(event.currentTarget, event.pointerId, 'cancelled-on-leave');
+        }}
+        onDoubleClick={(event) => {
+          event.stopPropagation();
+          if (!event.target.closest('button')) resetPreviewZoom();
+        }}
+      >
         <video ref={videoRef} muted autoPlay playsInline aria-hidden="true" />
         <canvas ref={fallbackCanvasRef} aria-hidden="true" />
         <div className="zivid-main-view-preview__grid" aria-hidden="true" />
@@ -1432,6 +1577,69 @@ function MainViewportThumbnail({ sourceCanvasRef }) {
             <span>{preview.status === 'unavailable' ? '主视角不可用' : '正在同步主视角'}</span>
           </div>
         )}
+        <div
+          className="zivid-main-view-preview__zoom"
+          role="group"
+          aria-label="主3D视角缩放"
+          onDoubleClick={(event) => event.stopPropagation()}
+        >
+          <button
+            type="button"
+            aria-label="缩小主3D视角"
+            title="缩小主 3D 视角"
+            disabled={previewZoom <= 1.001}
+            onClick={() => changePreviewZoom((current) => current / 1.55)}
+          >
+            <Minus size={11} />
+          </button>
+          <button
+            type="button"
+            className="is-readout"
+            aria-label="重置主3D视角缩放"
+            title="恢复 1×"
+            disabled={previewZoom <= 1.001}
+            onClick={resetPreviewZoom}
+          >
+            <RotateCcw size={9} />
+            <b>{previewZoom.toFixed(1)}×</b>
+          </button>
+          <button
+            type="button"
+            aria-label="放大主3D视角"
+            title="放大主 3D 视角"
+            disabled={previewZoom >= MAIN_VIEW_PREVIEW_MAX_ZOOM - 0.001}
+            onClick={() => changePreviewZoom((current) => current * 1.55)}
+          >
+            <Plus size={11} />
+          </button>
+        </div>
+        <div
+          className="zivid-main-view-preview__modes"
+          role="group"
+          aria-label="主3D视角交互模式"
+          onDoubleClick={(event) => event.stopPropagation()}
+        >
+          <button
+            type="button"
+            className={previewInteractionMode === 'rotate' ? 'is-active' : ''}
+            aria-label="主3D视角旋转模式"
+            aria-pressed={previewInteractionMode === 'rotate'}
+            title="左键拖拽旋转主 3D 视角"
+            onClick={() => setPreviewInteractionMode('rotate')}
+          >
+            <Rotate3D size={10} />旋转
+          </button>
+          <button
+            type="button"
+            className={previewInteractionMode === 'pan' ? 'is-active' : ''}
+            aria-label="主3D视角平移模式"
+            aria-pressed={previewInteractionMode === 'pan'}
+            title="左键拖拽平移主 3D 视角"
+            onClick={() => setPreviewInteractionMode('pan')}
+          >
+            <Move3D size={10} />平移
+          </button>
+        </div>
         <div className="zivid-main-view-preview__axes" aria-hidden="true">
           <i className="x">X</i><i className="y">Y</i><i className="z">Z</i>
         </div>
@@ -2311,6 +2519,15 @@ export default function ZividCameraPanel({
               <strong>SpaceMouse 视角</strong>
               <small>{spaceMouseSwitchState}</small>
             </span>
+            <em
+              className={`zivid-camera-spacemouse-axis ${spaceMouseHud.active ? 'is-moving' : ''}`}
+              data-axis={spaceMouseStatus.selectedAxis}
+              data-axis-code={selectedSpaceMouseMeta.code}
+              aria-hidden="true"
+            >
+              <small>{selectedSpaceMouseMeta.group}</small>
+              <b>{spaceMouseStatus.controlEnabled ? selectedSpaceMouseMeta.code : 'PAUSE'}</b>
+            </em>
             <i aria-hidden="true"><b /></i>
           </button>
         )}
@@ -2438,19 +2655,6 @@ export default function ZividCameraPanel({
         <div className="zivid-camera-scan-grid" aria-hidden="true" />
         {expanded && (
           <MainViewportThumbnail sourceCanvasRef={mainViewportCanvasRef} />
-        )}
-        {expanded && spaceMouseViewEnabled && (
-          <div
-            className={`zivid-camera-spacemouse-route ${spaceMouseStatus.controlEnabled ? 'is-linked' : 'is-paused'}`}
-            aria-label="SpaceMouse 相机路由状态"
-          >
-            <Move3D size={12} />
-            <span>
-              <small>SPACEMOUSE → {activeSide === 'left' ? 'CAM-L' : 'CAM-R'}</small>
-              <strong>OPTICAL FRAME · IK</strong>
-            </span>
-            <b>{spaceMouseStatus.controlEnabled ? selectedSpaceMouseMeta.code : 'PAUSE'}</b>
-          </div>
         )}
         {expanded && (
           <div

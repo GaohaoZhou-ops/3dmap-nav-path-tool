@@ -125,6 +125,97 @@ def run():
                 && preview.dataset.sourceViewSignature === source?.dataset.viewSignature;
             }"""
         )
+        assert preview.get_attribute("data-preview-zoom") == "1.00"
+        assert preview.get_attribute("data-preview-max-zoom") == "8"
+        camera_zoom_before = expanded_panel.get_attribute("data-zoom")
+        preview.get_by_role("button", name="放大主3D视角").click()
+        preview.get_by_role("button", name="放大主3D视角").click()
+        page.wait_for_function(
+            """() => Number(document.querySelector('.zivid-main-view-preview')
+              ?.dataset.previewZoom) > 2"""
+        )
+        preview_transport = preview.get_attribute("data-preview-transport")
+        preview_media = preview.locator(
+            "video" if preview_transport == "capture-stream" else "canvas"
+        )
+        page.wait_for_timeout(220)
+        assert preview_media.evaluate(
+            "node => getComputedStyle(node).transform !== 'none'"
+        )
+        assert expanded_panel.get_attribute("data-zoom") == camera_zoom_before
+
+        preview.get_by_role("button", name="重置主3D视角缩放").click()
+        assert preview.get_attribute("data-preview-zoom") == "1.00"
+        preview_frame = preview.locator(".zivid-main-view-preview__frame")
+        frame_bounds = preview_frame.bounding_box()
+        assert frame_bounds
+        page.mouse.move(
+            frame_bounds["x"] + frame_bounds["width"] * 0.32,
+            frame_bounds["y"] + frame_bounds["height"] * 0.68,
+        )
+        page.mouse.wheel(0, -520)
+        page.wait_for_function(
+            """() => Number(document.querySelector('.zivid-main-view-preview')
+              ?.dataset.previewZoom) > 1"""
+        )
+        assert expanded_panel.get_attribute("data-zoom") == camera_zoom_before
+        page.screenshot(path="/tmp/atlas-zivid-m70-camera.png", full_page=True)
+        preview_frame.dblclick(position={"x": 28, "y": frame_bounds["height"] - 28})
+        assert preview.get_attribute("data-preview-zoom") == "1.00"
+
+        assert preview.get_attribute("data-preview-interaction-mode") == "rotate"
+        view_before_rotate = main_canvas.get_attribute("data-view-signature")
+        rotate_count_before = int(
+            main_canvas.get_attribute("data-preview-rotate-control-count") or 0
+        )
+        page.mouse.move(
+            frame_bounds["x"] + frame_bounds["width"] * 0.46,
+            frame_bounds["y"] + frame_bounds["height"] * 0.42,
+        )
+        page.mouse.down()
+        page.mouse.move(
+            frame_bounds["x"] + frame_bounds["width"] * 0.62,
+            frame_bounds["y"] + frame_bounds["height"] * 0.53,
+            steps=4,
+        )
+        page.mouse.up()
+        page.wait_for_function(
+            """([signature, count]) => {
+              const canvas = document.querySelector('.three-canvas');
+              return canvas?.dataset.viewSignature !== signature
+                && Number(canvas?.dataset.previewRotateControlCount || 0) > count;
+            }""",
+            arg=[view_before_rotate, rotate_count_before],
+        )
+        assert main_canvas.get_attribute("data-preview-control-mode") == "rotate"
+
+        preview.get_by_role("button", name="主3D视角平移模式").click()
+        assert preview.get_attribute("data-preview-interaction-mode") == "pan"
+        view_before_pan = main_canvas.get_attribute("data-view-signature")
+        pan_count_before = int(
+            main_canvas.get_attribute("data-preview-pan-control-count") or 0
+        )
+        page.mouse.move(
+            frame_bounds["x"] + frame_bounds["width"] * 0.55,
+            frame_bounds["y"] + frame_bounds["height"] * 0.46,
+        )
+        page.mouse.down()
+        page.mouse.move(
+            frame_bounds["x"] + frame_bounds["width"] * 0.43,
+            frame_bounds["y"] + frame_bounds["height"] * 0.58,
+            steps=4,
+        )
+        page.mouse.up()
+        page.wait_for_function(
+            """([signature, count]) => {
+              const canvas = document.querySelector('.three-canvas');
+              return canvas?.dataset.viewSignature !== signature
+                && Number(canvas?.dataset.previewPanControlCount || 0) > count;
+            }""",
+            arg=[view_before_pan, pan_count_before],
+        )
+        assert main_canvas.get_attribute("data-preview-control-mode") == "pan"
+        assert expanded_panel.get_attribute("data-zoom") == camera_zoom_before
         page.screenshot(path="/tmp/atlas-zivid-m70-camera.png", full_page=True)
         expanded_panel.get_by_role("button", name="关闭 Zivid 相机大图").click()
         dialog.wait_for(state="detached")

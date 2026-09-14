@@ -125,7 +125,6 @@ export default function VirtualTeachingPanel({
   onDeletePoint,
   onApplyPoint,
   onExportProject,
-  onOpenDataPage,
   onOpenCapturePage,
 }) {
   const isDataView = view === 'data';
@@ -252,10 +251,6 @@ export default function VirtualTeachingPanel({
     (count, task) => count + (task.parkingPoints?.length || 0),
     0,
   );
-  const activeTaskPoseCount = parkingPoints.reduce(
-    (count, parkingPoint) => count + (parkingPoint.poses?.length || 0),
-    0,
-  );
   const parkingPointDrift = useMemo(
     () => analyzeParkingPointDrift(robotPose, activePoses),
     [activePoses, robotPose],
@@ -368,6 +363,7 @@ export default function VirtualTeachingPanel({
       data-camera-inverse-mode="automatic"
       data-capture-surface={isDataView ? 'archive-management' : 'task-actions'}
       data-camera-capture-status={captureState?.status || 'idle'}
+      data-teaching-point-count={teachingPointCount}
     >
       <div className="virtual-teaching__header">
         <div className="virtual-teaching__identity">
@@ -727,7 +723,7 @@ export default function VirtualTeachingPanel({
           )}
           </>}
 
-          {isDataView ? <>
+          {isDataView && <>
           <div className="teaching-sequence-heading">
             <span>机械臂姿态</span>
             <i />
@@ -943,30 +939,7 @@ export default function VirtualTeachingPanel({
               </div>
             </div>
           )}
-          </> : (
-            <div
-              className="teaching-data-handoff"
-              data-parking-point-count={parkingPoints.length}
-              data-teaching-point-count={activeTaskPoseCount}
-            >
-              <span className="teaching-data-handoff__count">
-                <b>{activeTaskPoseCount}</b>
-                <small>POSES</small>
-              </span>
-              <div>
-                <strong>当前已归档姿态</strong>
-                <small>{parkingPoints.length} 个停车点 · 姿态与双目快照由示教数据页统一管理</small>
-              </div>
-              <button
-                type="button"
-                onClick={onOpenDataPage}
-                disabled={captureState?.status === 'capturing'}
-                title={captureState?.status === 'capturing' ? '当前姿态记录完成后可进入数据页' : ''}
-              >
-                打开数据页 <ChevronRight size={11} />
-              </button>
-            </div>
-          )}
+          </>}
         </>
       )}
     </section>

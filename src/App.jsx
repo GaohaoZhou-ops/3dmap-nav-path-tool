@@ -2883,7 +2883,7 @@ export default function App() {
           <div className="brand-mark"><Route size={20} strokeWidth={1.8} /></div>
           <div>
             <span>ATLAS / ROUTE</span>
-            <strong>路径图谱工坊</strong>
+            <strong>虚拟示教平台</strong>
           </div>
         </div>
 
@@ -3178,7 +3178,6 @@ export default function App() {
           onCreateTeachingParkingPoint={createTeachingParkingPoint}
           onSelectTeachingParkingPoint={previewTeachingParkingPoint}
           onCaptureTeachingPoint={captureTeachingPoint}
-          onOpenTeachingDataPage={() => navigateAppPage(APP_PAGE_TEACHING_DATA)}
           onUpdateRobotJointValue={updateRobotJointValue}
           onToggleRobotJointLock={toggleRobotJointLock}
           onUnlockAllRobotJoints={unlockAllRobotJoints}

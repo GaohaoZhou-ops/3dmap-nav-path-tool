@@ -102,7 +102,6 @@ export default function Inspector({
   onCreateTeachingParkingPoint,
   onSelectTeachingParkingPoint,
   onCaptureTeachingPoint,
-  onOpenTeachingDataPage,
   onUpdateRobotJointValue,
   onToggleRobotJointLock,
   onUnlockAllRobotJoints,
@@ -711,7 +710,6 @@ export default function Inspector({
               onCreateParkingPoint={onCreateTeachingParkingPoint}
               onSelectParkingPoint={onSelectTeachingParkingPoint}
               onCapturePoint={onCaptureTeachingPoint}
-              onOpenDataPage={onOpenTeachingDataPage}
             />
 
             <div

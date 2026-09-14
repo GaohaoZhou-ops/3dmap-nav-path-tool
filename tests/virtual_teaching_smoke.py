@@ -114,17 +114,19 @@ def run():
 
         page.get_by_role("button", name="记录当前机械臂姿态").click()
         page.wait_for_function(
-            "document.querySelector('.teaching-data-handoff')?.dataset.teachingPointCount === '1'"
+            "document.querySelector('[aria-label=\"虚拟示教\"]')?.dataset.teachingPointCount === '1'"
         )
         assert page.get_by_role("button", name="新建示教任务", exact=True).is_visible()
         assert page.get_by_label("示教任务与停车点树", exact=True).is_visible()
         assert page.get_by_role("button", name="新增停车点", exact=True).is_visible()
         assert page.get_by_role("button", name="记录当前机械臂姿态", exact=True).is_visible()
-        assert page.get_by_text("当前已归档姿态", exact=True).is_visible()
+        assert page.get_by_text("当前已归档姿态", exact=True).count() == 0
+        assert page.locator(".teaching-data-handoff").count() == 0
+        assert page.get_by_role("button", name="打开示教数据管理页").is_visible()
         assert page.locator(".teaching-point-row").count() == 0
         page.screenshot(path="/tmp/atlas-virtual-teaching-capture.png", full_page=True)
 
-        page.get_by_role("button", name="打开数据页", exact=False).click()
+        page.get_by_role("button", name="打开示教数据管理页").click()
         page.locator('[data-app-page="teaching-data"]').wait_for()
         assert page.url.endswith("/teaching-data")
         data_panel = page.locator('section[aria-label="示教数据管理"]')
@@ -188,7 +190,7 @@ def run():
         assert page.get_by_label("全关节控制浮动窗口", exact=True).count() == 0
         page.get_by_role("button", name="记录当前机械臂姿态").click()
         page.wait_for_function(
-            "document.querySelector('.teaching-data-handoff')?.dataset.teachingPointCount === '2'"
+            "document.querySelector('[aria-label=\"虚拟示教\"]')?.dataset.teachingPointCount === '2'"
         )
         page.keyboard.press("w")
         page.keyboard.press("d")
@@ -204,7 +206,7 @@ def run():
         assert float(drift_dialog.get_attribute("data-distance-threshold")) == 0.05
         assert float(drift_dialog.get_attribute("data-yaw-threshold")) == 5
         assert teaching_panel.get_attribute("data-parking-point-count") == "1"
-        assert page.locator(".teaching-data-handoff").get_attribute(
+        assert teaching_panel.get_attribute(
             "data-teaching-point-count"
         ) == "2"
 
@@ -221,16 +223,16 @@ def run():
             "document.querySelector('[aria-label=\"虚拟示教\"]')?.dataset.parkingPointCount === '2'"
         )
         page.wait_for_function(
-            "document.querySelector('.teaching-data-handoff')?.dataset.teachingPointCount === '3'"
+            "document.querySelector('[aria-label=\"虚拟示教\"]')?.dataset.teachingPointCount === '3'"
         )
         drift_dialog.wait_for(state="detached")
         second_parking_node = page.get_by_label("示教任务与停车点树", exact=True).get_by_role(
             "treeitem", name="选择当前停车点 停车点 P02"
         )
         assert second_parking_node.get_attribute("aria-current") == "true"
-        assert page.locator(".teaching-data-handoff").get_attribute("data-parking-point-count") == "2"
+        assert teaching_panel.get_attribute("data-parking-point-count") == "2"
 
-        page.get_by_role("button", name="打开数据页", exact=False).click()
+        page.get_by_role("button", name="打开示教数据管理页").click()
         page.locator('[data-app-page="teaching-data"]').wait_for()
         page.wait_for_function("document.querySelectorAll('.teaching-tree-node--parking').length === 2")
         assert page.locator(".teaching-point-row").count() == 1

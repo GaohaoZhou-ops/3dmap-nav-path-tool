@@ -90,7 +90,7 @@ def run():
         )
         assert capture_button.get_attribute("aria-busy") == "false"
 
-        page.get_by_role("button", name="打开数据页", exact=False).click()
+        page.get_by_role("button", name="打开示教数据管理页").click()
         page.locator('[data-app-page="teaching-data"]').wait_for()
         assert page.url.endswith("/teaching-data")
         assert page.locator('section[aria-label="示教数据管理"]').is_visible()

@@ -20,8 +20,58 @@ import {
   Play,
   Save,
   Trash2,
+  TriangleAlert,
   X,
 } from 'lucide-react';
+
+const PARKING_DRIFT_DISTANCE_METERS = 0.05;
+const PARKING_DRIFT_YAW_DEGREES = 5;
+
+const finiteNumber = (value) => {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : 0;
+};
+
+const angularDistanceDegrees = (left, right) => {
+  const difference = (
+    (finiteNumber(left) - finiteNumber(right) + 180) % 360 + 360
+  ) % 360 - 180;
+  return Math.abs(difference);
+};
+
+const analyzeParkingPointDrift = (robotPose, poses) => {
+  if (!Array.isArray(poses) || poses.length === 0) return null;
+
+  const currentX = finiteNumber(robotPose?.position?.x);
+  const currentY = finiteNumber(robotPose?.position?.y);
+  const currentYaw = finiteNumber(robotPose?.rpy?.yaw);
+  let maxPlanarDistance = 0;
+  let maxYawDelta = 0;
+  let translationDelta = { x: 0, y: 0 };
+
+  poses.forEach((pose) => {
+    const referenceX = finiteNumber(pose?.mapPose?.position?.x);
+    const referenceY = finiteNumber(pose?.mapPose?.position?.y);
+    const deltaX = currentX - referenceX;
+    const deltaY = currentY - referenceY;
+    const planarDistance = Math.hypot(deltaX, deltaY);
+    const yawDelta = angularDistanceDegrees(currentYaw, pose?.mapPose?.rpy?.yaw);
+
+    if (planarDistance >= maxPlanarDistance) {
+      maxPlanarDistance = planarDistance;
+      translationDelta = { x: deltaX, y: deltaY };
+    }
+    maxYawDelta = Math.max(maxYawDelta, yawDelta);
+  });
+
+  return {
+    shouldWarn: maxPlanarDistance >= PARKING_DRIFT_DISTANCE_METERS
+      || maxYawDelta >= PARKING_DRIFT_YAW_DEGREES,
+    maxPlanarDistance,
+    maxYawDelta,
+    translationDelta,
+  };
+};
 
 const formatCapturedAt = (value) => {
   const date = new Date(value);
@@ -98,6 +148,7 @@ export default function VirtualTeachingPanel({
   const [taskCreateOpen, setTaskCreateOpen] = useState(false);
   const [taskCreateName, setTaskCreateName] = useState('');
   const [includeCurrentParkingPoint, setIncludeCurrentParkingPoint] = useState(false);
+  const [parkingDriftPrompt, setParkingDriftPrompt] = useState(null);
   const [expandedCaptureTaskIds, setExpandedCaptureTaskIds] = useState(
     () => new Set(activeTask?.id ? [activeTask.id] : []),
   );
@@ -139,6 +190,19 @@ export default function VirtualTeachingPanel({
     window.addEventListener('keydown', closeOnEscape);
     return () => window.removeEventListener('keydown', closeOnEscape);
   }, [taskCreateOpen]);
+
+  useEffect(() => {
+    if (!parkingDriftPrompt) return undefined;
+    const closeOnEscape = (event) => {
+      if (event.key === 'Escape') setParkingDriftPrompt(null);
+    };
+    window.addEventListener('keydown', closeOnEscape);
+    return () => window.removeEventListener('keydown', closeOnEscape);
+  }, [parkingDriftPrompt]);
+
+  useEffect(() => {
+    setParkingDriftPrompt(null);
+  }, [activeTask?.id, activeParkingPoint?.id]);
 
   useEffect(() => {
     const availableTaskIds = new Set(tasks.map((task) => task.id));
@@ -190,6 +254,10 @@ export default function VirtualTeachingPanel({
   const activeTaskPoseCount = parkingPoints.reduce(
     (count, parkingPoint) => count + (parkingPoint.poses?.length || 0),
     0,
+  );
+  const parkingPointDrift = useMemo(
+    () => analyzeParkingPointDrift(robotPose, activePoses),
+    [activePoses, robotPose],
   );
 
   const commitTaskName = () => {
@@ -258,6 +326,30 @@ export default function VirtualTeachingPanel({
     if (task.id !== activeTask?.id) onSelectTask(task.id);
     onSelectParkingPoint(parkingPoint.id);
     setExpandedCaptureTaskIds((current) => new Set(current).add(task.id));
+  };
+
+  const requestTeachingCapture = () => {
+    if (!canCapture || captureInProgress) return;
+    if (parkingPointDrift?.shouldWarn) {
+      setParkingDriftPrompt({
+        ...parkingPointDrift,
+        parkingPointId: activeParkingPoint.id,
+        parkingPointName: activeParkingPoint.name,
+        poseCount: activePoses.length,
+      });
+      return;
+    }
+    onCapturePoint();
+  };
+
+  const captureIntoCurrentParkingPoint = () => {
+    setParkingDriftPrompt(null);
+    onCapturePoint({ allowParkingDrift: true });
+  };
+
+  const captureIntoNewParkingPoint = () => {
+    setParkingDriftPrompt(null);
+    onCapturePoint({ createParkingPoint: true });
   };
 
   return (
@@ -600,7 +692,7 @@ export default function VirtualTeachingPanel({
           <button
             type="button"
             className="teaching-capture-button"
-            onClick={onCapturePoint}
+            onClick={requestTeachingCapture}
             disabled={!canCapture || captureInProgress}
             aria-busy={captureInProgress}
             aria-label="记录当前机械臂姿态"
@@ -874,6 +966,88 @@ export default function VirtualTeachingPanel({
         </>
       )}
     </section>
+    {parkingDriftPrompt && createPortal(
+      <div
+        className="teaching-parking-drift-modal"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="teaching-parking-drift-title"
+        data-current-parking-point={parkingDriftPrompt.parkingPointId}
+        data-planar-distance={parkingDriftPrompt.maxPlanarDistance}
+        data-yaw-delta={parkingDriftPrompt.maxYawDelta}
+        data-distance-threshold={PARKING_DRIFT_DISTANCE_METERS}
+        data-yaw-threshold={PARKING_DRIFT_YAW_DEGREES}
+        onPointerDown={(event) => {
+          if (event.target === event.currentTarget) setParkingDriftPrompt(null);
+        }}
+      >
+        <section className="teaching-parking-drift-dialog">
+          <header>
+            <span><TriangleAlert size={18} /></span>
+            <div>
+              <small>PARKING POINT GUARD</small>
+              <h2 id="teaching-parking-drift-title">底盘已移动</h2>
+              <p>底盘已移动，是否新建停车点？</p>
+            </div>
+            <button
+              type="button"
+              aria-label="关闭底盘移动提示"
+              onClick={() => setParkingDriftPrompt(null)}
+            >
+              <X size={15} />
+            </button>
+          </header>
+
+          <div className="teaching-parking-drift-dialog__body">
+            <div className="teaching-parking-drift-context">
+              <span><MapPin size={11} /> 当前归档节点</span>
+              <strong>{parkingDriftPrompt.parkingPointName}</strong>
+              <small>{parkingDriftPrompt.poseCount} 组已记录姿态</small>
+            </div>
+
+            <div className="teaching-parking-drift-metrics" aria-label="底盘位姿变化">
+              <article className={parkingDriftPrompt.maxPlanarDistance >= PARKING_DRIFT_DISTANCE_METERS ? 'is-exceeded' : ''}>
+                <small>最大 XY 间距</small>
+                <strong>{formatValue(parkingDriftPrompt.maxPlanarDistance * 100, 1)}<i>cm</i></strong>
+                <span>
+                  ΔX {formatValue(parkingDriftPrompt.translationDelta.x * 100, 1)} · ΔY {formatValue(parkingDriftPrompt.translationDelta.y * 100, 1)} cm
+                </span>
+              </article>
+              <article className={parkingDriftPrompt.maxYawDelta >= PARKING_DRIFT_YAW_DEGREES ? 'is-exceeded' : ''}>
+                <small>最大 YAW 差</small>
+                <strong>{formatValue(parkingDriftPrompt.maxYawDelta, 1)}<i>°</i></strong>
+                <span>允许阈值 {PARKING_DRIFT_YAW_DEGREES}°</span>
+              </article>
+            </div>
+
+            <p className="teaching-parking-drift-note">
+              为避免跨度过大的机械臂姿态归入同一停车点，建议以当前底盘 MAP 位姿新建停车点；本次姿态会直接保存为 A01。
+            </p>
+          </div>
+
+          <footer>
+            <button type="button" onClick={() => setParkingDriftPrompt(null)}>取消</button>
+            <button
+              type="button"
+              className="is-secondary"
+              aria-label="仍记录到当前停车点"
+              onClick={captureIntoCurrentParkingPoint}
+            >
+              仍记录到当前停车点
+            </button>
+            <button
+              type="button"
+              className="is-primary"
+              aria-label="新建停车点并记录当前姿态"
+              onClick={captureIntoNewParkingPoint}
+            >
+              <MapPin size={12} /> 新建停车点并记录
+            </button>
+          </footer>
+        </section>
+      </div>,
+      document.body,
+    )}
     {taskCreateOpen && createPortal(
       <div
         className="teaching-task-create-modal"

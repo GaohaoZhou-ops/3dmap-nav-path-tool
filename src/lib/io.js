@@ -32,10 +32,16 @@ export function readFileWithProgress(file, onProgress) {
   });
 }
 
-export async function fetchBufferWithProgress(url, onProgress) {
+export async function fetchBufferWithProgress(url, onProgress, onMetadata) {
   const response = await fetch(url);
   if (!response.ok) throw new Error(`示例地图请求失败（${response.status}）`);
   const total = Number(response.headers.get('content-length')) || 0;
+  onMetadata?.({
+    byteLength: total,
+    modifiedAt: response.headers.get('last-modified') || null,
+    mimeType: response.headers.get('content-type') || 'application/octet-stream',
+    sourceUrl: response.url,
+  });
 
   if (!response.body || !total) {
     const buffer = await response.arrayBuffer();
@@ -561,6 +567,11 @@ export function buildExport({
     map: {
       fileName: mapData?.name || null,
       format: 'ply',
+      byteLength: Math.max(0, Number(mapData?.byteLength) || 0),
+      fileModifiedAt: mapData?.fileModifiedAt || null,
+      mimeType: mapData?.mimeType || 'application/octet-stream',
+      loadedAt: mapData?.loadedAt || null,
+      sourceKind: mapData?.sourceKind || null,
       pointCount: mapData?.pointCount || 0,
       faceCount: mapData?.faceCount || 0,
       bounds: mapData?.bounds || null,

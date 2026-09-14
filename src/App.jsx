@@ -9,6 +9,7 @@ import {
   CircleDot,
   Database,
   FileJson,
+  FileSearch,
   FolderOpen,
   GitBranch,
   Layers2,
@@ -28,6 +29,7 @@ import {
 import HeightRange from './components/HeightRange.jsx';
 import Inspector from './components/Inspector.jsx';
 import Map2DView from './components/Map2DView.jsx';
+import MapDetailsDialog from './components/MapDetailsDialog.jsx';
 import PointCloudViewer from './components/PointCloudViewer.jsx';
 import RobotPicker from './components/RobotPicker.jsx';
 import SpaceMouseControl from './components/SpaceMouseControl.jsx';
@@ -89,6 +91,12 @@ const defaultMotion = {
 
 const waitForPaint = () =>
   new Promise((resolve) => requestAnimationFrame(() => window.setTimeout(resolve, 0)));
+
+const normalizeTimestamp = (value) => {
+  if (!value) return null;
+  const timestamp = typeof value === 'number' ? value : Date.parse(value);
+  return Number.isFinite(timestamp) ? new Date(timestamp).toISOString() : null;
+};
 
 const GEOMETRY_CACHE_VERSION = 1;
 
@@ -167,6 +175,7 @@ function createGeometryCache(
   sourceByteLength,
   sourceHash = null,
   sourceHashKind = 'file',
+  sourceDetails = {},
 ) {
   const positionAttribute = geometry.getAttribute('position');
   const sourcePositions = positionAttribute?.array;
@@ -193,6 +202,10 @@ function createGeometryCache(
     sphere: sphere ? serializeSphere(sphere) : null,
     sourceHash,
     sourceHashKind,
+    fileModifiedAt: normalizeTimestamp(sourceDetails.fileModifiedAt),
+    mimeType: String(sourceDetails.mimeType || 'application/octet-stream'),
+    loadedAt: normalizeTimestamp(sourceDetails.loadedAt),
+    sourceKind: String(sourceDetails.sourceKind || 'unknown'),
   };
 }
 
@@ -271,6 +284,7 @@ function suggestedSlice(positions, bounds) {
 export default function App() {
   const mapInputRef = useRef(null);
   const pathInputRef = useRef(null);
+  const mapDetailsButtonRef = useRef(null);
   const toastTimerRef = useRef(null);
   const view2dRef = useRef(null);
   const view3dRef = useRef(null);
@@ -306,6 +320,7 @@ export default function App() {
   const [meshRenderQuality, setMeshRenderQuality] = useState('auto');
   const [showWaypoints3D, setShowWaypoints3D] = useState(true);
   const [collapsedPanel, setCollapsedPanel] = useState(null);
+  const [mapDetailsOpen, setMapDetailsOpen] = useState(false);
   const [synchronizedFocus, setSynchronizedFocus] = useState(null);
   const [viewResetRequest, setViewResetRequest] = useState(null);
   const [selectedRobot, setSelectedRobot] = useState(null);
@@ -337,6 +352,7 @@ export default function App() {
     detail: '正在确认服务实例并查找上次快照',
   });
   const [toast, setToast] = useState(null);
+  const closeMapDetails = useCallback(() => setMapDetailsOpen(false), []);
 
   latestWorkspaceRef.current = {
     mapData,
@@ -498,6 +514,10 @@ export default function App() {
         geometrySource = 'ply-parse',
         sourceHash = null,
         sourceHashKind = 'file',
+        sourceModifiedAt = null,
+        sourceMimeType = 'application/octet-stream',
+        sourceKind = 'unknown',
+        loadedAt = null,
       } = options;
       if (!geometry.boundingBox) geometry.computeBoundingBox();
       if (!geometry.boundingSphere) geometry.computeBoundingSphere();
@@ -515,6 +535,8 @@ export default function App() {
       const colors = geometry.getAttribute('color')?.array || null;
       const bounds = serializeBounds(geometry.boundingBox);
       const nextSlice = clampSlice(preferredSlice || suggestedSlice(positions, bounds), bounds);
+      const normalizedByteLength = Math.max(0, Number(sourceByteLength) || 0);
+      const normalizedLoadedAt = normalizeTimestamp(loadedAt) || new Date().toISOString();
       const nextMap = {
         mapId,
         name,
@@ -528,6 +550,11 @@ export default function App() {
         geometrySource,
         sourceHash,
         sourceHashKind,
+        byteLength: normalizedByteLength,
+        fileModifiedAt: normalizeTimestamp(sourceModifiedAt),
+        mimeType: String(sourceMimeType || 'application/octet-stream'),
+        loadedAt: normalizedLoadedAt,
+        sourceKind: String(sourceKind || 'unknown'),
         metadataOnly: false,
       };
       setMapData(nextMap);
@@ -579,6 +606,12 @@ export default function App() {
               sourceByteLength,
               sourceHash,
               sourceHashKind,
+              {
+                fileModifiedAt: nextMap.fileModifiedAt,
+                mimeType: nextMap.mimeType,
+                loadedAt: nextMap.loadedAt,
+                sourceKind: nextMap.sourceKind,
+              },
             ),
           );
         } catch (error) {
@@ -654,6 +687,10 @@ export default function App() {
           mapId: record.mapId,
           sourceHash: record.sourceHash || null,
           sourceHashKind: record.sourceHashKind || 'file',
+          sourceModifiedAt: record.fileModifiedAt || null,
+          sourceMimeType: record.mimeType || 'application/octet-stream',
+          sourceKind: record.sourceKind || 'session-cache',
+          loadedAt: record.loadedAt || record.savedAt || null,
         });
       } catch (error) {
         geometry?.dispose?.();
@@ -772,6 +809,12 @@ export default function App() {
                 buffer.byteLength,
                 restoredMap.sourceHash,
                 restoredMap.sourceHashKind,
+                {
+                  fileModifiedAt: restoredMap.fileModifiedAt,
+                  mimeType: restoredMap.mimeType,
+                  loadedAt: restoredMap.loadedAt,
+                  sourceKind: restoredMap.sourceKind,
+                },
               ),
             );
             if (!isCurrent()) return;
@@ -789,6 +832,14 @@ export default function App() {
               geometry: null,
               sourceHash: project.map.sourceHash || null,
               sourceHashKind: project.map.sourceHashKind || 'file',
+              byteLength: Math.max(0, Number(project.map.byteLength) || 0),
+              fileModifiedAt: normalizeTimestamp(
+                project.map.fileModifiedAt || project.map.modifiedAt,
+              ),
+              mimeType: String(project.map.mimeType || 'application/octet-stream'),
+              loadedAt: normalizeTimestamp(project.map.loadedAt),
+              sourceKind: String(project.map.sourceKind || 'project-metadata'),
+              geometrySource: 'project-metadata',
               metadataOnly: true,
             });
             setHeightRange(
@@ -995,10 +1046,18 @@ export default function App() {
       ) return;
       setLoadState({ loading: true, progress: 0, phase: '读取示例地图' });
       try {
-        const buffer = await fetchBufferWithProgress('/xian_map.ply', (progress) =>
-          setLoadState({ loading: true, progress, phase: '读取示例地图' }),
+        let responseMetadata = null;
+        const buffer = await fetchBufferWithProgress(
+          '/xian_map.ply',
+          (progress) => setLoadState({ loading: true, progress, phase: '读取示例地图' }),
+          (metadata) => { responseMetadata = metadata; },
         );
-        await processMapBuffer(buffer, 'xian_map.ply', options);
+        await processMapBuffer(buffer, 'xian_map.ply', {
+          ...options,
+          sourceModifiedAt: options.sourceModifiedAt ?? responseMetadata?.modifiedAt,
+          sourceMimeType: options.sourceMimeType ?? responseMetadata?.mimeType,
+          sourceKind: options.sourceKind || 'example-map',
+        });
       } catch (error) {
         setLoadState({ loading: false, progress: 0, phase: '' });
         notify(error.message || '示例地图加载失败', 'error');
@@ -1024,7 +1083,11 @@ export default function App() {
       const buffer = await readFileWithProgress(file, (progress) =>
         setLoadState({ loading: true, progress, phase: '读取本地地图' }),
       );
-      await processMapBuffer(buffer, file.name);
+      await processMapBuffer(buffer, file.name, {
+        sourceModifiedAt: file.lastModified || null,
+        sourceMimeType: file.type || 'application/octet-stream',
+        sourceKind: 'local-file',
+      });
     } catch (error) {
       setLoadState({ loading: false, progress: 0, phase: '' });
       notify(error.message || '地图加载失败', 'error');
@@ -1102,6 +1165,16 @@ export default function App() {
           positions: null,
           colors: null,
           geometry: null,
+          sourceHash: project.map.sourceHash || null,
+          sourceHashKind: project.map.sourceHashKind || 'file',
+          byteLength: Math.max(0, Number(project.map.byteLength) || 0),
+          fileModifiedAt: normalizeTimestamp(
+            project.map.fileModifiedAt || project.map.modifiedAt,
+          ),
+          mimeType: String(project.map.mimeType || 'application/octet-stream'),
+          loadedAt: normalizeTimestamp(project.map.loadedAt),
+          sourceKind: String(project.map.sourceKind || 'project-metadata'),
+          geometrySource: 'project-metadata',
           metadataOnly: true,
         });
       }
@@ -1553,16 +1626,17 @@ export default function App() {
     [notify, robotLoadState.status, teachingContextMatches, teachingTasks],
   );
 
-  const captureTeachingPoint = useCallback(async () => {
+  const captureTeachingPoint = useCallback(async (options = {}) => {
+    const createParkingPoint = options?.createParkingPoint === true;
     const task = teachingTasks.find((item) => item.id === activeTeachingTaskId);
     if (!task) {
       notify('请先新建或选择一个示教任务', 'warning');
       return;
     }
-    const parkingPoint = task.parkingPoints?.find(
+    const selectedParkingPoint = task.parkingPoints?.find(
       (item) => item.id === activeTeachingParkingPointId,
     );
-    if (!parkingPoint) {
+    if (!selectedParkingPoint && !createParkingPoint) {
       notify('请先新增或选择一个停车点', 'warning');
       return;
     }
@@ -1574,6 +1648,22 @@ export default function App() {
     const pose = normalizeRobotPose(robotPose);
     const joints = normalizeRobotJointValues(robotJointValues);
     const timestamp = new Date().toISOString();
+    const parkingPoints = task.parkingPoints || [];
+    const parkingPoint = createParkingPoint
+      ? {
+          id: createId('parking-point'),
+          name: `停车点 P${String(parkingPoints.length + 1).padStart(2, '0')}`,
+          sequence: parkingPoints.length + 1,
+          createdAt: timestamp,
+          updatedAt: timestamp,
+          mapPose: {
+            frameId: 'map',
+            position: { ...pose.position },
+            rpy: { ...pose.rpy },
+          },
+          poses: [],
+        }
+      : selectedParkingPoint;
     const expectsZividCapture = Number(robotLoadState.zividCount) > 0;
     let cameraCapture = null;
     if (expectsZividCapture) {
@@ -1625,21 +1715,27 @@ export default function App() {
       item.id === task.id
         ? {
             ...item,
-            parkingPoints: item.parkingPoints.map((candidate) => (
-              candidate.id === parkingPoint.id
-                ? {
-                    ...candidate,
-                    poses: [...candidate.poses, point],
-                    updatedAt: timestamp,
-                  }
-                : candidate
-            )),
+            parkingPoints: createParkingPoint
+              ? [
+                  ...(item.parkingPoints || []),
+                  { ...parkingPoint, poses: [point], updatedAt: timestamp },
+                ]
+              : item.parkingPoints.map((candidate) => (
+                  candidate.id === parkingPoint.id
+                    ? {
+                        ...candidate,
+                        poses: [...candidate.poses, point],
+                        updatedAt: timestamp,
+                      }
+                    : candidate
+                )),
             updatedAt: timestamp,
           }
         : item
     )));
+    if (createParkingPoint) setActiveTeachingParkingPointId(parkingPoint.id);
     notify(
-      `${parkingPoint.name} / ${point.name} 已示教 · ${point.fullBodyJoints.count} 个全身关节${cameraCapture ? ' + 双目 RGB/XYZ' : ''}`,
+      `${parkingPoint.name} / ${point.name} ${createParkingPoint ? '已新建并示教' : '已示教'} · ${point.fullBodyJoints.count} 个全身关节${cameraCapture ? ' + 双目 RGB/XYZ' : ''}`,
       'success',
     );
     setTeachingCaptureState({
@@ -2247,6 +2343,18 @@ export default function App() {
               </div>
               <button
                 type="button"
+                className="panel-details-button"
+                ref={mapDetailsButtonRef}
+                aria-label="查看地图详细信息"
+                disabled={!mapData?.bounds}
+                onClick={() => setMapDetailsOpen(true)}
+                title={mapData?.bounds ? '查看当前地图文件与空间范围' : '请先加载地图'}
+              >
+                <FileSearch size={13} />
+                <span>地图详情</span>
+              </button>
+              <button
+                type="button"
                 className="panel-collapse-button"
                 aria-label={collapsedPanel === '3d' ? '展开3D窗口' : '折叠3D窗口'}
                 aria-expanded={collapsedPanel !== '3d'}
@@ -2483,6 +2591,13 @@ export default function App() {
           <span>{toast.kind === 'error' ? <X size={14} /> : <Check size={14} />}</span>
           {toast.message}
         </div>
+      )}
+      {appPage === APP_PAGE_WORKBENCH && mapDetailsOpen && mapData?.bounds && (
+        <MapDetailsDialog
+          mapData={mapData}
+          onClose={closeMapDetails}
+          returnFocusRef={mapDetailsButtonRef}
+        />
       )}
     </div>
     {appPage === APP_PAGE_TEACHING_DATA && (

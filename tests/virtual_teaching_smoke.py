@@ -193,18 +193,39 @@ def run():
         page.wait_for_timeout(160)
         second_pose = read_pose(canvas)
         assert abs(second_pose["x"] - first_pose["x"]) > 0.04
-        page.get_by_role("button", name="新增停车点", exact=True).click()
+        record_pose = page.get_by_role("button", name="记录当前机械臂姿态")
+        record_pose.click()
+        drift_dialog = page.get_by_role("dialog", name="底盘已移动")
+        drift_dialog.wait_for()
+        assert drift_dialog.get_by_text("底盘已移动，是否新建停车点？", exact=True).is_visible()
+        assert float(drift_dialog.get_attribute("data-planar-distance")) >= 0.05
+        assert float(drift_dialog.get_attribute("data-distance-threshold")) == 0.05
+        assert float(drift_dialog.get_attribute("data-yaw-threshold")) == 5
+        assert teaching_panel.get_attribute("data-parking-point-count") == "1"
+        assert page.locator(".teaching-data-handoff").get_attribute(
+            "data-teaching-point-count"
+        ) == "2"
+
+        page.keyboard.press("Escape")
+        drift_dialog.wait_for(state="detached")
+        assert teaching_panel.get_attribute("data-parking-point-count") == "1"
+        record_pose.click()
+        drift_dialog.wait_for()
+        page.screenshot(path="/tmp/atlas-teaching-parking-drift.png", full_page=True)
+        drift_dialog.get_by_role(
+            "button", name="新建停车点并记录当前姿态"
+        ).click()
         page.wait_for_function(
             "document.querySelector('[aria-label=\"虚拟示教\"]')?.dataset.parkingPointCount === '2'"
         )
+        page.wait_for_function(
+            "document.querySelector('.teaching-data-handoff')?.dataset.teachingPointCount === '3'"
+        )
+        drift_dialog.wait_for(state="detached")
         second_parking_node = page.get_by_label("示教任务与停车点树", exact=True).get_by_role(
             "treeitem", name="选择当前停车点 停车点 P02"
         )
         assert second_parking_node.get_attribute("aria-current") == "true"
-        page.get_by_role("button", name="记录当前机械臂姿态").click()
-        page.wait_for_function(
-            "document.querySelector('.teaching-data-handoff')?.dataset.teachingPointCount === '3'"
-        )
         assert page.locator(".teaching-data-handoff").get_attribute("data-parking-point-count") == "2"
 
         page.get_by_role("button", name="打开数据页", exact=False).click()

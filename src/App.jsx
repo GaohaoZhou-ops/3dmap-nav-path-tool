@@ -2492,6 +2492,8 @@ export default function App() {
           activeTaskId={activeTeachingTaskId}
           activeParkingPointId={activeTeachingParkingPointId}
           mapData={mapData}
+          heightRange={heightRange}
+          pointColorMode={pointColorMode}
           robot={selectedRobot}
           robotLoadState={robotLoadState}
           robotJointValues={robotJointValues}

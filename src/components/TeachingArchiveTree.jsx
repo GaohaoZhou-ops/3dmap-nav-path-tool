@@ -17,6 +17,7 @@ import {
   Trash2,
   X,
 } from 'lucide-react';
+import TeachingParkingMap from './TeachingParkingMap.jsx';
 
 const formatCapturedAt = (value) => {
   const date = new Date(value);
@@ -85,6 +86,8 @@ export default function TeachingArchiveTree({
   activeTaskId,
   activeParkingPointId,
   mapData,
+  heightRange,
+  colorMode,
   robot,
   robotLoadState,
   onSelectTask,
@@ -466,7 +469,7 @@ export default function TeachingArchiveTree({
                   <small>{selection?.type === 'task' ? 'TASK' : selection?.type === 'parking' ? 'PARKING STOP' : 'ARM POSE'}</small>
                 </header>
 
-                <div className="teaching-tree-detail__body">
+                <div className={`teaching-tree-detail__body is-${selection?.type || 'empty'}`}>
                   <label className="teaching-tree-name-field">
                     <span>{selection?.type === 'task' ? '任务名称' : selection?.type === 'parking' ? '停车点名称' : '姿态名称'}</span>
                     <input
@@ -519,28 +522,36 @@ export default function TeachingArchiveTree({
                           <div key={label}><span>{label}</span><strong>{formatValue(value)}</strong><small>{unit}</small></div>
                         ))}
                       </div>
-                      <p>{selectedParkingPoint.poses?.length || 0} 组机械臂姿态 · MAP 绝对位姿</p>
-                      <div className="teaching-tree-actions">
-                        <button
-                          type="button"
-                          disabled={!contextMatches || !robotReady}
-                          onClick={() => onApplyParkingPoint(selectedTask.id, selectedParkingPoint.id)}
-                        >
-                          <Play size={11} /> 定位到停车点
-                        </button>
-                        <button
-                          type="button"
-                          className="teaching-tree-danger"
-                          aria-label="删除当前停车点"
-                          onClick={() => {
-                            if (window.confirm(`删除 ${selectedParkingPoint.name} 及其 ${selectedParkingPoint.poses?.length || 0} 组机械臂姿态？`)) {
-                              onDeleteParkingPoint(selectedTask.id, selectedParkingPoint.id);
-                            }
-                          }}
-                        >
-                          <Trash2 size={11} /> 删除停车点
-                        </button>
+                      <div className="teaching-tree-parking-toolbar">
+                        <p>{selectedParkingPoint.poses?.length || 0} 组机械臂姿态 · MAP 绝对位姿</p>
+                        <div className="teaching-tree-actions">
+                          <button
+                            type="button"
+                            disabled={!contextMatches || !robotReady}
+                            onClick={() => onApplyParkingPoint(selectedTask.id, selectedParkingPoint.id)}
+                          >
+                            <Play size={11} /> 定位到停车点
+                          </button>
+                          <button
+                            type="button"
+                            className="teaching-tree-danger"
+                            aria-label="删除当前停车点"
+                            onClick={() => {
+                              if (window.confirm(`删除 ${selectedParkingPoint.name} 及其 ${selectedParkingPoint.poses?.length || 0} 组机械臂姿态？`)) {
+                                onDeleteParkingPoint(selectedTask.id, selectedParkingPoint.id);
+                              }
+                            }}
+                          >
+                            <Trash2 size={11} /> 删除停车点
+                          </button>
+                        </div>
                       </div>
+                      <TeachingParkingMap
+                        mapData={mapData}
+                        heightRange={heightRange}
+                        colorMode={colorMode}
+                        parkingPoint={selectedParkingPoint}
+                      />
                     </div>
                   )}
 

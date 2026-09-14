@@ -24,6 +24,8 @@ export default function TeachingDataPage({
   activeTaskId,
   activeParkingPointId,
   mapData,
+  heightRange,
+  pointColorMode,
   robot,
   robotLoadState,
   robotJointValues,
@@ -120,7 +122,6 @@ export default function TeachingDataPage({
             <div>
               <span className="eyebrow">TEACHING DATA / OPERATIONS ARCHIVE</span>
               <h1>示教数据中心</h1>
-              <p>按“任务 → 停车点 → 机械臂姿态”管理全身关节与双目视觉快照；实时采集留在主工作台。</p>
             </div>
             <dl aria-label="示教数据统计">
               <div><dt>TASKS</dt><dd>{String(tasks.length).padStart(2, '0')}</dd><span>示教任务</span></div>
@@ -156,10 +157,6 @@ export default function TeachingDataPage({
                   <dd>{formatBytes(archiveBytes)}</dd>
                 </div>
               </dl>
-              <div className="teaching-data-page__policy">
-                <CircleDot size={11} />
-                <p><strong>采集与管理分离</strong><span>新建示教任务、打开已有任务和记录机器人当前姿态仍位于主工作台的“示教 / 相机”页。</span></p>
-              </div>
             </aside>
 
             <section className="teaching-data-page__archive" aria-label="示教任务管理工作区">
@@ -168,6 +165,8 @@ export default function TeachingDataPage({
                 activeTaskId={activeTaskId}
                 activeParkingPointId={activeParkingPointId}
                 mapData={mapData}
+                heightRange={heightRange}
+                colorMode={pointColorMode}
                 robot={robot}
                 robotLoadState={robotLoadState}
                 onSelectTask={onSelectTask}

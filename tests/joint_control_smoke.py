@@ -133,7 +133,8 @@ def run():
         assert page.get_by_role("tab", name="相机反算", exact=True).count() == 0
         assert zivid_panel.get_attribute("data-camera-teaching-activation") == "automatic"
         assert zivid_panel.get_attribute("data-camera-teaching-mode") == "active"
-        assert zivid_panel.get_by_label("相机反算已激活", exact=True).is_visible()
+        assert page.get_by_text("相机反算已激活", exact=True).count() == 0
+        assert page.locator(".zivid-camera-inverse-badge").count() == 0
         assert floating_window.is_visible()
         assert panel.is_visible()
         assert page.locator(".three-canvas").is_visible()

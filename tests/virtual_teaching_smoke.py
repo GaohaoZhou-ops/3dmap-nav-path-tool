@@ -75,8 +75,11 @@ def run():
         assert teaching_panel.get_attribute("data-teaching-context-match") == "true"
         assert teaching_panel.get_attribute("data-camera-inverse-mode") == "automatic"
         assert teaching_panel.get_attribute("data-parking-point-count") == "0"
-        assert page.get_by_label("选择当前停车点").input_value() == ""
-        assert page.get_by_label("打开已有示教任务").input_value()
+        capture_tree_card = page.get_by_label("示教任务与停车点树", exact=True)
+        assert capture_tree_card.is_visible()
+        assert capture_tree_card.get_by_role("tree", name="虚拟示教任务停车点层级").is_visible()
+        assert page.get_by_role("button", name="打开示教任务 双臂装配演示（新建）").is_visible()
+        assert capture_tree_card.locator(".teaching-capture-tree__parking").count() == 0
         assert page.locator(".teaching-context").count() == 0
         assert page.get_by_role("tab", name="相机反算", exact=True).count() == 0
         assert page.get_by_label("自碰撞保护", exact=True).count() == 0
@@ -86,7 +89,11 @@ def run():
         page.wait_for_function(
             "document.querySelector('[aria-label=\"虚拟示教\"]')?.dataset.parkingPointCount === '1'"
         )
-        assert page.get_by_label("选择当前停车点").input_value()
+        first_parking_node = capture_tree_card.get_by_role(
+            "treeitem", name="选择当前停车点 停车点 P01"
+        )
+        assert first_parking_node.is_visible()
+        assert first_parking_node.get_attribute("aria-current") == "true"
 
         robot_button = page.get_by_role("button", name="定位机器人模型")
         robot_button.click()
@@ -108,7 +115,7 @@ def run():
             "document.querySelector('.teaching-data-handoff')?.dataset.teachingPointCount === '1'"
         )
         assert page.get_by_role("button", name="新建示教任务", exact=True).is_visible()
-        assert page.get_by_label("打开已有示教任务", exact=True).is_visible()
+        assert page.get_by_label("示教任务与停车点树", exact=True).is_visible()
         assert page.get_by_role("button", name="新增停车点", exact=True).is_visible()
         assert page.get_by_role("button", name="记录当前机械臂姿态", exact=True).is_visible()
         assert page.get_by_text("当前已归档姿态", exact=True).is_visible()
@@ -121,11 +128,37 @@ def run():
         data_panel = page.locator('section[aria-label="示教数据管理"]')
         assert data_panel.get_attribute("data-teaching-view") == "data"
         assert page.get_by_role("tree", name="任务停车点与机械臂姿态").is_visible()
+        assert page.get_by_text(
+            "按“任务 → 停车点 → 机械臂姿态”管理全身关节与双目视觉快照；实时采集留在主工作台。",
+            exact=True,
+        ).count() == 0
+        assert page.get_by_text("采集与管理分离", exact=True).count() == 0
         page.get_by_role("button", name="选择示教任务 双臂装配演示（新建）").click()
         task_name = page.get_by_role("textbox", name="示教任务名称")
         assert task_name.input_value() == "双臂装配演示（新建）"
         task_name.fill("双臂装配演示")
         task_name.press("Enter")
+        page.get_by_role("button", name="选择停车点 停车点 P01").click()
+        parking_map = page.get_by_label("停车点二维地图位置", exact=True)
+        parking_map.wait_for()
+        assert parking_map.get_attribute("data-map-ready") == "true"
+        vector_layer = parking_map.get_by_label("二维矢量点云截面", exact=True)
+        vector_layer.wait_for()
+        assert int(vector_layer.get_attribute("data-source-point-count")) > 0
+        parking_values = page.get_by_label("停车点地图位姿", exact=True)
+        assert parking_values.locator(":scope > div").count() == 6
+        assert len(parking_values.evaluate("node => getComputedStyle(node).gridTemplateColumns.split(' ')")) == 6
+        map_view = parking_map.locator(".map2d-view")
+        page.wait_for_function(
+            "node => node.dataset.synchronizedFocusState === 'settled'",
+            arg=map_view.element_handle(),
+        )
+        initial_map_scale = float(map_view.get_attribute("data-view-scale"))
+        parking_map.get_by_role("button", name="放大", exact=True).click()
+        page.wait_for_function(
+            "scale => Number(document.querySelector('.teaching-parking-map .map2d-view')?.dataset.viewScale) > scale",
+            arg=initial_map_scale,
+        )
         page.get_by_role("button", name="查看机械臂姿态 A01").click()
         first_row = page.locator(".teaching-point-row").first
         first_row.wait_for()
@@ -164,7 +197,10 @@ def run():
         page.wait_for_function(
             "document.querySelector('[aria-label=\"虚拟示教\"]')?.dataset.parkingPointCount === '2'"
         )
-        assert "P02" in page.get_by_label("选择当前停车点").locator("option:checked").inner_text()
+        second_parking_node = page.get_by_label("示教任务与停车点树", exact=True).get_by_role(
+            "treeitem", name="选择当前停车点 停车点 P02"
+        )
+        assert second_parking_node.get_attribute("aria-current") == "true"
         page.get_by_role("button", name="记录当前机械臂姿态").click()
         page.wait_for_function(
             "document.querySelector('.teaching-data-handoff')?.dataset.teachingPointCount === '3'"

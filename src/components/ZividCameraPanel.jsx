@@ -2845,19 +2845,6 @@ export default function ZividCameraPanel({
           </span>
           <strong>{activeSide === 'left' ? 'CAM-L' : 'CAM-R'}</strong>
         </div>
-        <div
-          className={`zivid-camera-inverse-badge ${cameraTeachingEnabled ? 'is-active' : 'is-waiting'}`}
-          role="status"
-          aria-live="polite"
-          aria-label={cameraTeachingEnabled ? '相机反算已激活' : '相机反算等待示教任务'}
-        >
-          <span><Rotate3D size={11} /></span>
-          <div>
-            <small>OPTICAL IK · AUTO</small>
-            <strong>{cameraTeachingEnabled ? '相机反算已激活' : '相机反算等待任务'}</strong>
-          </div>
-          <i />
-        </div>
         <div className="zivid-camera-frame-meta bottom">
           <span>{poseLabel(activePose)}</span>
           <strong>{zoom.toFixed(1)}×</strong>

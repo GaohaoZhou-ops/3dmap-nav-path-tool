@@ -209,11 +209,15 @@ def run():
 
         main_canvas = page.locator(".three-canvas")
         panel = page.get_by_label("Zivid 2 M70 相机视图", exact=True)
+        assert panel.get_by_text("相机反算已激活", exact=True).count() == 0
+        assert panel.locator(".zivid-camera-inverse-badge").count() == 0
         assert page.get_by_label("相机视角反算示教", exact=True).count() == 0
         panel.get_by_role("button", name="放大 Zivid 相机视图").click()
         dialog = page.get_by_role("dialog", name="Zivid 2 M70 相机大图")
         dialog.wait_for()
         panel = dialog.get_by_label("Zivid 2 M70 相机视图", exact=True)
+        assert dialog.get_by_text("相机反算已激活", exact=True).count() == 0
+        assert dialog.locator(".zivid-camera-inverse-badge").count() == 0
         camera_teach = dialog.get_by_label("相机视角反算示教", exact=True)
         camera_teach.wait_for()
         assert camera_teach.get_attribute("data-camera-ready") == "true"

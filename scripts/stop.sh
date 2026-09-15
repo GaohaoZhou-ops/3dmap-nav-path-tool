@@ -10,7 +10,7 @@ if [[ ! -f "$PID_FILE" ]]; then
   exit 0
 fi
 
-read -r SERVICE_PID APP_PORT < "$PID_FILE" || true
+read -r SERVICE_PID APP_PORT BIND_HOST < "$PID_FILE" || true
 if [[ -z "${SERVICE_PID:-}" ]] || ! kill -0 "$SERVICE_PID" 2>/dev/null; then
   rm -f "$PID_FILE"
   echo "服务未运行，已清理过期状态"

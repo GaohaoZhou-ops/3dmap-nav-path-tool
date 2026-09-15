@@ -9,15 +9,16 @@ npm install
 ./scripts/start.sh
 ```
 
-默认访问地址为 `http://127.0.0.1:21990`。三个服务脚本分别是：
+服务默认监听所有网卡的 `21990` 端口。本机可使用 `http://127.0.0.1:21990`；同一局域网内的其他设备使用 `http://<运行服务机器的局域网IP>:21990`。启动和状态脚本会直接列出检测到的可访问地址。三个服务脚本分别是：
 
 ```bash
 ./scripts/status.sh
 ./scripts/start.sh
+./scripts/restart.sh
 ./scripts/stop.sh
 ```
 
-也可以通过环境变量 `MAP_STUDIO_PORT` 或脚本的第一个参数覆盖端口，例如 `./scripts/start.sh 22000`。
+`restart.sh` 会先安全终止已有服务，再使用相同端口重新启动；由于工作现场按服务会话隔离，重启会按设计开启一个全新会话。也可以通过环境变量 `MAP_STUDIO_PORT` 或启动/重启脚本的第一个参数覆盖端口，例如 `./scripts/restart.sh 22000`；`MAP_STUDIO_HOST` 可覆盖监听地址。请只在可信网络中开放该服务，并在系统防火墙弹窗中允许 Node.js 接收入站连接。
 
 ## 使用流程
 

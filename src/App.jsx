@@ -2995,9 +2995,9 @@ export default function App() {
           >
             <RotateCcw size={15} /> 重置视角
           </button>
-          <div className="service-pill" title="本地服务默认端口">
+          <div className="service-pill" title="局域网服务默认端口">
             <Server size={13} />
-            <span>LOCAL</span>
+            <span>LAN</span>
             <strong>:21990</strong>
           </div>
         </div>

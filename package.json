@@ -9,6 +9,7 @@
     "preview": "vite preview",
     "service:start": "./scripts/start.sh",
     "service:status": "./scripts/status.sh",
+    "service:restart": "./scripts/restart.sh",
     "service:stop": "./scripts/stop.sh"
   },
   "dependencies": {

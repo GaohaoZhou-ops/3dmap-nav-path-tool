@@ -4,9 +4,12 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 APP_PORT="${1:-${MAP_STUDIO_PORT:-21990}}"
+BIND_HOST="${MAP_STUDIO_HOST:-0.0.0.0}"
 PID_FILE="$PROJECT_DIR/.atlas-route.pid"
 LOG_FILE="$PROJECT_DIR/.atlas-route.log"
 VITE_BIN="$PROJECT_DIR/node_modules/.bin/vite"
+
+source "$SCRIPT_DIR/network-info.sh"
 
 if [[ ! "$APP_PORT" =~ ^[0-9]+$ ]] || (( APP_PORT < 1 || APP_PORT > 65535 )); then
   echo "无效端口: $APP_PORT" >&2
@@ -19,11 +22,17 @@ if [[ ! -x "$VITE_BIN" ]]; then
 fi
 
 if [[ -f "$PID_FILE" ]]; then
-  read -r EXISTING_PID EXISTING_PORT < "$PID_FILE" || true
+  read -r EXISTING_PID EXISTING_PORT EXISTING_HOST < "$PID_FILE" || true
   if [[ -n "${EXISTING_PID:-}" ]] && kill -0 "$EXISTING_PID" 2>/dev/null; then
     EXISTING_COMMAND="$(ps -p "$EXISTING_PID" -o command= 2>/dev/null || true)"
     if [[ "$EXISTING_COMMAND" == *"vite"* ]]; then
-      echo "服务已运行: http://127.0.0.1:${EXISTING_PORT:-$APP_PORT} (PID $EXISTING_PID)"
+      if atlas_command_is_loopback_only "$EXISTING_COMMAND" "${EXISTING_HOST:-}"; then
+        echo "服务正在运行，但当前旧进程只允许本机访问 (PID $EXISTING_PID)"
+        echo "请在不再需要保留当前服务会话时执行: ./scripts/stop.sh && ./scripts/start.sh"
+        exit 4
+      fi
+      echo "服务已运行并允许网络访问 (PID $EXISTING_PID)"
+      atlas_print_access_urls "${EXISTING_PORT:-$APP_PORT}" "${EXISTING_HOST:-0.0.0.0}"
       exit 0
     fi
   fi
@@ -35,13 +44,14 @@ if command -v lsof >/dev/null 2>&1 && lsof -nP -iTCP:"$APP_PORT" -sTCP:LISTEN >/
 fi
 
 cd "$PROJECT_DIR"
-nohup "$VITE_BIN" --host 127.0.0.1 --port "$APP_PORT" --strictPort >"$LOG_FILE" 2>&1 &
+nohup "$VITE_BIN" --host "$BIND_HOST" --port "$APP_PORT" --strictPort >"$LOG_FILE" 2>&1 &
 SERVICE_PID=$!
-printf '%s %s\n' "$SERVICE_PID" "$APP_PORT" > "$PID_FILE"
+printf '%s %s %s\n' "$SERVICE_PID" "$APP_PORT" "$BIND_HOST" > "$PID_FILE"
 
 for _ in {1..40}; do
   if curl -fsS "http://127.0.0.1:$APP_PORT" >/dev/null 2>&1; then
-    echo "服务已启动: http://127.0.0.1:$APP_PORT (PID $SERVICE_PID)"
+    echo "服务已启动，监听地址 ${BIND_HOST}:${APP_PORT} (PID $SERVICE_PID)"
+    atlas_print_access_urls "$APP_PORT" "$BIND_HOST"
     echo "日志文件: $LOG_FILE"
     exit 0
   fi

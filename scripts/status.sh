@@ -6,12 +6,14 @@ PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 PID_FILE="$PROJECT_DIR/.atlas-route.pid"
 DEFAULT_PORT="${1:-${MAP_STUDIO_PORT:-21990}}"
 
+source "$SCRIPT_DIR/network-info.sh"
+
 if [[ ! -f "$PID_FILE" ]]; then
-  echo "服务未运行（默认地址 http://127.0.0.1:${DEFAULT_PORT}）"
+  echo "服务未运行（默认端口 ${DEFAULT_PORT}，启动后允许局域网访问）"
   exit 3
 fi
 
-read -r SERVICE_PID APP_PORT < "$PID_FILE" || true
+read -r SERVICE_PID APP_PORT BIND_HOST < "$PID_FILE" || true
 if [[ -z "${SERVICE_PID:-}" ]] || ! kill -0 "$SERVICE_PID" 2>/dev/null; then
   echo "服务未运行（发现过期 PID 文件）"
   exit 3
@@ -24,7 +26,13 @@ if [[ "$SERVICE_COMMAND" != *"vite"* ]]; then
 fi
 
 if curl -fsS "http://127.0.0.1:${APP_PORT:-$DEFAULT_PORT}" >/dev/null 2>&1; then
-  echo "服务运行正常: http://127.0.0.1:${APP_PORT:-$DEFAULT_PORT} (PID $SERVICE_PID)"
+  if atlas_command_is_loopback_only "$SERVICE_COMMAND" "${BIND_HOST:-}"; then
+    echo "服务运行正常，但当前进程只监听本机回环地址 (PID $SERVICE_PID)"
+    echo "要允许其他设备访问，请在合适时机停止并重新启动服务"
+    exit 0
+  fi
+  echo "服务运行正常并允许网络访问 (PID $SERVICE_PID)"
+  atlas_print_access_urls "${APP_PORT:-$DEFAULT_PORT}" "${BIND_HOST:-0.0.0.0}"
   exit 0
 fi
 

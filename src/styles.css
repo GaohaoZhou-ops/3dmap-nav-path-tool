@@ -4774,14 +4774,14 @@ input[type="number"]::-webkit-inner-spin-button {
 
 .teaching-tree-toolbar strong {
   color: #c9d5d3;
-  font-size: 13px;
+  font-size: 14px;
   font-weight: 560;
 }
 
 .teaching-tree-toolbar small,
 .teaching-tree-toolbar > span {
   color: #53696b;
-  font: 9px "SFMono-Regular", Menlo, monospace;
+  font: 10px "SFMono-Regular", Menlo, monospace;
   letter-spacing: 0.07em;
 }
 
@@ -4797,7 +4797,7 @@ input[type="number"]::-webkit-inner-spin-button {
   border: 1px solid rgba(137, 177, 179, 0.17);
   color: #8fa4a2;
   background: transparent;
-  font-size: 10px;
+  font-size: 11px;
   cursor: pointer;
 }
 
@@ -4833,12 +4833,12 @@ input[type="number"]::-webkit-inner-spin-button {
   padding: 0 10px;
   border-bottom: 1px solid rgba(137, 177, 179, 0.09);
   color: #758b8c;
-  font-size: 11px;
+  font-size: 12px;
 }
 
 .teaching-tree-pane > header small {
   color: #3e5355;
-  font: 9px "SFMono-Regular", Menlo, monospace;
+  font: 10px "SFMono-Regular", Menlo, monospace;
 }
 
 .teaching-tree {
@@ -4863,7 +4863,7 @@ input[type="number"]::-webkit-inner-spin-button {
   grid-template-columns: 24px minmax(0, 1fr);
   align-items: center;
   min-width: 0;
-  min-height: 42px;
+  min-height: 44px;
   border-left: 2px solid transparent;
 }
 
@@ -4908,7 +4908,7 @@ input[type="number"]::-webkit-inner-spin-button {
   align-items: center;
   gap: 6px;
   min-width: 0;
-  height: 40px;
+  height: 42px;
   padding: 0 9px 0 0;
   border: 0;
   color: #849997;
@@ -4925,7 +4925,7 @@ input[type="number"]::-webkit-inner-spin-button {
 .teaching-tree-label > span {
   overflow: hidden;
   color: #9eb0ae;
-  font-size: 11px;
+  font-size: 12px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -4936,7 +4936,7 @@ input[type="number"]::-webkit-inner-spin-button {
 
 .teaching-tree-label > small {
   color: #465b5d;
-  font: 9px "SFMono-Regular", Menlo, monospace;
+  font: 10px "SFMono-Regular", Menlo, monospace;
   white-space: nowrap;
 }
 
@@ -4960,7 +4960,7 @@ input[type="number"]::-webkit-inner-spin-button {
   min-height: 28px;
   padding: 9px 10px 7px 24px;
   color: #3e5152;
-  font-size: 10px;
+  font-size: 11px;
 }
 
 .teaching-tree-empty {
@@ -4975,14 +4975,14 @@ input[type="number"]::-webkit-inner-spin-button {
 .teaching-tree-empty strong {
   margin-top: 9px;
   color: #778b8a;
-  font-size: 12px;
+  font-size: 13px;
   font-weight: 550;
 }
 
 .teaching-tree-empty span {
   max-width: 190px;
   margin-top: 5px;
-  font-size: 10px;
+  font-size: 11px;
   line-height: 1.55;
 }
 
@@ -5010,7 +5010,7 @@ input[type="number"]::-webkit-inner-spin-button {
   gap: 4px;
   min-width: 0;
   color: #5f7475;
-  font-size: 10px;
+  font-size: 11px;
 }
 
 .teaching-tree-breadcrumb span,
@@ -5028,7 +5028,7 @@ input[type="number"]::-webkit-inner-spin-button {
 .teaching-tree-detail__header > small {
   flex: 0 0 auto;
   color: #456164;
-  font: 9px "SFMono-Regular", Menlo, monospace;
+  font: 10px "SFMono-Regular", Menlo, monospace;
   letter-spacing: 0.08em;
 }
 
@@ -5049,7 +5049,7 @@ input[type="number"]::-webkit-inner-spin-button {
   gap: 8px;
   min-height: 300px;
   color: #425657;
-  font-size: 11px;
+  font-size: 12px;
 }
 
 .teaching-tree-name-field {
@@ -5062,7 +5062,7 @@ input[type="number"]::-webkit-inner-spin-button {
 
 .teaching-tree-name-field > span {
   color: #687d7d;
-  font-size: 11px;
+  font-size: 12px;
 }
 
 .teaching-tree-name-field input {
@@ -5074,7 +5074,7 @@ input[type="number"]::-webkit-inner-spin-button {
   outline: none;
   color: #c8d5d2;
   background: #091419;
-  font-size: 12px;
+  font-size: 13px;
 }
 
 .teaching-tree-name-field input:focus {
@@ -5106,7 +5106,7 @@ input[type="number"]::-webkit-inner-spin-button {
 .teaching-tree-task-detail dl > div {
   display: grid;
   grid-template-columns: 88px minmax(0, 1fr);
-  min-height: 33px;
+  min-height: 35px;
   border-bottom: 1px solid rgba(137, 177, 179, 0.08);
 }
 
@@ -5116,7 +5116,7 @@ input[type="number"]::-webkit-inner-spin-button {
   align-items: center;
   margin: 0;
   padding: 0 7px;
-  font-size: 10px;
+  font-size: 11px;
 }
 
 .teaching-tree-task-detail dt { color: #526667; }
@@ -5142,18 +5142,18 @@ input[type="number"]::-webkit-inner-spin-button {
 
 .teaching-tree-pose-values span {
   color: #506668;
-  font: 9px "SFMono-Regular", Menlo, monospace;
+  font: 10px "SFMono-Regular", Menlo, monospace;
 }
 
 .teaching-tree-pose-values strong {
   color: #adc0bd;
-  font: 11px "SFMono-Regular", Menlo, monospace;
+  font: 12px "SFMono-Regular", Menlo, monospace;
   font-weight: 520;
 }
 
 .teaching-tree-pose-values small {
   color: #465b5c;
-  font: 9px "SFMono-Regular", Menlo, monospace;
+  font: 10px "SFMono-Regular", Menlo, monospace;
 }
 
 .teaching-tree-parking-detail > .teaching-tree-pose-values {
@@ -5175,7 +5175,7 @@ input[type="number"]::-webkit-inner-spin-button {
 .teaching-tree-parking-toolbar > p {
   margin: 0;
   color: #536869;
-  font-size: 10px;
+  font-size: 11px;
 }
 
 .teaching-tree-parking-toolbar > .teaching-tree-actions {
@@ -5194,12 +5194,12 @@ input[type="number"]::-webkit-inner-spin-button {
 
 .teaching-tree-pose-meta span {
   color: #536869;
-  font-size: 10px;
+  font-size: 11px;
 }
 
 .teaching-tree-pose-meta strong {
   color: #93a8a5;
-  font: 10px "SFMono-Regular", Menlo, monospace;
+  font: 11px "SFMono-Regular", Menlo, monospace;
   font-weight: 520;
 }
 
@@ -5249,12 +5249,12 @@ input[type="number"]::-webkit-inner-spin-button {
   align-items: center;
   justify-content: center;
   gap: 5px;
-  height: 31px;
+  height: 33px;
   padding: 0 10px;
   border: 1px solid rgba(94, 229, 154, 0.2);
   color: #80b795;
   background: transparent;
-  font-size: 10px;
+  font-size: 11px;
   cursor: pointer;
 }
 
@@ -5629,8 +5629,8 @@ input[type="number"]::-webkit-inner-spin-button {
 }
 
 .teaching-parking-map > header > div { color: #67b3b8; }
-.teaching-parking-map > header strong { color: #a9c2bf; font-size: 11px; font-weight: 570; }
-.teaching-parking-map > header > span { color: #526d6d; font-size: 9px; }
+.teaching-parking-map > header strong { color: #a9c2bf; font-size: 12px; font-weight: 570; }
+.teaching-parking-map > header > span { color: #526d6d; font-size: 10px; }
 
 .teaching-parking-map__viewport {
   position: relative;
@@ -5664,7 +5664,7 @@ input[type="number"]::-webkit-inner-spin-button {
   gap: 8px;
   height: 100%;
   color: #516c6c;
-  font-size: 10px;
+  font-size: 11px;
 }
 
 .teaching-parking-map > footer {
@@ -5676,7 +5676,7 @@ input[type="number"]::-webkit-inner-spin-button {
   border-top: 1px solid rgba(137, 177, 179, 0.1);
   color: #648080;
   background: #071216;
-  font: 9px "SFMono-Regular", Menlo, monospace;
+  font: 10px "SFMono-Regular", Menlo, monospace;
 }
 
 .teaching-parking-map > footer small {
@@ -5686,7 +5686,7 @@ input[type="number"]::-webkit-inner-spin-button {
 
 .teaching-archive-tree .teaching-vision-capture > header strong,
 .teaching-archive-tree .teaching-joint-heading > span {
-  font-size: 11px;
+  font-size: 12px;
 }
 
 .teaching-archive-tree .teaching-vision-capture > header small,
@@ -5694,7 +5694,7 @@ input[type="number"]::-webkit-inner-spin-button {
 .teaching-archive-tree .teaching-joint-heading > small,
 .teaching-archive-tree .teaching-joint-list span,
 .teaching-archive-tree .teaching-joint-list strong {
-  font-size: 9px;
+  font-size: 10px;
 }
 
 @media (max-width: 1100px) {
@@ -6398,6 +6398,7 @@ input[type="number"]::-webkit-inner-spin-button {
   box-shadow:
     0 30px 110px rgba(0, 0, 0, 0.68),
     inset 0 0 0 1px rgba(255, 255, 255, 0.018);
+  font-size: 11px;
   animation: parking-merge-modal-in 180ms ease-out both;
 }
 
@@ -6435,13 +6436,13 @@ input[type="number"]::-webkit-inner-spin-button {
   display: block;
   margin-bottom: 3px;
   color: #746ca3;
-  font: 7px "SFMono-Regular", Menlo, monospace;
+  font: 8px "SFMono-Regular", Menlo, monospace;
   letter-spacing: 0.17em;
 }
 
 .parking-server-dialog__header h2 {
   color: #d4d9d6;
-  font-size: 17px;
+  font-size: 19px;
   font-weight: 570;
   letter-spacing: 0.025em;
 }
@@ -6450,7 +6451,7 @@ input[type="number"]::-webkit-inner-spin-button {
   margin-top: 3px;
   overflow: hidden;
   color: #667b7c;
-  font-size: 9px;
+  font-size: 10px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -6464,7 +6465,7 @@ input[type="number"]::-webkit-inner-spin-button {
   border: 1px solid rgba(94, 229, 154, 0.18);
   color: #72af89;
   background: rgba(94, 229, 154, 0.04);
-  font: 7px "SFMono-Regular", Menlo, monospace;
+  font: 8px "SFMono-Regular", Menlo, monospace;
   letter-spacing: 0.1em;
 }
 
@@ -6490,7 +6491,7 @@ input[type="number"]::-webkit-inner-spin-button {
 .parking-server-dialog__body {
   display: grid;
   grid-template-columns: minmax(310px, 0.82fr) minmax(390px, 1.18fr);
-  min-height: 450px;
+  min-height: 500px;
 }
 
 .parking-server-context {
@@ -6509,8 +6510,8 @@ input[type="number"]::-webkit-inner-spin-button {
 }
 
 .parking-server-context > header span { display: grid; gap: 1px; }
-.parking-server-context > header strong { color: #b2bcba; font-size: 11px; font-weight: 570; }
-.parking-server-context > header small { color: #566869; font: 7px "SFMono-Regular", Menlo, monospace; letter-spacing: 0.12em; }
+.parking-server-context > header strong { color: #b2bcba; font-size: 12px; font-weight: 570; }
+.parking-server-context > header small { color: #566869; font: 8px "SFMono-Regular", Menlo, monospace; letter-spacing: 0.12em; }
 
 .parking-server-context > dl {
   display: grid;
@@ -6522,7 +6523,7 @@ input[type="number"]::-webkit-inner-spin-button {
   display: grid;
   grid-template-columns: 50px minmax(0, 1fr);
   gap: 2px 9px;
-  min-height: 48px;
+  min-height: 51px;
   padding: 8px 5px;
   border-bottom: 1px solid rgba(137, 177, 179, 0.075);
 }
@@ -6531,7 +6532,7 @@ input[type="number"]::-webkit-inner-spin-button {
   grid-row: span 2;
   align-self: center;
   color: #566b6d;
-  font: 8px "SFMono-Regular", Menlo, monospace;
+  font: 9px "SFMono-Regular", Menlo, monospace;
 }
 
 .parking-server-context dd {
@@ -6539,7 +6540,7 @@ input[type="number"]::-webkit-inner-spin-button {
   margin: 0;
   overflow: hidden;
   color: #9eaeab;
-  font-size: 10px;
+  font-size: 11px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -6547,7 +6548,7 @@ input[type="number"]::-webkit-inner-spin-button {
 .parking-server-context dl small {
   overflow: hidden;
   color: #5e6e75;
-  font: 7px "SFMono-Regular", Menlo, monospace;
+  font: 8px "SFMono-Regular", Menlo, monospace;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -6562,7 +6563,7 @@ input[type="number"]::-webkit-inner-spin-button {
   display: grid;
   gap: 5px;
   color: #607676;
-  font-size: 8px;
+  font-size: 9px;
 }
 
 .parking-server-parameters > label > div {
@@ -6580,14 +6581,14 @@ input[type="number"]::-webkit-inner-spin-button {
   outline: 0;
   color: #c1c7c4;
   background: transparent;
-  font: 9px "SFMono-Regular", Menlo, monospace;
+  font: 10px "SFMono-Regular", Menlo, monospace;
 }
 
 .parking-server-parameters label b {
   align-self: center;
   padding: 0 6px;
   color: #655c97;
-  font: 7px "SFMono-Regular", Menlo, monospace;
+  font: 8px "SFMono-Regular", Menlo, monospace;
   font-weight: 500;
 }
 
@@ -6601,7 +6602,7 @@ input[type="number"]::-webkit-inner-spin-button {
   border: 1px solid rgba(137, 177, 179, 0.13);
   color: #596d6f;
   background: rgba(5, 13, 17, 0.64);
-  font: 7px "SFMono-Regular", Menlo, monospace;
+  font: 8px "SFMono-Regular", Menlo, monospace;
   letter-spacing: 0.08em;
   cursor: pointer;
 }
@@ -6666,12 +6667,12 @@ input[type="number"]::-webkit-inner-spin-button {
   position: absolute;
   margin: -50px 0 0 -49px;
   color: #544c80;
-  font: 6px "SFMono-Regular", Menlo, monospace;
+  font: 7px "SFMono-Regular", Menlo, monospace;
 }
 
 .parking-server-flow > span small {
   color: #5d6670;
-  font: 6px "SFMono-Regular", Menlo, monospace;
+  font: 7px "SFMono-Regular", Menlo, monospace;
   letter-spacing: 0.12em;
 }
 
@@ -6683,7 +6684,7 @@ input[type="number"]::-webkit-inner-spin-button {
 .parking-server-status {
   display: grid;
   grid-template-columns: 42px minmax(0, 1fr);
-  min-height: 72px;
+  min-height: 78px;
   border: 1px solid rgba(137, 177, 179, 0.12);
   background: rgba(3, 10, 14, 0.64);
 }
@@ -6696,9 +6697,9 @@ input[type="number"]::-webkit-inner-spin-button {
 }
 
 .parking-server-status > div { align-self: center; min-width: 0; padding: 8px 10px; }
-.parking-server-status small { display: block; color: #526568; font: 6px "SFMono-Regular", Menlo, monospace; letter-spacing: 0.16em; }
-.parking-server-status strong { display: block; margin-top: 2px; color: #a4b2af; font-size: 10px; font-weight: 570; }
-.parking-server-status p { margin: 3px 0 0; overflow: hidden; color: #657779; font-size: 8px; text-overflow: ellipsis; white-space: nowrap; }
+.parking-server-status small { display: block; color: #526568; font: 7px "SFMono-Regular", Menlo, monospace; letter-spacing: 0.16em; }
+.parking-server-status strong { display: block; margin-top: 2px; color: #a4b2af; font-size: 11px; font-weight: 570; }
+.parking-server-status p { margin: 3px 0 0; overflow: hidden; color: #657779; font-size: 9px; line-height: 1.45; text-overflow: ellipsis; white-space: nowrap; }
 .parking-server-status.is-exporting > span,
 .parking-server-status.is-importing > span { color: #a99ee5; }
 .parking-server-status.is-success { border-color: rgba(94, 229, 154, 0.2); }
@@ -6715,8 +6716,8 @@ input[type="number"]::-webkit-inner-spin-button {
 
 .parking-server-package-receipt > div { min-width: 0; padding: 6px 8px; border-right: 1px solid rgba(137, 177, 179, 0.08); }
 .parking-server-package-receipt > div:last-child { border-right: 0; }
-.parking-server-package-receipt dt { color: #4d6262; font: 6px "SFMono-Regular", Menlo, monospace; }
-.parking-server-package-receipt dd { margin: 2px 0 0; overflow: hidden; color: #78a789; font: 7px "SFMono-Regular", Menlo, monospace; text-overflow: ellipsis; white-space: nowrap; }
+.parking-server-package-receipt dt { color: #4d6262; font: 7px "SFMono-Regular", Menlo, monospace; }
+.parking-server-package-receipt dd { margin: 2px 0 0; overflow: hidden; color: #78a789; font: 8px "SFMono-Regular", Menlo, monospace; text-overflow: ellipsis; white-space: nowrap; }
 
 .parking-server-runbook {
   margin-top: auto;
@@ -6740,13 +6741,13 @@ input[type="number"]::-webkit-inner-spin-button {
 
 .parking-server-runbook > header span {
   color: #aeb8b5;
-  font-size: 9px;
+  font-size: 10px;
   font-weight: 570;
 }
 
 .parking-server-runbook > header small {
   color: #625a90;
-  font: 6px "SFMono-Regular", Menlo, monospace;
+  font: 7px "SFMono-Regular", Menlo, monospace;
   letter-spacing: 0.12em;
   white-space: nowrap;
 }
@@ -6762,7 +6763,7 @@ input[type="number"]::-webkit-inner-spin-button {
 .parking-server-runbook li {
   display: grid;
   grid-template-columns: 29px minmax(0, 1fr);
-  min-height: 38px;
+  min-height: 42px;
   border: 1px solid rgba(137, 177, 179, 0.1);
   background:
     linear-gradient(90deg, rgba(154, 140, 255, 0.04), transparent 42%),
@@ -6774,7 +6775,7 @@ input[type="number"]::-webkit-inner-spin-button {
   place-items: center;
   border-right: 1px solid rgba(154, 140, 255, 0.14);
   color: #8074bb;
-  font: 7px "SFMono-Regular", Menlo, monospace;
+  font: 8px "SFMono-Regular", Menlo, monospace;
   font-weight: 500;
 }
 
@@ -6789,7 +6790,7 @@ input[type="number"]::-webkit-inner-spin-button {
 
 .parking-server-runbook strong {
   color: #849694;
-  font-size: 8px;
+  font-size: 9px;
   font-weight: 540;
 }
 
@@ -6797,8 +6798,8 @@ input[type="number"]::-webkit-inner-spin-button {
   min-width: 0;
   overflow-x: auto;
   color: #86b99a;
-  font: 7px "SFMono-Regular", Menlo, monospace;
-  line-height: 1.5;
+  font: 8px "SFMono-Regular", Menlo, monospace;
+  line-height: 1.55;
   scrollbar-width: none;
   white-space: nowrap;
 }
@@ -6817,7 +6818,7 @@ input[type="number"]::-webkit-inner-spin-button {
   align-items: center;
   gap: 11px;
   min-width: 0;
-  min-height: 62px;
+  min-height: 66px;
   padding: 9px 12px;
   border: 1px solid rgba(137, 177, 179, 0.16);
   color: #849493;
@@ -6827,8 +6828,8 @@ input[type="number"]::-webkit-inner-spin-button {
 }
 
 .parking-server-transfer__actions > button > span { display: grid; min-width: 0; gap: 3px; }
-.parking-server-transfer__actions strong { color: #c2cbc8; font-size: 12px; font-weight: 580; }
-.parking-server-transfer__actions small { overflow: hidden; color: #586b6d; font: 7px "SFMono-Regular", Menlo, monospace; text-overflow: ellipsis; white-space: nowrap; }
+.parking-server-transfer__actions strong { color: #c2cbc8; font-size: 13px; font-weight: 580; }
+.parking-server-transfer__actions small { overflow: hidden; color: #586b6d; font: 8px "SFMono-Regular", Menlo, monospace; text-overflow: ellipsis; white-space: nowrap; }
 .parking-server-transfer__actions > button.is-export { border-left: 2px solid rgba(154, 140, 255, 0.72); color: #a99ee5; }
 .parking-server-transfer__actions > button.is-import { border-left: 2px solid rgba(94, 229, 154, 0.72); color: #69c18a; }
 .parking-server-transfer__actions > button:hover:not(:disabled) { border-color: rgba(154, 140, 255, 0.48); background: rgba(154, 140, 255, 0.07); }
@@ -6837,8 +6838,8 @@ input[type="number"]::-webkit-inner-spin-button {
 .parking-server-transfer__note {
   margin: 10px 0 0;
   color: #53686a;
-  font-size: 8px;
-  line-height: 1.6;
+  font-size: 9px;
+  line-height: 1.65;
 }
 
 @media (max-width: 820px) {
@@ -6885,6 +6886,7 @@ input[type="number"]::-webkit-inner-spin-button {
   width: 100%;
   height: 100%;
   overflow: hidden;
+  font-size: 11px;
   background:
     radial-gradient(circle at 78% 8%, rgba(154, 126, 255, 0.1), transparent 32%),
     linear-gradient(115deg, rgba(89, 219, 232, 0.035), transparent 35%),
@@ -6945,13 +6947,13 @@ input[type="number"]::-webkit-inner-spin-button {
 
 .teaching-data-page__brand small {
   color: var(--muted);
-  font: 8px "SFMono-Regular", Menlo, monospace;
+  font: 9px "SFMono-Regular", Menlo, monospace;
   letter-spacing: 0.17em;
 }
 
 .teaching-data-page__brand strong {
   margin-top: 3px;
-  font-size: 13px;
+  font-size: 14px;
   font-weight: 600;
   letter-spacing: 0.07em;
 }
@@ -6962,7 +6964,7 @@ input[type="number"]::-webkit-inner-spin-button {
   gap: 10px;
   padding: 0 18px;
   color: #637a7b;
-  font: 8px "SFMono-Regular", Menlo, monospace;
+  font: 9px "SFMono-Regular", Menlo, monospace;
   letter-spacing: 0.08em;
 }
 
@@ -6984,7 +6986,7 @@ input[type="number"]::-webkit-inner-spin-button {
   gap: 6px;
   margin: 0 18px 0 auto;
   color: #6fac89;
-  font: 7px "SFMono-Regular", Menlo, monospace;
+  font: 8px "SFMono-Regular", Menlo, monospace;
   letter-spacing: 0.08em;
 }
 
@@ -7018,8 +7020,8 @@ input[type="number"]::-webkit-inner-spin-button {
   line-height: 1;
 }
 
-.teaching-data-page__back strong { font-size: 8px; font-weight: 600; }
-.teaching-data-page__back small { margin-top: 4px; color: #5a8e70; font: 5px "SFMono-Regular", Menlo, monospace; }
+.teaching-data-page__back strong { font-size: 10px; font-weight: 600; }
+.teaching-data-page__back small { margin-top: 4px; color: #5a8e70; font: 7px "SFMono-Regular", Menlo, monospace; }
 
 .teaching-data-page__scroll {
   min-height: 0;
@@ -7068,10 +7070,12 @@ input[type="number"]::-webkit-inner-spin-button {
 .teaching-data-page__hero h1 {
   margin: 8px 0 8px;
   color: #eeeaff;
-  font-size: clamp(25px, 2.2vw, 34px);
+  font-size: clamp(27px, 2.35vw, 36px);
   font-weight: 560;
   letter-spacing: 0.09em;
 }
+
+.teaching-data-page__hero .eyebrow { font-size: 9px; }
 
 .teaching-data-page__hero dl {
   display: grid;
@@ -7091,9 +7095,9 @@ input[type="number"]::-webkit-inner-spin-button {
   background: rgba(5, 13, 18, 0.94);
 }
 
-.teaching-data-page__hero dt { color: #6f5caa; font: 6px "SFMono-Regular", Menlo, monospace; letter-spacing: 0.13em; }
-.teaching-data-page__hero dd { margin: 7px 0 3px; overflow: hidden; color: #cbbfff; font: 600 17px "SFMono-Regular", Menlo, monospace; text-overflow: ellipsis; white-space: nowrap; }
-.teaching-data-page__hero dl span { color: #586c70; font-size: 6px; }
+.teaching-data-page__hero dt { color: #6f5caa; font: 8px "SFMono-Regular", Menlo, monospace; letter-spacing: 0.13em; }
+.teaching-data-page__hero dd { margin: 7px 0 3px; overflow: hidden; color: #cbbfff; font: 600 19px "SFMono-Regular", Menlo, monospace; text-overflow: ellipsis; white-space: nowrap; }
+.teaching-data-page__hero dl span { color: #586c70; font-size: 8px; }
 
 .teaching-data-page__workspace {
   display: grid;
@@ -7178,7 +7182,7 @@ input[type="number"]::-webkit-inner-spin-button {
 
 .teaching-pose-robot-preview__header small {
   color: #496b6e;
-  font: 6px "SFMono-Regular", Menlo, monospace;
+  font: 8px "SFMono-Regular", Menlo, monospace;
   letter-spacing: 0.1em;
 }
 
@@ -7186,7 +7190,7 @@ input[type="number"]::-webkit-inner-spin-button {
   margin-top: 4px;
   overflow: hidden;
   color: #c8d8d6;
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 570;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -7202,7 +7206,7 @@ input[type="number"]::-webkit-inner-spin-button {
   border: 1px solid rgba(137, 177, 179, 0.17);
   color: #829a99;
   background: rgba(5, 14, 18, 0.72);
-  font-size: 8px;
+  font-size: 9px;
   cursor: pointer;
 }
 
@@ -7221,7 +7225,7 @@ input[type="number"]::-webkit-inner-spin-button {
   align-items: center;
   gap: 4px;
   color: #5b7476;
-  font: 6px "SFMono-Regular", Menlo, monospace;
+  font: 7px "SFMono-Regular", Menlo, monospace;
   letter-spacing: 0.07em;
 }
 
@@ -7294,7 +7298,7 @@ input[type="number"]::-webkit-inner-spin-button {
 .teaching-pose-robot-preview__loading strong {
   margin-top: 16px;
   color: #8fa5a3;
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 550;
 }
 
@@ -7303,7 +7307,7 @@ input[type="number"]::-webkit-inner-spin-button {
   max-width: 270px;
   margin-top: 7px;
   color: #4e6668;
-  font-size: 8px;
+  font-size: 9px;
   line-height: 1.65;
 }
 
@@ -7329,7 +7333,7 @@ input[type="number"]::-webkit-inner-spin-button {
 .teaching-pose-robot-preview__identity small {
   overflow: hidden;
   color: #537073;
-  font: 6px "SFMono-Regular", Menlo, monospace;
+  font: 7px "SFMono-Regular", Menlo, monospace;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -7338,7 +7342,7 @@ input[type="number"]::-webkit-inner-spin-button {
   margin-top: 4px;
   overflow: hidden;
   color: #c5d6d3;
-  font-size: 9px;
+  font-size: 10px;
   font-weight: 560;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -7347,7 +7351,7 @@ input[type="number"]::-webkit-inner-spin-button {
 .teaching-pose-robot-preview__identity span {
   margin-top: 4px;
   color: #568b8f;
-  font: 6px "SFMono-Regular", Menlo, monospace;
+  font: 7px "SFMono-Regular", Menlo, monospace;
 }
 
 .teaching-pose-robot-preview__axis {
@@ -7366,7 +7370,7 @@ input[type="number"]::-webkit-inner-spin-button {
   place-items: center;
   border: 1px solid currentColor;
   background: rgba(4, 13, 17, 0.72);
-  font: 7px "SFMono-Regular", Menlo, monospace;
+  font: 8px "SFMono-Regular", Menlo, monospace;
 }
 
 .teaching-pose-robot-preview__axis .is-x { color: #ff6f68; }
@@ -7382,7 +7386,7 @@ input[type="number"]::-webkit-inner-spin-button {
   align-items: center;
   gap: 5px;
   color: #4e696b;
-  font: 6px "SFMono-Regular", Menlo, monospace;
+  font: 7px "SFMono-Regular", Menlo, monospace;
 }
 
 .teaching-pose-robot-preview__footer {
@@ -7414,7 +7418,7 @@ input[type="number"]::-webkit-inner-spin-button {
 
 .teaching-pose-robot-preview__footer span {
   color: #476164;
-  font: 6px "SFMono-Regular", Menlo, monospace;
+  font: 7px "SFMono-Regular", Menlo, monospace;
   letter-spacing: 0.08em;
 }
 
@@ -7425,7 +7429,7 @@ input[type="number"]::-webkit-inner-spin-button {
   margin-top: 5px;
   overflow: hidden;
   color: #93aaa7;
-  font: 8px "SFMono-Regular", Menlo, monospace;
+  font: 9px "SFMono-Regular", Menlo, monospace;
   font-weight: 520;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -7443,13 +7447,13 @@ input[type="number"]::-webkit-inner-spin-button {
 
 .teaching-data-page__archive .virtual-teaching__header { min-height: 58px; padding-inline: 14px; }
 .teaching-data-page__archive .virtual-teaching__identity > span { width: 34px; height: 34px; }
-.teaching-data-page__archive .virtual-teaching__identity strong { font-size: 12px; }
+.teaching-data-page__archive .virtual-teaching__identity strong { font-size: 13px; }
 .teaching-data-page__archive .teaching-project-export { min-height: 52px; margin: 11px 13px 0; padding: 8px; }
-.teaching-data-page__archive .teaching-project-export__identity strong { font-size: 9px; }
+.teaching-data-page__archive .teaching-project-export__identity strong { font-size: 10px; }
 .teaching-data-page__archive .teaching-task-bar { padding: 11px 13px 0; }
-.teaching-data-page__archive .teaching-task-bar select { height: 34px; font-size: 8px; }
+.teaching-data-page__archive .teaching-task-bar select { height: 34px; font-size: 9px; }
 .teaching-data-page__archive .teaching-name-field { padding: 9px 13px; }
-.teaching-data-page__archive .teaching-name-field input { height: 31px; font-size: 9px; }
+.teaching-data-page__archive .teaching-name-field input { height: 31px; font-size: 10px; }
 .teaching-data-page__archive .teaching-context { margin-inline: 13px; }
 .teaching-data-page__archive .teaching-parking-manager { margin-inline: 13px; }
 .teaching-data-page__archive .teaching-sequence-heading { padding-inline: 13px; }
@@ -7465,7 +7469,7 @@ input[type="number"]::-webkit-inner-spin-button {
   border-top: 1px solid var(--line);
   color: #516568;
   background: #071014;
-  font: 7px "SFMono-Regular", Menlo, monospace;
+  font: 8px "SFMono-Regular", Menlo, monospace;
   letter-spacing: 0.08em;
 }
 

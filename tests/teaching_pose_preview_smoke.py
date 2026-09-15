@@ -74,6 +74,18 @@ def run():
         assert preview.get_attribute("data-environment-mesh") == "false"
         assert page.get_by_text("ROBOT ONLY", exact=True).is_visible()
         assert page.get_by_text("停车点 P01 / A01 检查姿态", exact=True).is_visible()
+        assert float(page.locator(".teaching-data-page__hero h1").evaluate(
+            "element => getComputedStyle(element).fontSize.replace('px', '')"
+        )) >= 27
+        assert float(page.locator(".teaching-tree-label > span").first.evaluate(
+            "element => getComputedStyle(element).fontSize.replace('px', '')"
+        )) >= 12
+        assert float(page.locator(".teaching-tree-pose-values strong").first.evaluate(
+            "element => getComputedStyle(element).fontSize.replace('px', '')"
+        )) >= 12
+        assert float(preview.locator("header strong").first.evaluate(
+            "element => getComputedStyle(element).fontSize.replace('px', '')"
+        )) >= 12
 
         canvas = page.get_by_label("所选示教姿态机器人三维模型")
         assert float(canvas.get_attribute("data-map-x")) == 2.4

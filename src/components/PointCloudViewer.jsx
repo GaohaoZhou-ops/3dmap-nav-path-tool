@@ -76,8 +76,11 @@ const DETAIL_DOLLY_FLOOR_RATIO = 1e-5;
 // Kept below the float32 projection ceiling while providing 30 orders of
 // optical detail range beyond the precision-safe dolly floor.
 const MAX_OPTICAL_ZOOM = 1e30;
-const WAYPOINT_VOLUME_RATIO = 0.2;
+const WAYPOINT_VOLUME_RATIO = 0.14;
 const WAYPOINT_RADIUS_SCALE = Math.cbrt(WAYPOINT_VOLUME_RATIO);
+// Keep the interaction target at its former size while making only the visible
+// marker more compact, so dense waypoint layouts remain easy to select.
+const WAYPOINT_HIT_RADIUS_SCALE = Math.cbrt(0.2) * 2.2;
 const WAYPOINT_FOCUS_DISTANCE_RATIO = 0.17;
 const WAYPOINT_DEFAULT_COLOR = '#ffd166';
 const WAYPOINT_SELECTED_BODY_COLOR = '#59dbe8';
@@ -5645,6 +5648,7 @@ export default function PointCloudViewer({
       canvas.dataset.waypointCount = String(waypoints.length);
       canvas.dataset.waypointVolumeRatio = String(WAYPOINT_VOLUME_RATIO);
       canvas.dataset.waypointRadiusScale = WAYPOINT_RADIUS_SCALE.toFixed(6);
+      canvas.dataset.waypointHitRadiusScale = WAYPOINT_HIT_RADIUS_SCALE.toFixed(6);
       canvas.dataset.waypointRadius = waypointRadius.toPrecision(8);
       canvas.dataset.waypointVisibilityMode = 'screen-clamped-lod';
       canvas.dataset.minimumWaypointScreenDiameter = String(MIN_WAYPOINT_SCREEN_DIAMETER);
@@ -5743,7 +5747,7 @@ export default function PointCloudViewer({
         selectedWaypointPulseRef.current = halo;
       }
       const hitGeometry = new THREE.SphereGeometry(
-        Math.max(waypointRadius * 2.2, routeScale * 0.9),
+        Math.max(routeScale * WAYPOINT_HIT_RADIUS_SCALE, routeScale * 0.9),
         10,
         8,
       );

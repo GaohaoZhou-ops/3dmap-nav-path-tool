@@ -1,0 +1,77 @@
+{
+  "schemaVersion": "1.3",
+  "map": {
+    "fileName": "archived-preview-map.ply",
+    "format": "ply",
+    "pointCount": 0,
+    "faceCount": 0,
+    "bounds": {
+      "min": { "x": -5, "y": -4, "z": -0.2 },
+      "max": { "x": 8, "y": 6, "z": 4.5 }
+    },
+    "sourceHash": "teaching-pose-preview-map"
+  },
+  "projection": {
+    "minHeight": -0.1,
+    "maxHeight": 1.8
+  },
+  "virtualTeaching": {
+    "tasks": [
+      {
+        "id": "preview-task",
+        "name": "预览验证任务",
+        "createdAt": "2026-09-15T02:10:00.000Z",
+        "coordinateFrame": "map",
+        "robot": {
+          "id": "botx_abx_zivid_m70/urdf/botx_abx_zivid_m70.urdf",
+          "name": "botx_abx_zivid_m70",
+          "relativePath": "botx_abx_zivid_m70/urdf/botx_abx_zivid_m70.urdf"
+        },
+        "map": {
+          "fileName": "archived-preview-map.ply",
+          "sourceHash": "teaching-pose-preview-map"
+        },
+        "parkingPoints": [
+          {
+            "id": "preview-stop",
+            "name": "停车点 P01",
+            "sequence": 1,
+            "mapPose": {
+              "frameId": "map",
+              "position": { "x": 2.4, "y": -1.25, "z": 0.08 },
+              "rpy": { "roll": 1.5, "pitch": -2.25, "yaw": 32 }
+            },
+            "poses": [
+              {
+                "id": "preview-pose",
+                "name": "A01 检查姿态",
+                "sequence": 1,
+                "capturedAt": "2026-09-15T02:12:00.000Z",
+                "mapPose": {
+                  "frameId": "map",
+                  "position": { "x": 2.4, "y": -1.25, "z": 0.08 },
+                  "rpy": { "roll": 1.5, "pitch": -2.25, "yaw": 32 }
+                },
+                "fullBodyJoints": {
+                  "angularUnit": "degree",
+                  "linearUnit": "meter",
+                  "source": "urdf-movable-joints",
+                  "values": {
+                    "waist_pitch_J": 7.5,
+                    "waist_yaw_J": -11,
+                    "left_J1": 24,
+                    "left_J2": -38,
+                    "right_J1": -19,
+                    "right_J2": 31
+                  }
+                }
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "waypoints": [],
+  "paths": []
+}

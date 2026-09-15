@@ -1,15 +1,12 @@
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   ArrowLeft,
-  Bot,
-  Camera,
   CircleDot,
-  Database,
-  HardDrive,
-  MapPin,
   Route,
   ShieldCheck,
 } from 'lucide-react';
 import TeachingArchiveTree from './TeachingArchiveTree.jsx';
+import TeachingPoseRobotPreview from './TeachingPoseRobotPreview.jsx';
 
 const formatBytes = (value) => {
   const bytes = Math.max(0, Number(value) || 0);
@@ -49,6 +46,7 @@ export default function TeachingDataPage({
   onMergeParkingPoints,
   onExportProject,
 }) {
+  const [archiveSelection, setArchiveSelection] = useState(null);
   const activeTask = tasks.find((task) => task.id === activeTaskId) || tasks[0] || null;
   const parkingPointCount = tasks.reduce(
     (total, task) => total + (task.parkingPoints?.length || 0),
@@ -81,10 +79,53 @@ export default function TeachingDataPage({
     ),
     0,
   );
-  const activeTaskPoseCount = (activeTask?.parkingPoints || []).reduce(
-    (total, parkingPoint) => total + (parkingPoint.poses?.length || 0),
-    0,
-  );
+  const handleArchiveSelection = useCallback((selection) => {
+    setArchiveSelection((current) => (
+      current?.type === selection?.type
+      && current?.task === selection?.task
+      && current?.parkingPoint === selection?.parkingPoint
+      && current?.pose === selection?.pose
+        ? current
+        : selection
+    ));
+  }, []);
+  const previewRobot = useMemo(() => {
+    const taskRobot = archiveSelection?.task?.robot || activeTask?.robot || null;
+    const taskRobotKey = taskRobot?.id || taskRobot?.relativePath || '';
+    const currentRobotKey = robot?.id || robot?.relativePath || '';
+    return taskRobotKey && taskRobotKey === currentRobotKey ? robot : taskRobot;
+  }, [activeTask?.robot, archiveSelection?.task?.robot, robot]);
+
+  useEffect(() => {
+    setArchiveSelection((current) => {
+      if (!current) return current;
+      const taskId = current.task?.id;
+      const task = tasks.find((item) => item.id === taskId);
+      if (!task) return null;
+      if (current.type === 'task') {
+        return current.task === task ? current : { type: 'task', task, parkingPoint: null, pose: null };
+      }
+      if (current.type === 'pose' && current.pose?.id) {
+        const parkingPoint = (task.parkingPoints || []).find((item) => (
+          (item.poses || []).some((pose) => pose.id === current.pose.id)
+        ));
+        const pose = parkingPoint?.poses?.find((item) => item.id === current.pose.id);
+        if (parkingPoint && pose) {
+          return current.task === task
+            && current.parkingPoint === parkingPoint
+            && current.pose === pose
+            ? current
+            : { type: 'pose', task, parkingPoint, pose };
+        }
+      }
+      const parkingPoint = task.parkingPoints?.find(
+        (item) => item.id === current.parkingPoint?.id,
+      );
+      return parkingPoint
+        ? { type: 'parking', task, parkingPoint, pose: null }
+        : { type: 'task', task, parkingPoint: null, pose: null };
+    });
+  }, [tasks]);
 
   return (
     <div
@@ -137,33 +178,6 @@ export default function TeachingDataPage({
           </section>
 
           <div className="teaching-data-page__workspace">
-            <aside className="teaching-data-page__ledger" aria-label="示教归档上下文">
-              <header><Database size={13} /><span>归档上下文</span><small>READ / MANAGE</small></header>
-              <section>
-                <small>ACTIVE TASK</small>
-                <strong>{activeTask?.name || '暂无示教任务'}</strong>
-                <span>{activeTask ? `${activeTask.parkingPoints?.length || 0} 个停车点 · ${activeTaskPoseCount} 组姿态` : '请返回工作台建立第一项任务'}</span>
-              </section>
-              <dl>
-                <div>
-                  <dt><MapPin size={11} /> 当前地图</dt>
-                  <dd title={mapData?.name}>{mapData?.name || '未加载'}</dd>
-                </div>
-                <div>
-                  <dt><Bot size={11} /> 机器人</dt>
-                  <dd title={robot?.name}>{robot?.name || '未选择'}</dd>
-                </div>
-                <div>
-                  <dt><Camera size={11} /> 双目快照</dt>
-                  <dd>{cameraFrameCount} FRAMES</dd>
-                </div>
-                <div>
-                  <dt><HardDrive size={11} /> 数据体积</dt>
-                  <dd>{formatBytes(archiveBytes)}</dd>
-                </div>
-              </dl>
-            </aside>
-
             <section className="teaching-data-page__archive" aria-label="示教任务管理工作区">
               <TeachingArchiveTree
                 tasks={tasks}
@@ -191,8 +205,16 @@ export default function TeachingDataPage({
                 onMergeParkingPoints={onMergeParkingPoints}
                 onExportProject={onExportProject}
                 onOpenCapturePage={onBack}
+                onSelectionChange={handleArchiveSelection}
               />
             </section>
+
+            <TeachingPoseRobotPreview
+              task={archiveSelection?.task || activeTask}
+              parkingPoint={archiveSelection?.parkingPoint || null}
+              pose={archiveSelection?.pose || null}
+              robot={previewRobot}
+            />
           </div>
         </div>
       </main>

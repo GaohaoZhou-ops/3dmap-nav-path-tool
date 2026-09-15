@@ -4814,7 +4814,7 @@ input[type="number"]::-webkit-inner-spin-button {
 
 .teaching-tree-workspace {
   display: grid;
-  grid-template-columns: 330px minmax(0, 1fr);
+  grid-template-columns: minmax(350px, 38%) minmax(0, 1fr);
   min-width: 0;
   min-height: 650px;
 }
@@ -6524,7 +6524,7 @@ input[type="number"]::-webkit-inner-spin-button {
 }
 
 .teaching-data-page__content {
-  width: min(1320px, calc(100% - 48px));
+  width: min(1680px, calc(100% - 40px));
   min-height: 100%;
   margin: 0 auto;
   padding: 25px 0 34px;
@@ -6592,13 +6592,12 @@ input[type="number"]::-webkit-inner-spin-button {
 
 .teaching-data-page__workspace {
   display: grid;
-  grid-template-columns: 244px minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1.7fr) minmax(390px, 0.82fr);
   align-items: start;
   gap: 14px;
   margin-top: 14px;
 }
 
-.teaching-data-page__ledger,
 .teaching-data-page__archive {
   min-width: 0;
   border: 1px solid var(--line);
@@ -6606,39 +6605,328 @@ input[type="number"]::-webkit-inner-spin-button {
   box-shadow: 0 17px 44px rgba(0, 0, 0, 0.2);
 }
 
-.teaching-data-page__ledger {
-  position: sticky;
-  top: 0;
-  overflow: hidden;
-}
-
-.teaching-data-page__ledger > header {
-  display: grid;
-  grid-template-columns: 17px minmax(0, 1fr) auto;
-  align-items: center;
-  gap: 6px;
-  min-height: 43px;
-  padding: 0 11px;
-  border-bottom: 1px solid var(--line);
-  color: #c1b5ee;
-  background: linear-gradient(90deg, rgba(154, 126, 255, 0.1), transparent);
-}
-
-.teaching-data-page__ledger > header small { color: #594c83; font: 5px "SFMono-Regular", Menlo, monospace; }
-.teaching-data-page__ledger > section { display: flex; padding: 15px 13px; border-bottom: 1px solid var(--line); flex-direction: column; }
-.teaching-data-page__ledger > section small { color: #65558f; font: 6px "SFMono-Regular", Menlo, monospace; letter-spacing: 0.12em; }
-.teaching-data-page__ledger > section strong { margin-top: 7px; overflow: hidden; color: #ddd7f6; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
-.teaching-data-page__ledger > section span { margin-top: 5px; color: #687d7f; font-size: 7px; }
-
-.teaching-data-page__ledger dl { margin: 0; padding: 6px 12px; }
-.teaching-data-page__ledger dl > div { display: grid; grid-template-columns: 92px minmax(0, 1fr); align-items: center; min-height: 34px; border-bottom: 1px solid rgba(137, 177, 179, 0.08); }
-.teaching-data-page__ledger dt { display: inline-flex; align-items: center; gap: 6px; color: #657b7e; font-size: 7px; }
-.teaching-data-page__ledger dt svg { color: #8170bd; }
-.teaching-data-page__ledger dd { margin: 0; overflow: hidden; color: #a7bab8; font: 6px "SFMono-Regular", Menlo, monospace; text-align: right; text-overflow: ellipsis; white-space: nowrap; }
-
 .teaching-data-page__archive {
   border-color: rgba(154, 126, 255, 0.2);
 }
+
+.teaching-pose-robot-preview {
+  position: sticky;
+  top: 0;
+  display: grid;
+  grid-template-rows: 56px minmax(470px, 56vh) 88px;
+  min-width: 0;
+  min-height: 650px;
+  overflow: hidden;
+  border: 1px solid rgba(89, 219, 232, 0.2);
+  background: #061014;
+  box-shadow: 0 17px 44px rgba(0, 0, 0, 0.24);
+}
+
+.teaching-pose-robot-preview::before {
+  position: absolute;
+  top: -1px;
+  right: -1px;
+  z-index: 4;
+  width: 72px;
+  height: 2px;
+  background: linear-gradient(90deg, transparent, rgba(89, 219, 232, 0.9));
+  content: "";
+}
+
+.teaching-pose-robot-preview__header {
+  position: relative;
+  z-index: 3;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 8px;
+  padding: 0 10px 0 12px;
+  border-bottom: 1px solid rgba(137, 177, 179, 0.14);
+  background:
+    linear-gradient(100deg, rgba(89, 219, 232, 0.075), transparent 48%),
+    #091419;
+}
+
+.teaching-pose-robot-preview__header > div {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.teaching-pose-robot-preview__header > div > span {
+  display: grid;
+  width: 29px;
+  height: 29px;
+  flex: 0 0 auto;
+  place-items: center;
+  border: 1px solid rgba(89, 219, 232, 0.24);
+  color: #76ced5;
+  background: rgba(89, 219, 232, 0.045);
+}
+
+.teaching-pose-robot-preview__header > div > div {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+}
+
+.teaching-pose-robot-preview__header small {
+  color: #496b6e;
+  font: 6px "SFMono-Regular", Menlo, monospace;
+  letter-spacing: 0.1em;
+}
+
+.teaching-pose-robot-preview__header strong {
+  margin-top: 4px;
+  overflow: hidden;
+  color: #c8d8d6;
+  font-size: 11px;
+  font-weight: 570;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.teaching-pose-robot-preview__header > button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  height: 29px;
+  padding: 0 8px;
+  border: 1px solid rgba(137, 177, 179, 0.17);
+  color: #829a99;
+  background: rgba(5, 14, 18, 0.72);
+  font-size: 8px;
+  cursor: pointer;
+}
+
+.teaching-pose-robot-preview__header > button:hover:not(:disabled) {
+  border-color: rgba(89, 219, 232, 0.42);
+  color: #b9e3e2;
+}
+
+.teaching-pose-robot-preview__header > button:disabled {
+  cursor: not-allowed;
+  opacity: 0.32;
+}
+
+.teaching-pose-robot-preview__state {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: #5b7476;
+  font: 6px "SFMono-Regular", Menlo, monospace;
+  letter-spacing: 0.07em;
+}
+
+.teaching-pose-robot-preview__state.is-ready { color: #63bc84; }
+.teaching-pose-robot-preview__state.is-loading { color: #c2a45b; }
+.teaching-pose-robot-preview__state.is-error { color: #cf7773; }
+
+.teaching-pose-robot-preview__viewport {
+  position: relative;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  background:
+    radial-gradient(circle at 50% 43%, rgba(38, 88, 94, 0.18), transparent 42%),
+    linear-gradient(180deg, rgba(8, 23, 28, 0.34), rgba(3, 10, 13, 0.48));
+}
+
+.teaching-pose-robot-preview__viewport::after {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  pointer-events: none;
+  background: repeating-linear-gradient(0deg, transparent 0 5px, rgba(137, 177, 179, 0.013) 5px 6px);
+  content: "";
+}
+
+.teaching-pose-robot-canvas {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  display: block;
+  width: 100%;
+  height: 100%;
+  outline: none;
+  cursor: grab;
+  transition: opacity 180ms ease;
+}
+
+.teaching-pose-robot-canvas:active { cursor: grabbing; }
+.teaching-pose-robot-preview:not(.has-pose) .teaching-pose-robot-canvas { opacity: 0.18; pointer-events: none; }
+
+.teaching-pose-robot-preview__empty,
+.teaching-pose-robot-preview__loading {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 32px;
+  color: #496164;
+  text-align: center;
+  flex-direction: column;
+}
+
+.teaching-pose-robot-preview__empty > span {
+  display: grid;
+  width: 66px;
+  height: 66px;
+  place-items: center;
+  border: 1px solid rgba(89, 219, 232, 0.14);
+  color: #426e72;
+  background: rgba(89, 219, 232, 0.025);
+  transform: rotate(45deg);
+}
+
+.teaching-pose-robot-preview__empty > span svg { transform: rotate(-45deg); }
+
+.teaching-pose-robot-preview__empty strong,
+.teaching-pose-robot-preview__loading strong {
+  margin-top: 16px;
+  color: #8fa5a3;
+  font-size: 11px;
+  font-weight: 550;
+}
+
+.teaching-pose-robot-preview__empty small,
+.teaching-pose-robot-preview__loading small {
+  max-width: 270px;
+  margin-top: 7px;
+  color: #4e6668;
+  font-size: 8px;
+  line-height: 1.65;
+}
+
+.teaching-pose-robot-preview__loading { background: rgba(4, 13, 17, 0.72); backdrop-filter: blur(3px); }
+.teaching-pose-robot-preview__loading > svg { color: #d0ad57; }
+.teaching-pose-robot-preview__loading.is-error > svg { color: #d97975; }
+
+.teaching-pose-robot-preview__identity {
+  position: absolute;
+  top: 12px;
+  left: 12px;
+  z-index: 2;
+  display: flex;
+  max-width: calc(100% - 24px);
+  padding: 8px 10px;
+  border-left: 2px solid rgba(89, 219, 232, 0.75);
+  background: rgba(4, 13, 17, 0.76);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18);
+  backdrop-filter: blur(8px);
+  flex-direction: column;
+}
+
+.teaching-pose-robot-preview__identity small {
+  overflow: hidden;
+  color: #537073;
+  font: 6px "SFMono-Regular", Menlo, monospace;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.teaching-pose-robot-preview__identity strong {
+  margin-top: 4px;
+  overflow: hidden;
+  color: #c5d6d3;
+  font-size: 9px;
+  font-weight: 560;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.teaching-pose-robot-preview__identity span {
+  margin-top: 4px;
+  color: #568b8f;
+  font: 6px "SFMono-Regular", Menlo, monospace;
+}
+
+.teaching-pose-robot-preview__axis {
+  position: absolute;
+  right: 12px;
+  bottom: 35px;
+  z-index: 2;
+  display: flex;
+  gap: 4px;
+}
+
+.teaching-pose-robot-preview__axis span {
+  display: grid;
+  width: 19px;
+  height: 19px;
+  place-items: center;
+  border: 1px solid currentColor;
+  background: rgba(4, 13, 17, 0.72);
+  font: 7px "SFMono-Regular", Menlo, monospace;
+}
+
+.teaching-pose-robot-preview__axis .is-x { color: #ff6f68; }
+.teaching-pose-robot-preview__axis .is-y { color: #62dd8e; }
+.teaching-pose-robot-preview__axis .is-z { color: #6aaeff; }
+
+.teaching-pose-robot-preview__hint {
+  position: absolute;
+  right: 12px;
+  bottom: 11px;
+  z-index: 2;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: #4e696b;
+  font: 6px "SFMono-Regular", Menlo, monospace;
+}
+
+.teaching-pose-robot-preview__footer {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  min-width: 0;
+  border-top: 1px solid rgba(137, 177, 179, 0.13);
+  background: #081318;
+}
+
+.teaching-pose-robot-preview__footer > div {
+  display: flex;
+  min-width: 0;
+  padding: 11px 12px;
+  border-right: 1px solid rgba(137, 177, 179, 0.09);
+  flex-direction: column;
+}
+
+.teaching-pose-robot-preview__footer > div:nth-child(2) { border-right: 0; }
+.teaching-pose-robot-preview__footer > div:last-child {
+  grid-column: 1 / -1;
+  padding-block: 8px;
+  border-top: 1px solid rgba(137, 177, 179, 0.08);
+  border-right: 0;
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.teaching-pose-robot-preview__footer span {
+  color: #476164;
+  font: 6px "SFMono-Regular", Menlo, monospace;
+  letter-spacing: 0.08em;
+}
+
+.teaching-pose-robot-preview__footer strong {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 5px;
+  overflow: hidden;
+  color: #93aaa7;
+  font: 8px "SFMono-Regular", Menlo, monospace;
+  font-weight: 520;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.teaching-pose-robot-preview__footer > div:last-child strong { margin-top: 0; color: #5d8c90; }
 
 .teaching-data-page__archive > .virtual-teaching {
   margin: 0;
@@ -6685,7 +6973,12 @@ input[type="number"]::-webkit-inner-spin-button {
   .teaching-data-page__brand { width: 210px; }
   .teaching-data-page__content { width: calc(100% - 28px); }
   .teaching-data-page__hero { grid-template-columns: minmax(300px, 0.8fr) minmax(480px, 1fr); }
-  .teaching-data-page__workspace { grid-template-columns: 220px minmax(0, 1fr); }
+  .teaching-data-page__workspace { grid-template-columns: minmax(0, 1.5fr) minmax(340px, 0.72fr); }
+}
+
+@media (max-width: 1040px) {
+  .teaching-data-page__workspace { grid-template-columns: minmax(0, 1fr); }
+  .teaching-pose-robot-preview { position: relative; grid-template-rows: 56px 520px 88px; }
 }
 
 @media (max-height: 760px) {

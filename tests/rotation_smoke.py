@@ -18,7 +18,10 @@ def view_direction(camera, target):
 def run():
     errors = []
     with sync_playwright() as playwright:
-        browser = playwright.chromium.launch(headless=True)
+        browser = playwright.chromium.launch(
+            headless=True,
+            executable_path=os.environ.get("PLAYWRIGHT_CHROMIUM_EXECUTABLE") or None,
+        )
         page = browser.new_page(viewport={"width": 1280, "height": 800})
         page.set_default_timeout(30_000)
         page.on("pageerror", lambda exc: errors.append(str(exc)))
@@ -70,8 +73,9 @@ def run():
         assert waypoint_visibility.is_visible()
         assert waypoint_visibility.get_attribute("aria-pressed") == "true"
         assert canvas.get_attribute("data-waypoints-visible") == "true"
-        assert canvas.get_attribute("data-waypoint-volume-ratio") == "0.2"
-        assert abs(float(canvas.get_attribute("data-waypoint-radius-scale")) - 0.584804) < 1e-6
+        assert canvas.get_attribute("data-waypoint-volume-ratio") == "0.14"
+        assert abs(float(canvas.get_attribute("data-waypoint-radius-scale")) - 0.519249) < 1e-6
+        assert abs(float(canvas.get_attribute("data-waypoint-hit-radius-scale")) - 1.286568) < 1e-6
         origin_2d = page.get_by_role("button", name="二维坐标原点")
         assert origin_2d.count() == 1
         assert "is-offscreen" not in (origin_2d.get_attribute("class") or "")

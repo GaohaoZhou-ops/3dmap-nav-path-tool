@@ -115,6 +115,7 @@ export default function TeachingArchiveTree({
   onMergeParkingPoints,
   onExportProject,
   onOpenCapturePage,
+  onSelectionChange,
 }) {
   const initialTask = tasks.find((task) => task.id === activeTaskId) || tasks[0] || null;
   const initialParkingPoint = initialTask?.parkingPoints?.find(
@@ -277,6 +278,7 @@ export default function TeachingArchiveTree({
     onSelectTask(task.id);
     setNameDraft(task.name);
     setSelection({ type: 'task', taskId: task.id });
+    onSelectionChange?.({ type: 'task', task, parkingPoint: null, pose: null });
     setCollapsedTaskIds((current) => {
       const next = new Set(current);
       next.delete(task.id);
@@ -293,6 +295,7 @@ export default function TeachingArchiveTree({
       taskId: task.id,
       parkingPointId: parkingPoint.id,
     });
+    onSelectionChange?.({ type: 'parking', task, parkingPoint, pose: null });
     setCollapsedTaskIds((current) => {
       const next = new Set(current);
       next.delete(task.id);
@@ -315,6 +318,7 @@ export default function TeachingArchiveTree({
       parkingPointId: parkingPoint.id,
       poseId: pose.id,
     });
+    onSelectionChange?.({ type: 'pose', task, parkingPoint, pose });
   };
 
   const commitName = () => {

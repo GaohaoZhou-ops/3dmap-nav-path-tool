@@ -67,7 +67,10 @@ def run():
     errors = []
     console_errors = []
     with sync_playwright() as playwright:
-        browser = playwright.chromium.launch(headless=True)
+        browser = playwright.chromium.launch(
+            headless=True,
+            executable_path=os.environ.get("PLAYWRIGHT_CHROMIUM_EXECUTABLE") or None,
+        )
         page = browser.new_page(viewport={"width": 1280, "height": 800})
         page.set_default_timeout(30_000)
         page.on("pageerror", lambda exc: errors.append(str(exc)))
@@ -99,6 +102,9 @@ def run():
         canvas = page.locator(".three-canvas")
         assert canvas.get_attribute("data-waypoint-visibility-mode") == "screen-clamped-lod"
         assert canvas.get_attribute("data-minimum-waypoint-screen-diameter") == "8"
+        assert canvas.get_attribute("data-waypoint-volume-ratio") == "0.14"
+        assert abs(float(canvas.get_attribute("data-waypoint-radius-scale")) - 0.519249) < 1e-6
+        assert abs(float(canvas.get_attribute("data-waypoint-hit-radius-scale")) - 1.286568) < 1e-6
         assert canvas.get_attribute("data-waypoint-visual-status") == "visible"
         page.wait_for_function(
             "canvas => Number(canvas.dataset.smallestWaypointScreenDiameter) >= 7.9",
@@ -227,7 +233,7 @@ def run():
         assert "XY 距离已排除定位高度误差" in distance.inner_text()
 
         # Zooming far out activates marker LOD, retaining an 8 px minimum
-        # diameter while the underlying sphere remains at 20% source volume.
+        # diameter while the underlying sphere remains at 14% source volume.
         canvas_box = canvas.bounding_box()
         assert canvas_box
         page.mouse.move(

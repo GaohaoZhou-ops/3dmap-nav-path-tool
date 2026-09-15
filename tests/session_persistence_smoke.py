@@ -161,8 +161,9 @@ def run():
         three_canvas = page.locator(".three-canvas")
         assert three_canvas.get_attribute("data-rendered-waypoint-count") == "2"
         assert three_canvas.get_attribute("data-route-edge-count") == "1"
-        assert three_canvas.get_attribute("data-waypoint-volume-ratio") == "0.2"
-        assert abs(float(three_canvas.get_attribute("data-waypoint-radius-scale")) - 0.584804) < 1e-6
+        assert three_canvas.get_attribute("data-waypoint-volume-ratio") == "0.14"
+        assert abs(float(three_canvas.get_attribute("data-waypoint-radius-scale")) - 0.519249) < 1e-6
+        assert abs(float(three_canvas.get_attribute("data-waypoint-hit-radius-scale")) - 1.286568) < 1e-6
         visible_waypoint_frame = three_canvas.screenshot()
         hide_waypoints = page.get_by_role("button", name="隐藏3D路径点")
         assert hide_waypoints.get_attribute("aria-pressed") == "true"

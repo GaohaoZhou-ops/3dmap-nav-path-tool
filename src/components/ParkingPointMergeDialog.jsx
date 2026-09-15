@@ -43,6 +43,7 @@ export default function ParkingPointMergeDialog({
     && parameterSignature(state.parameters) !== parameterSignature(state.analyzedParameters),
   );
   const analyzing = state.status === 'analyzing';
+  const serverResult = state.source === 'server';
 
   return createPortal(
     <div
@@ -62,13 +63,15 @@ export default function ParkingPointMergeDialog({
         <header className="parking-merge-dialog__header">
           <span className="parking-merge-dialog__mark"><GitMerge size={19} /></span>
           <div>
-            <small>COMMON PARKING / IK REPLAN</small>
+            <small>{serverResult ? 'SERVER RESULT / MANIFEST VERIFIED' : 'COMMON PARKING / IK REPLAN'}</small>
             <h2 id="parking-merge-title">合并停车点</h2>
-            <p>{task.name} · 先聚类近邻停车点，再搜索可保持末端拍照姿态的公共位置</p>
+            <p>{task.name} · {serverResult
+              ? '集群结果已通过任务、地图与机器人指纹校验，请选择要落库的近邻簇'
+              : '先聚类近邻停车点，再搜索可保持末端拍照姿态的公共位置'}</p>
           </div>
           <div className="parking-merge-dialog__status">
             <i className={analyzing ? 'is-active' : ''} />
-            <span>{analyzing ? 'PLANNING' : state.status === 'ready' ? 'ANALYZED' : 'STANDBY'}</span>
+            <span>{analyzing ? 'PLANNING' : serverResult ? 'SERVER VERIFIED' : state.status === 'ready' ? 'ANALYZED' : 'STANDBY'}</span>
           </div>
           <button
             type="button"
@@ -337,4 +340,3 @@ export default function ParkingPointMergeDialog({
     document.body,
   );
 }
-

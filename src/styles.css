@@ -5296,6 +5296,21 @@ input[type="number"]::-webkit-inner-spin-button {
   background: rgba(89, 219, 232, 0.075);
 }
 
+.teaching-tree-task-actions > .teaching-tree-server-merge-action {
+  border-color: rgba(154, 140, 255, 0.3);
+  color: #a99ee5;
+  background:
+    linear-gradient(90deg, rgba(154, 140, 255, 0.08), transparent 72%),
+    rgba(9, 12, 24, 0.42);
+  box-shadow: inset 2px 0 0 rgba(154, 140, 255, 0.62);
+}
+
+.teaching-tree-task-actions > .teaching-tree-server-merge-action:hover:not(:disabled) {
+  border-color: rgba(174, 161, 255, 0.58);
+  color: #d0c9ff;
+  background: rgba(154, 140, 255, 0.11);
+}
+
 .teaching-tree-task-actions > .teaching-tree-play-action {
   border-color: rgba(94, 229, 154, 0.38);
   color: #a9e4bd;
@@ -6357,6 +6372,496 @@ input[type="number"]::-webkit-inner-spin-button {
 @media (prefers-reduced-motion: reduce) {
   .parking-merge-dialog,
   .parking-merge-dialog__status i.is-active { animation: none; }
+}
+
+/* Reproducible offline compute hand-off for common parking planning. */
+.parking-server-modal {
+  position: fixed;
+  z-index: 610;
+  inset: 0;
+  display: grid;
+  padding: 20px;
+  place-items: center;
+  background:
+    linear-gradient(rgba(4, 9, 13, 0.82), rgba(2, 6, 9, 0.94)),
+    repeating-linear-gradient(90deg, transparent 0 31px, rgba(154, 140, 255, 0.025) 31px 32px);
+  backdrop-filter: blur(9px);
+}
+
+.parking-server-dialog {
+  width: min(1010px, calc(100vw - 40px));
+  overflow: hidden;
+  border: 1px solid rgba(154, 140, 255, 0.34);
+  background:
+    radial-gradient(circle at 82% -20%, rgba(114, 93, 230, 0.13), transparent 42%),
+    #071116;
+  box-shadow:
+    0 30px 110px rgba(0, 0, 0, 0.68),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.018);
+  animation: parking-merge-modal-in 180ms ease-out both;
+}
+
+.parking-server-dialog__header {
+  display: grid;
+  grid-template-columns: 44px minmax(0, 1fr) auto 34px;
+  align-items: center;
+  gap: 12px;
+  min-height: 78px;
+  padding: 0 16px;
+  border-bottom: 1px solid rgba(154, 140, 255, 0.2);
+  background:
+    linear-gradient(90deg, rgba(154, 140, 255, 0.1), transparent 48%),
+    rgba(5, 13, 18, 0.82);
+}
+
+.parking-server-dialog__mark {
+  display: grid;
+  width: 40px;
+  height: 40px;
+  place-items: center;
+  border: 1px solid rgba(154, 140, 255, 0.35);
+  color: #b2a8f0;
+  background: rgba(154, 140, 255, 0.08);
+  box-shadow: inset 3px 0 rgba(154, 140, 255, 0.58);
+}
+
+.parking-server-dialog__header small,
+.parking-server-dialog__header p,
+.parking-server-dialog__header h2 { margin: 0; }
+
+.parking-server-dialog__header > div:nth-child(2) { min-width: 0; }
+
+.parking-server-dialog__header > div:nth-child(2) > small {
+  display: block;
+  margin-bottom: 3px;
+  color: #746ca3;
+  font: 7px "SFMono-Regular", Menlo, monospace;
+  letter-spacing: 0.17em;
+}
+
+.parking-server-dialog__header h2 {
+  color: #d4d9d6;
+  font-size: 17px;
+  font-weight: 570;
+  letter-spacing: 0.025em;
+}
+
+.parking-server-dialog__header p {
+  margin-top: 3px;
+  overflow: hidden;
+  color: #667b7c;
+  font-size: 9px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.parking-server-dialog__protocol {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 25px;
+  padding: 0 8px;
+  border: 1px solid rgba(94, 229, 154, 0.18);
+  color: #72af89;
+  background: rgba(94, 229, 154, 0.04);
+  font: 7px "SFMono-Regular", Menlo, monospace;
+  letter-spacing: 0.1em;
+}
+
+.parking-server-dialog__header > button {
+  display: grid;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  place-items: center;
+  border: 1px solid rgba(137, 177, 179, 0.15);
+  color: #6f8586;
+  background: transparent;
+  cursor: pointer;
+}
+
+.parking-server-dialog__header > button:hover:not(:disabled) {
+  border-color: rgba(255, 112, 110, 0.38);
+  color: #de8985;
+}
+
+.parking-server-dialog__header > button:disabled { cursor: wait; opacity: 0.35; }
+
+.parking-server-dialog__body {
+  display: grid;
+  grid-template-columns: minmax(310px, 0.82fr) minmax(390px, 1.18fr);
+  min-height: 450px;
+}
+
+.parking-server-context {
+  padding: 17px;
+  border-right: 1px solid rgba(137, 177, 179, 0.11);
+  background: rgba(5, 14, 18, 0.54);
+}
+
+.parking-server-context > header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid rgba(137, 177, 179, 0.1);
+  color: #8f84cb;
+}
+
+.parking-server-context > header span { display: grid; gap: 1px; }
+.parking-server-context > header strong { color: #b2bcba; font-size: 11px; font-weight: 570; }
+.parking-server-context > header small { color: #566869; font: 7px "SFMono-Regular", Menlo, monospace; letter-spacing: 0.12em; }
+
+.parking-server-context > dl {
+  display: grid;
+  gap: 0;
+  margin: 12px 0 16px;
+}
+
+.parking-server-context > dl > div {
+  display: grid;
+  grid-template-columns: 50px minmax(0, 1fr);
+  gap: 2px 9px;
+  min-height: 48px;
+  padding: 8px 5px;
+  border-bottom: 1px solid rgba(137, 177, 179, 0.075);
+}
+
+.parking-server-context dt {
+  grid-row: span 2;
+  align-self: center;
+  color: #566b6d;
+  font: 8px "SFMono-Regular", Menlo, monospace;
+}
+
+.parking-server-context dd {
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  color: #9eaeab;
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.parking-server-context dl small {
+  overflow: hidden;
+  color: #5e6e75;
+  font: 7px "SFMono-Regular", Menlo, monospace;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.parking-server-parameters {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 7px;
+}
+
+.parking-server-parameters > label {
+  display: grid;
+  gap: 5px;
+  color: #607676;
+  font-size: 8px;
+}
+
+.parking-server-parameters > label > div {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  height: 29px;
+  border: 1px solid rgba(154, 140, 255, 0.18);
+  background: rgba(2, 9, 13, 0.7);
+}
+
+.parking-server-parameters input {
+  min-width: 0;
+  padding: 0 7px;
+  border: 0;
+  outline: 0;
+  color: #c1c7c4;
+  background: transparent;
+  font: 9px "SFMono-Regular", Menlo, monospace;
+}
+
+.parking-server-parameters label b {
+  align-self: center;
+  padding: 0 6px;
+  color: #655c97;
+  font: 7px "SFMono-Regular", Menlo, monospace;
+  font-weight: 500;
+}
+
+.parking-server-parameters > button {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 29px;
+  padding: 0 8px;
+  border: 1px solid rgba(137, 177, 179, 0.13);
+  color: #596d6f;
+  background: rgba(5, 13, 17, 0.64);
+  font: 7px "SFMono-Regular", Menlo, monospace;
+  letter-spacing: 0.08em;
+  cursor: pointer;
+}
+
+.parking-server-parameters > button > span {
+  position: relative;
+  width: 24px;
+  height: 12px;
+  border: 1px solid #405456;
+  border-radius: 10px;
+}
+
+.parking-server-parameters > button > span::after {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #607071;
+  content: '';
+  transition: transform 140ms ease, background 140ms ease;
+}
+
+.parking-server-parameters > button.is-on {
+  border-color: rgba(94, 229, 154, 0.2);
+  color: #74aa87;
+}
+
+.parking-server-parameters > button.is-on > span { border-color: rgba(94, 229, 154, 0.46); }
+.parking-server-parameters > button.is-on > span::after { background: #5ee59a; transform: translateX(12px); }
+
+.parking-server-transfer {
+  display: flex;
+  min-width: 0;
+  padding: 20px;
+  flex-direction: column;
+  background:
+    linear-gradient(180deg, rgba(154, 140, 255, 0.025), transparent 36%),
+    rgba(5, 12, 16, 0.34);
+}
+
+.parking-server-flow {
+  display: grid;
+  grid-template-columns: 68px minmax(18px, 1fr) 68px minmax(18px, 1fr) 68px;
+  align-items: center;
+  justify-content: center;
+  margin: 4px auto 23px;
+}
+
+.parking-server-flow > span {
+  display: grid;
+  width: 66px;
+  height: 66px;
+  place-items: center;
+  border: 1px solid rgba(154, 140, 255, 0.23);
+  color: #9d91d9;
+  background: rgba(154, 140, 255, 0.045);
+}
+
+.parking-server-flow > span b {
+  position: absolute;
+  margin: -50px 0 0 -49px;
+  color: #544c80;
+  font: 6px "SFMono-Regular", Menlo, monospace;
+}
+
+.parking-server-flow > span small {
+  color: #5d6670;
+  font: 6px "SFMono-Regular", Menlo, monospace;
+  letter-spacing: 0.12em;
+}
+
+.parking-server-flow > i {
+  height: 1px;
+  background: linear-gradient(90deg, rgba(154, 140, 255, 0.14), rgba(94, 229, 154, 0.25));
+}
+
+.parking-server-status {
+  display: grid;
+  grid-template-columns: 42px minmax(0, 1fr);
+  min-height: 72px;
+  border: 1px solid rgba(137, 177, 179, 0.12);
+  background: rgba(3, 10, 14, 0.64);
+}
+
+.parking-server-status > span {
+  display: grid;
+  place-items: center;
+  border-right: 1px solid rgba(137, 177, 179, 0.1);
+  color: #687b7d;
+}
+
+.parking-server-status > div { align-self: center; min-width: 0; padding: 8px 10px; }
+.parking-server-status small { display: block; color: #526568; font: 6px "SFMono-Regular", Menlo, monospace; letter-spacing: 0.16em; }
+.parking-server-status strong { display: block; margin-top: 2px; color: #a4b2af; font-size: 10px; font-weight: 570; }
+.parking-server-status p { margin: 3px 0 0; overflow: hidden; color: #657779; font-size: 8px; text-overflow: ellipsis; white-space: nowrap; }
+.parking-server-status.is-exporting > span,
+.parking-server-status.is-importing > span { color: #a99ee5; }
+.parking-server-status.is-success { border-color: rgba(94, 229, 154, 0.2); }
+.parking-server-status.is-success > span { color: #5ee59a; }
+.parking-server-status.is-error { border-color: rgba(255, 112, 110, 0.24); }
+.parking-server-status.is-error > span { color: #e47873; }
+
+.parking-server-package-receipt {
+  display: grid;
+  grid-template-columns: minmax(0, 1.5fr) 0.55fr 0.7fr 1fr;
+  margin: 9px 0 0;
+  border: 1px solid rgba(94, 229, 154, 0.12);
+}
+
+.parking-server-package-receipt > div { min-width: 0; padding: 6px 8px; border-right: 1px solid rgba(137, 177, 179, 0.08); }
+.parking-server-package-receipt > div:last-child { border-right: 0; }
+.parking-server-package-receipt dt { color: #4d6262; font: 6px "SFMono-Regular", Menlo, monospace; }
+.parking-server-package-receipt dd { margin: 2px 0 0; overflow: hidden; color: #78a789; font: 7px "SFMono-Regular", Menlo, monospace; text-overflow: ellipsis; white-space: nowrap; }
+
+.parking-server-runbook {
+  margin-top: auto;
+  padding-top: 15px;
+}
+
+.parking-server-runbook > header {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  margin-bottom: 7px;
+  color: #7e8e8d;
+}
+
+.parking-server-runbook > header::after {
+  height: 1px;
+  flex: 1;
+  background: linear-gradient(90deg, rgba(154, 140, 255, 0.23), transparent);
+  content: '';
+}
+
+.parking-server-runbook > header span {
+  color: #aeb8b5;
+  font-size: 9px;
+  font-weight: 570;
+}
+
+.parking-server-runbook > header small {
+  color: #625a90;
+  font: 6px "SFMono-Regular", Menlo, monospace;
+  letter-spacing: 0.12em;
+  white-space: nowrap;
+}
+
+.parking-server-runbook ol {
+  display: grid;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.parking-server-runbook li {
+  display: grid;
+  grid-template-columns: 29px minmax(0, 1fr);
+  min-height: 38px;
+  border: 1px solid rgba(137, 177, 179, 0.1);
+  background:
+    linear-gradient(90deg, rgba(154, 140, 255, 0.04), transparent 42%),
+    rgba(2, 9, 13, 0.5);
+}
+
+.parking-server-runbook li > b {
+  display: grid;
+  place-items: center;
+  border-right: 1px solid rgba(154, 140, 255, 0.14);
+  color: #8074bb;
+  font: 7px "SFMono-Regular", Menlo, monospace;
+  font-weight: 500;
+}
+
+.parking-server-runbook li > span {
+  display: grid;
+  min-width: 0;
+  padding: 5px 8px;
+  grid-template-columns: 114px minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+}
+
+.parking-server-runbook strong {
+  color: #849694;
+  font-size: 8px;
+  font-weight: 540;
+}
+
+.parking-server-runbook code {
+  min-width: 0;
+  overflow-x: auto;
+  color: #86b99a;
+  font: 7px "SFMono-Regular", Menlo, monospace;
+  line-height: 1.5;
+  scrollbar-width: none;
+  white-space: nowrap;
+}
+
+.parking-server-runbook code::-webkit-scrollbar { display: none; }
+
+.parking-server-transfer__actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 9px;
+  margin-top: 9px;
+}
+
+.parking-server-transfer__actions > button {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  min-width: 0;
+  min-height: 62px;
+  padding: 9px 12px;
+  border: 1px solid rgba(137, 177, 179, 0.16);
+  color: #849493;
+  background: rgba(4, 12, 16, 0.76);
+  text-align: left;
+  cursor: pointer;
+}
+
+.parking-server-transfer__actions > button > span { display: grid; min-width: 0; gap: 3px; }
+.parking-server-transfer__actions strong { color: #c2cbc8; font-size: 12px; font-weight: 580; }
+.parking-server-transfer__actions small { overflow: hidden; color: #586b6d; font: 7px "SFMono-Regular", Menlo, monospace; text-overflow: ellipsis; white-space: nowrap; }
+.parking-server-transfer__actions > button.is-export { border-left: 2px solid rgba(154, 140, 255, 0.72); color: #a99ee5; }
+.parking-server-transfer__actions > button.is-import { border-left: 2px solid rgba(94, 229, 154, 0.72); color: #69c18a; }
+.parking-server-transfer__actions > button:hover:not(:disabled) { border-color: rgba(154, 140, 255, 0.48); background: rgba(154, 140, 255, 0.07); }
+.parking-server-transfer__actions > button:disabled { cursor: wait; opacity: 0.42; }
+
+.parking-server-transfer__note {
+  margin: 10px 0 0;
+  color: #53686a;
+  font-size: 8px;
+  line-height: 1.6;
+}
+
+@media (max-width: 820px) {
+  .parking-server-modal { padding: 8px; overflow-y: auto; place-items: start center; }
+  .parking-server-dialog { width: calc(100vw - 16px); margin-block: 8px; }
+  .parking-server-dialog__header { grid-template-columns: 40px minmax(0, 1fr) 32px; padding: 0 10px; }
+  .parking-server-dialog__protocol { display: none; }
+  .parking-server-dialog__body { grid-template-columns: 1fr; }
+  .parking-server-context { border-right: 0; border-bottom: 1px solid rgba(137, 177, 179, 0.11); }
+  .parking-server-transfer { min-height: 400px; }
+}
+
+@media (max-width: 520px) {
+  .parking-server-flow { grid-template-columns: 54px minmax(10px, 1fr) 54px minmax(10px, 1fr) 54px; }
+  .parking-server-flow > span { width: 52px; height: 52px; }
+  .parking-server-transfer__actions { grid-template-columns: 1fr; }
+  .parking-server-parameters { grid-template-columns: 1fr; }
+  .parking-server-runbook li > span { grid-template-columns: 1fr; gap: 2px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .parking-server-dialog { animation: none; }
+  .parking-server-parameters > button > span::after { transition: none; }
 }
 
 /* Dedicated teaching archive page */

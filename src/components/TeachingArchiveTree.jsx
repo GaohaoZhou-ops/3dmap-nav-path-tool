@@ -16,6 +16,7 @@ import {
   MapPin,
   Maximize2,
   Play,
+  Server,
   Trash2,
   X,
 } from 'lucide-react';
@@ -25,6 +26,7 @@ import {
   DEFAULT_PARKING_MERGE_XYZ_TOLERANCE,
 } from '../lib/parkingPointMerge.js';
 import ParkingPointMergeDialog from './ParkingPointMergeDialog.jsx';
+import ParkingPointServerDialog from './ParkingPointServerDialog.jsx';
 import TeachingParkingMap from './TeachingParkingMap.jsx';
 
 const formatCapturedAt = (value) => {
@@ -141,6 +143,7 @@ export default function TeachingArchiveTree({
   const [nameDraft, setNameDraft] = useState('');
   const [visionPreview, setVisionPreview] = useState(null);
   const [mergeDialog, setMergeDialog] = useState(null);
+  const [serverMergeTaskId, setServerMergeTaskId] = useState(null);
   const mergeAnalysisRevisionRef = useRef(0);
 
   const selectedTask = tasks.find((task) => task.id === selection?.taskId)
@@ -171,6 +174,13 @@ export default function TeachingArchiveTree({
     parkingMergePlannerReady
     && robotReady
     && Number(robotLoadState?.zividCount) > 0,
+  );
+  const serverMergeAvailable = Boolean(
+    robotReady
+    && Number(robotLoadState?.zividCount) > 0
+    && robot?.format === 'urdf'
+    && mapData?.geometry
+    && mapData?.sourceHash
   );
   const exportPacking = projectExportState?.status === 'packing';
 
@@ -371,6 +381,7 @@ export default function TeachingArchiveTree({
     setMergeDialog((current) => ({
       ...(current || {}),
       taskId: task.id,
+      source: 'local',
       status: 'analyzing',
       parameters,
       result: current?.taskId === task.id ? current.result : null,
@@ -432,6 +443,35 @@ export default function TeachingArchiveTree({
     if (mergeDialog?.status === 'analyzing') return;
     mergeAnalysisRevisionRef.current += 1;
     setMergeDialog(null);
+  };
+
+  const acceptServerMergeResult = ({ analysis, manifest }) => {
+    const task = tasks.find((item) => item.id === serverMergeTaskId);
+    if (!task || !analysis) return;
+    const importedParameters = {
+      distanceThreshold: Number(analysis.distanceThreshold)
+        || DEFAULT_PARKING_CLUSTER_DISTANCE,
+      positionToleranceCm: (Number(analysis.positionTolerance)
+        || DEFAULT_PARKING_MERGE_XYZ_TOLERANCE) * 100,
+      rotationTolerance: Number(analysis.rotationTolerance)
+        || DEFAULT_PARKING_MERGE_RPY_TOLERANCE,
+    };
+    mergeAnalysisRevisionRef.current += 1;
+    setMergeDialog({
+      taskId: task.id,
+      source: 'server',
+      serverManifest: manifest,
+      status: 'ready',
+      parameters: importedParameters,
+      analyzedParameters: importedParameters,
+      result: analysis,
+      selectedClusterIds: new Set(
+        (analysis.clusters || []).filter((cluster) => cluster.feasible)
+          .map((cluster) => cluster.id),
+      ),
+      error: '',
+    });
+    setServerMergeTaskId(null);
   };
 
   const updateParkingMergeParameter = (name, value) => {
@@ -576,6 +616,7 @@ export default function TeachingArchiveTree({
         data-active-parking-point={selectedParkingPoint?.id || ''}
         data-teaching-context-match={contextMatches ? 'true' : 'false'}
         data-parking-merge-planner-ready={mergePlannerAvailable ? 'true' : 'false'}
+        data-parking-merge-server-ready={serverMergeAvailable ? 'true' : 'false'}
         data-project-export-state={projectExportState?.status || 'idle'}
       >
         <header className="teaching-tree-toolbar">
@@ -694,6 +735,28 @@ export default function TeachingArchiveTree({
                           onClick={openParkingMergeDialog}
                         >
                           <GitMerge size={12} /> 合并停车点
+                        </button>
+                        <button
+                          type="button"
+                          className="teaching-tree-server-merge-action"
+                          aria-label="打开合并停车点 Server 导入导出"
+                          disabled={
+                            selectedTask.parkingPoints?.length < 2
+                            || !contextMatches
+                            || !serverMergeAvailable
+                          }
+                          title={selectedTask.parkingPoints?.length < 2
+                            ? '至少需要两个停车点'
+                            : !contextMatches
+                              ? '当前地图或机器人与任务不匹配'
+                              : !mapData?.geometry || !mapData?.sourceHash
+                                ? '请加载带来源指纹的完整地图'
+                                : !serverMergeAvailable
+                                  ? '正在等待带 Zivid 光学坐标系的 URDF 机器人'
+                                  : '导出集群计算包，或导入经过 manifest 校验的 Server 结果'}
+                          onClick={() => setServerMergeTaskId(selectedTask.id)}
+                        >
+                          <Server size={12} /> 合并停车点-Server
                         </button>
                         <button
                           type="button"
@@ -913,6 +976,16 @@ export default function TeachingArchiveTree({
           }}
           onToggleCluster={toggleParkingMergeCluster}
           onConfirm={confirmParkingPointMerge}
+        />
+      )}
+
+      {serverMergeTaskId && (
+        <ParkingPointServerDialog
+          task={tasks.find((task) => task.id === serverMergeTaskId)}
+          mapData={mapData}
+          robot={robot}
+          onClose={() => setServerMergeTaskId(null)}
+          onImported={acceptServerMergeResult}
         />
       )}
 

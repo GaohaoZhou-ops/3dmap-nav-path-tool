@@ -11,17 +11,17 @@ import {
   EyeOff,
   Gauge,
   Keyboard,
+  Lock,
   MapPin,
-  Minus,
   MousePointer2,
   Move3D,
   Palette,
-  Plus,
   Rotate3D,
   RotateCcw,
   Ruler,
   ShieldAlert,
   ShieldCheck,
+  Unlock,
   X,
 } from 'lucide-react';
 import EndEffectorControlPanel from './EndEffectorControlPanel.jsx';
@@ -117,6 +117,9 @@ const SPACEMOUSE_AXIS_HUD_META = Object.freeze({
   yaw: { code: 'YAW', label: '左偏航 / 右偏航', group: 'RPY' },
 });
 const ROBOT_LINEAR_SPEED = 0.9;
+// Ground alignment is an occasional trim operation, so keep this deliberately
+// slower than planar driving: a key tap changes height by roughly 8 mm.
+const ROBOT_VERTICAL_SPEED = 0.12;
 const ROBOT_ROTATION_SPEED = THREE.MathUtils.degToRad(72);
 const ROBOT_PARKING_GHOST_COLOR = 0x63e6ee;
 const ROBOT_PARKING_GHOST_OPACITY = 0.24;
@@ -133,9 +136,12 @@ const ROBOT_CONTROL_CODES = new Set([
   'KeyA',
   'KeyS',
   'KeyD',
+  'ArrowUp',
+  'ArrowDown',
   'ArrowLeft',
   'ArrowRight',
 ]);
+const ROBOT_VERTICAL_CONTROL_CODES = new Set(['ArrowUp', 'ArrowDown']);
 const KEYBOARD_CONTROL_CODES = new Set([
   'KeyW',
   'KeyA',
@@ -181,6 +187,8 @@ const ROBOT_CONTROL_ACTIONS = {
   KeyA: 'strafe-left',
   KeyS: 'backward',
   KeyD: 'strafe-right',
+  ArrowUp: 'z-up',
+  ArrowDown: 'z-down',
   ArrowLeft: 'yaw-left',
   ArrowRight: 'yaw-right',
 };
@@ -1348,6 +1356,7 @@ export default function PointCloudViewer({
   robotJointValues,
   lockedRobotJointNames = [],
   robotControlEnabled = false,
+  robotHeightLocked = false,
   robotTrajectoryActive = false,
   robotParkingGhost = null,
   spaceMouseInputRef,
@@ -1358,6 +1367,7 @@ export default function PointCloudViewer({
   onRobotPoseChange,
   onRobotJointValuesChange,
   onRobotControlChange,
+  onRobotHeightLockChange,
   onZividCameraPoseChange,
   onCameraTeachingResult,
   onParkingMergePlannerChange,
@@ -1427,6 +1437,7 @@ export default function PointCloudViewer({
   const robotJointValuesRef = useRef(normalizeRobotJointValues(robotJointValues));
   const lockedRobotJointNamesRef = useRef(normalizeRobotJointLocks(lockedRobotJointNames));
   const robotControlEnabledRef = useRef(Boolean(robotControlEnabled));
+  const robotHeightLockedRef = useRef(Boolean(robotHeightLocked));
   const robotTrajectoryActiveRef = useRef(Boolean(robotTrajectoryActive));
   const robotLoadStateRef = useRef(robotLoadState);
   const robotPoseActionsRef = useRef(null);
@@ -1463,6 +1474,7 @@ export default function PointCloudViewer({
   onCameraTeachingResultRef.current = onCameraTeachingResult;
   onCollisionProtectionStatusRef.current = onCollisionProtectionStatus;
   robotControlEnabledRef.current = Boolean(robotControlEnabled);
+  robotHeightLockedRef.current = Boolean(robotHeightLocked);
   robotTrajectoryActiveRef.current = Boolean(robotTrajectoryActive);
   robotLoadStateRef.current = robotLoadState;
   lockedRobotJointNamesRef.current = normalizeRobotJointLocks(lockedRobotJointNames);
@@ -1480,6 +1492,7 @@ export default function PointCloudViewer({
     : sourcePointCount;
   const resolutionMapKey = mapData?.mapId || mapData?.geometry?.uuid || null;
   const suggestedResolutionIndex = adaptiveResolutionIndex(renderablePointCount);
+  const suggestedResolution = RESOLUTION_LEVELS[suggestedResolutionIndex];
   const hasManualResolution =
     manualResolution.mapKey === resolutionMapKey
     && Number.isInteger(manualResolution.index);
@@ -1512,6 +1525,13 @@ export default function PointCloudViewer({
       mapKey: resolutionMapKey,
       index: Math.max(0, Math.min(DEFAULT_RESOLUTION_INDEX, nextIndex)),
     });
+  };
+  const chooseResolutionMode = (value) => {
+    if (value === 'auto') {
+      setManualResolution({ mapKey: null, index: null });
+      return;
+    }
+    chooseResolution(Number(value));
   };
 
   const applyRobotJointStateToScene = (values, source = 'external') => {
@@ -3010,6 +3030,10 @@ export default function PointCloudViewer({
     renderer.domElement.dataset.robotControlEnabled = robotControlEnabledRef.current
       ? 'true'
       : 'false';
+    renderer.domElement.dataset.robotHeightLocked = robotHeightLockedRef.current
+      ? 'true'
+      : 'false';
+    renderer.domElement.dataset.robotHeightLockBlockedCount = '0';
     renderer.domElement.dataset.keyboardControlOwner = robotControlEnabledRef.current
       ? 'robot'
       : 'camera';
@@ -3017,6 +3041,7 @@ export default function PointCloudViewer({
     renderer.domElement.dataset.robotForwardAxis = '+x';
     renderer.domElement.dataset.robotLeftAxis = '+y';
     renderer.domElement.dataset.robotLinearSpeed = `${ROBOT_LINEAR_SPEED}m/s`;
+    renderer.domElement.dataset.robotVerticalSpeed = `${ROBOT_VERTICAL_SPEED}m/s`;
     renderer.domElement.dataset.robotRotationSpeed = '72deg/s';
     renderer.domElement.dataset.chassisDragMode = 'idle';
     renderer.domElement.dataset.chassisDragging = 'false';
@@ -4116,7 +4141,9 @@ export default function PointCloudViewer({
         const yawInput = robotControlActive
           ? 0
           : Number(keyActive('ArrowLeft')) - Number(keyActive('ArrowRight'));
-        const pitchInput = Number(keyActive('ArrowUp')) - Number(keyActive('ArrowDown'));
+        const pitchInput = robotControlActive
+          ? 0
+          : Number(keyActive('ArrowUp')) - Number(keyActive('ArrowDown'));
         if (yawInput || pitchInput) {
           const hasRotationTapImpulse =
             keyboardImpulses.has('ArrowUp')
@@ -4152,16 +4179,26 @@ export default function PointCloudViewer({
         }
 
         if (robotControlActive) {
+          const heightLocked = robotHeightLockedRef.current;
           const robotForwardInput =
             Number(keyActive('KeyW')) - Number(keyActive('KeyS'));
           const robotStrafeLeftInput =
             Number(keyActive('KeyA')) - Number(keyActive('KeyD'));
           const robotYawInput =
             Number(keyActive('ArrowLeft')) - Number(keyActive('ArrowRight'));
-          if (robotForwardInput || robotStrafeLeftInput || robotYawInput) {
-            const robotTapImpulse = [...ROBOT_CONTROL_CODES].some(
-              (code) => keyboardImpulses.has(code),
-            );
+          const robotVerticalInput = heightLocked
+            ? 0
+            : Number(keyActive('ArrowUp')) - Number(keyActive('ArrowDown'));
+          if (
+            robotForwardInput
+            || robotStrafeLeftInput
+            || robotVerticalInput
+            || robotYawInput
+          ) {
+            const robotTapImpulse = [...ROBOT_CONTROL_CODES].some((code) => (
+              keyboardImpulses.has(code)
+              && (!heightLocked || !ROBOT_VERTICAL_CONTROL_CODES.has(code))
+            ));
             const movementDuration = robotTapImpulse
               ? Math.max(deltaSeconds, KEYBOARD_TAP_DURATION)
               : deltaSeconds;
@@ -4198,11 +4235,22 @@ export default function PointCloudViewer({
                 ),
               );
             }
+            if (robotVerticalInput) {
+              nextPose.position.z += (
+                ROBOT_VERTICAL_SPEED
+                * speedMultiplier
+                * movementDuration
+                * robotVerticalInput
+              );
+            }
 
             robotPoseRef.current = applyRobotPose(robotLayer, nextPose);
             writeRobotPoseDataset(renderer.domElement, robotPoseRef.current);
             renderer.domElement.dataset.lastRobotAction = [...ROBOT_CONTROL_CODES]
-              .filter((code) => keyActive(code))
+              .filter((code) => (
+                keyActive(code)
+                && (!heightLocked || !ROBOT_VERTICAL_CONTROL_CODES.has(code))
+              ))
               .map((code) => ROBOT_CONTROL_ACTIONS[code])
               .join('+');
             renderer.domElement.dataset.robotSpeedMode = speedMultiplier > 1
@@ -5449,6 +5497,19 @@ export default function PointCloudViewer({
   }, [mapData?.geometry, robotControlEnabled, robotDescriptor, robotLoadState?.status]);
 
   useEffect(() => {
+    const locked = Boolean(robotHeightLocked && robotDescriptor);
+    robotHeightLockedRef.current = locked;
+    if (locked) {
+      ROBOT_VERTICAL_CONTROL_CODES.forEach((code) => {
+        pressedKeysRef.current.delete(code);
+        keyboardImpulseRef.current.delete(code);
+      });
+    }
+    const canvas = controlsRef.current?.domElement;
+    if (canvas) canvas.dataset.robotHeightLocked = locked ? 'true' : 'false';
+  }, [mapData?.geometry, robotDescriptor, robotHeightLocked]);
+
+  useEffect(() => {
     const canvas = controlsRef.current?.domElement;
     const active = Boolean(robotTrajectoryActive);
     if (active) {
@@ -5525,7 +5586,22 @@ export default function PointCloudViewer({
         canvas.dataset.lastKeyboardKey = code.startsWith('Key') ? code.slice(3) : code;
         canvas.dataset.keyboardControlOwner = robotOwnsKey ? 'robot' : 'camera';
         if (robotOwnsKey) {
-          canvas.dataset.lastRobotAction = ROBOT_CONTROL_ACTIONS[code];
+          const heightChangeBlocked =
+            robotHeightLockedRef.current
+            && ROBOT_VERTICAL_CONTROL_CODES.has(code);
+          if (heightChangeBlocked) {
+            pressedKeysRef.current.delete(code);
+            keyboardImpulseRef.current.delete(code);
+            canvas.dataset.lastRobotAction = 'z-locked';
+            canvas.dataset.lastRobotBlockedAction = ROBOT_CONTROL_ACTIONS[code];
+            if (!event.repeat) {
+              canvas.dataset.robotHeightLockBlockedCount = String(
+                Number(canvas.dataset.robotHeightLockBlockedCount || 0) + 1,
+              );
+            }
+          } else {
+            canvas.dataset.lastRobotAction = ROBOT_CONTROL_ACTIONS[code];
+          }
         } else if (KEYBOARD_ROTATION_ACTIONS[code]) {
           canvas.dataset.lastKeyboardRotation = KEYBOARD_ROTATION_ACTIONS[code];
         }
@@ -5862,6 +5938,11 @@ export default function PointCloudViewer({
     && robotDescriptor
     && robotLoadState?.status === 'loaded',
   );
+  const robotHeightLockActive = Boolean(
+    robotHeightLocked
+    && robotDescriptor
+    && robotLoadState?.status === 'loaded'
+  );
   const displayedRobotPose = normalizeRobotPose(robotPose);
   const robotParkingGhostVisible = Boolean(
     robotParkingGhost
@@ -6033,28 +6114,44 @@ export default function PointCloudViewer({
                 <Crosshair size={13} /> 原点
               </button>
               {robotLoadState?.status === 'loaded' && (
-                <button
-                  type="button"
-                  className={`robot-control-toggle ${robotControlActive ? 'is-active' : ''}`}
-                  disabled={robotTrajectoryActive}
-                  onClick={() => {
-                    focusRobot();
-                    toggleRobotControl();
-                  }}
-                  aria-label="定位机器人模型"
-                  aria-pressed={robotControlActive}
-                  title={
-                    robotTrajectoryActive
-                      ? '示教轨迹播放期间由规划器接管机器人，暂停或停止后可恢复手动控制'
-                      : endEffectorControlActive
-                      ? '退出机械臂末端控制，定位机器人并启用麦轮底盘控制'
-                      : robotControlActive
-                        ? '底盘控制已启用；再次点击将键盘交还相机'
-                        : '定位机器人并启用麦轮底盘控制：W/S 前后、A/D 横移、左右方向键旋转'
-                  }
-                >
-                  <Bot size={13} /> 机器人
-                </button>
+                <>
+                  <button
+                    type="button"
+                    className={`robot-control-toggle ${robotControlActive ? 'is-active' : ''}`}
+                    disabled={robotTrajectoryActive}
+                    onClick={() => {
+                      focusRobot();
+                      toggleRobotControl();
+                    }}
+                    aria-label="定位机器人模型"
+                    aria-pressed={robotControlActive}
+                    title={
+                      robotTrajectoryActive
+                        ? '示教轨迹播放期间由规划器接管机器人，暂停或停止后可恢复手动控制'
+                        : endEffectorControlActive
+                        ? '退出机械臂末端控制，定位机器人并启用麦轮底盘控制'
+                        : robotControlActive
+                          ? '底盘控制已启用；再次点击将键盘交还相机'
+                          : '定位机器人并启用麦轮底盘控制：W/S 前后、A/D 横移、←/→ 旋转、↑/↓ 微调底盘高度'
+                    }
+                  >
+                    <Bot size={13} /> 机器人
+                  </button>
+                  <button
+                    type="button"
+                    className={`robot-height-lock-toggle ${robotHeightLockActive ? 'is-active' : ''}`}
+                    aria-label={robotHeightLockActive ? '解锁机器人高度' : '锁定机器人高度'}
+                    aria-pressed={robotHeightLockActive}
+                    data-height-lock-state={robotHeightLockActive ? 'locked' : 'unlocked'}
+                    title={robotHeightLockActive
+                      ? `机器人 Z=${displayedRobotPose.position.z.toFixed(3)} m 已锁定；点击后允许 ↑/↓ 调整`
+                      : '锁定当前机器人 Z 高度，避免之后误触 ↑/↓ 改变底盘高度'}
+                    onClick={() => onRobotHeightLockChange?.(!robotHeightLockActive)}
+                  >
+                    {robotHeightLockActive ? <Lock size={12} /> : <Unlock size={12} />}
+                    {robotHeightLockActive ? '高度已锁' : '锁定高度'}
+                  </button>
+                </>
               )}
               <button
                 type="button"
@@ -6089,52 +6186,35 @@ export default function PointCloudViewer({
               role="group"
               aria-label="点云显示分辨率"
               title={
-                resolutionSelection === 'auto'
-                  ? `源点数超过 ${AUTO_POINT_BUDGET.toLocaleString('zh-CN')}，已自动选择当前档位；可用按钮手动覆盖`
+                !hasManualResolution
+                  ? `自动档会在源点数超过 ${AUTO_POINT_BUDGET.toLocaleString('zh-CN')} 时选择合适密度；可用下拉框手动覆盖`
                   : '仅调整 3D 显示采样，不改变 2D 截面和导航数据'
               }
             >
-              <div
-                className={`resolution-readout tone-${resolution.tone} ${resolutionSelection === 'auto' ? 'is-auto' : ''}`}
-                role="status"
-                aria-label={`${resolutionSelection === 'auto' ? '自动降采样，' : ''}3D 点云分辨率 ${Math.round(resolution.ratio * 100)}%，渲染 ${renderedPointCount.toLocaleString('zh-CN')} 个点`}
+              <label
+                className={`mesh-quality-control point-density-control tone-${resolution.tone} ${!hasManualResolution ? 'is-auto' : ''}`}
+                title={`${hasManualResolution ? '手动' : '自动'}档：当前渲染 ${renderedPointCount.toLocaleString('zh-CN')} / ${renderablePointCount.toLocaleString('zh-CN')} 个点`}
               >
-                <Gauge size={14} />
+                <Gauge size={13} />
                 <span>
-                  <small>{resolutionSelection === 'auto' ? `自动·${resolution.label}` : resolution.label}</small>
-                  <strong>{Math.round(resolution.ratio * 100)}%</strong>
+                  <small>POINT DENSITY</small>
+                  <select
+                    aria-label="点云显示密度"
+                    value={hasManualResolution ? String(resolutionIndex) : 'auto'}
+                    onChange={(event) => chooseResolutionMode(event.target.value)}
+                  >
+                    <option value="auto">
+                      自动 · {suggestedResolution.label} {Math.round(suggestedResolution.ratio * 100)}%（推荐）
+                    </option>
+                    {RESOLUTION_LEVELS.map((option, index) => (
+                      <option key={option.ratio} value={index}>
+                        {option.label} · {Math.round(option.ratio * 100)}%
+                      </option>
+                    ))}
+                  </select>
                 </span>
-                <em>{formatPointCount(renderedPointCount)} PTS</em>
-              </div>
-              <button
-                type="button"
-                aria-label="降低点云分辨率"
-                title="降低分辨率，提高浏览性能"
-                disabled={resolutionIndex === 0}
-                onClick={() => chooseResolution(resolutionIndex - 1)}
-              >
-                <Minus size={14} />
-              </button>
-              <button
-                type="button"
-                aria-label="提高点云分辨率"
-                title="提高分辨率，显示更多原始点"
-                disabled={resolutionIndex === DEFAULT_RESOLUTION_INDEX}
-                onClick={() => chooseResolution(resolutionIndex + 1)}
-              >
-                <Plus size={14} />
-              </button>
-              <button
-                type="button"
-                className="resolution-reset"
-                aria-label="重置点云分辨率"
-                title="重置为 100% 原始分辨率"
-                disabled={resolutionIndex === DEFAULT_RESOLUTION_INDEX}
-                onClick={() => chooseResolution(DEFAULT_RESOLUTION_INDEX)}
-              >
-                <RotateCcw size={12} />
-                <span>重置</span>
-              </button>
+                <em>{Math.round(resolution.ratio * 100)}% · {formatPointCount(renderedPointCount)} PTS</em>
+              </label>
               {hasEmbeddedMesh && (
                 <div
                   className="mesh-topology-readout"
@@ -6215,7 +6295,7 @@ export default function PointCloudViewer({
           />
           {robotDescriptor && (
             <div
-              className={`robot-model-indicator is-${robotLoadState?.status || 'pending'} ${robotControlActive ? 'is-driving' : ''} ${chassisDragMode ? 'is-planar-drag' : ''}`}
+              className={`robot-model-indicator is-${robotLoadState?.status || 'pending'} ${robotControlActive ? 'is-driving' : ''} ${robotHeightLockActive ? 'is-height-locked' : ''} ${chassisDragMode ? 'is-planar-drag' : ''}`}
               role="status"
               aria-label="机器人模型状态"
             >
@@ -6234,11 +6314,11 @@ export default function PointCloudViewer({
                         : 'CHASSIS · XY PLANE DRAG'
                     : robotControlActive
                       ? mapLockedSides.length
-                        ? `MECANUM DRIVE · MAP HOLD ${mapLockSideLabel}`
-                        : 'MECANUM DRIVE · ACTIVE'
+                        ? `MECANUM DRIVE · MAP HOLD ${mapLockSideLabel}${robotHeightLockActive ? ' · Z HOLD' : ''}`
+                        : `MECANUM DRIVE · ${robotHeightLockActive ? 'Z HOLD' : 'ACTIVE'}`
                       : mapLockedSides.length
-                        ? `ROBOT POSE · MAP HOLD ${mapLockSideLabel}`
-                        : 'ROBOT POSE · MAP FRAME'}
+                        ? `ROBOT POSE · MAP HOLD ${mapLockSideLabel}${robotHeightLockActive ? ' · Z HOLD' : ''}`
+                        : `ROBOT POSE · ${robotHeightLockActive ? 'Z HOLD' : 'MAP FRAME'}`}
                 </small>
                 <strong>{robotDescriptor.name}</strong>
               </div>
@@ -6246,7 +6326,7 @@ export default function PointCloudViewer({
                 {robotLoadState?.status === 'loaded'
                   ? chassisDragMode
                     ? `按住底盘拖拽 · Z ${displayedRobotPose.position.z.toFixed(2)} 固定`
-                    : `${robotLoadState.zividCount || 0}× Zivid · X ${displayedRobotPose.position.x.toFixed(2)} · Y ${displayedRobotPose.position.y.toFixed(2)} · YAW ${displayedRobotPose.rpy.yaw.toFixed(1)}°`
+                    : `${robotLoadState.zividCount || 0}× Zivid · X ${displayedRobotPose.position.x.toFixed(2)} · Y ${displayedRobotPose.position.y.toFixed(2)} · Z ${displayedRobotPose.position.z.toFixed(2)} · YAW ${displayedRobotPose.rpy.yaw.toFixed(1)}°`
                   : robotLoadState?.status === 'error'
                     ? '加载失败'
                     : robotLoadState?.phase || '正在装配…'}
@@ -6269,7 +6349,9 @@ export default function PointCloudViewer({
             <span>
               <Keyboard size={12} />
               {robotControlActive
-                ? 'W/S 前后 · A/D 麦轮横移 · ←→ 原地旋转'
+                ? robotHeightLockActive
+                  ? 'W/S 前后 · A/D 麦轮横移 · ←→ 旋转 · Z 高度已锁'
+                  : 'W/S 前后 · A/D 麦轮横移 · ←→ 旋转 · ↑↓ 高度'
                 : 'WASD 平移 · Q/E 升降 · ←→ Yaw · ↑↓ Pitch'}
             </span>
             <span>
@@ -6285,7 +6367,7 @@ export default function PointCloudViewer({
                 : robotControlActive
                 ? mapLockedSides.length
                   ? `全局锁定 ${mapLockSideLabel} · 移动底盘观察全链关节补偿`
-                  : 'Shift + 左键视角平移 · Q/E 升降 · ↑↓ 相机 Pitch'
+                  : 'Shift + 左键视角平移 · Q/E 视角升降'
                 : 'Shift + 左键临时平移 · 右键平移'}
             </span>
             {robotLoadState?.status === 'loaded' && !endEffectorControlActive && !chassisDragMode && (

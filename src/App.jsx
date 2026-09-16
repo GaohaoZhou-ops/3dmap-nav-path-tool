@@ -8,7 +8,6 @@ import {
   ChevronUp,
   CircleDot,
   Database,
-  FileArchive,
   FileSearch,
   FolderOpen,
   GitBranch,
@@ -16,7 +15,6 @@ import {
   Map as MapIcon,
   MousePointer2,
   Plus,
-  RotateCcw,
   Route,
   ScanLine,
   Server,
@@ -48,6 +46,8 @@ import {
   normalizeRobotDescriptor,
   normalizeRobotJointValues,
   normalizeRobotPose,
+  registerPortableRobotPackage,
+  releasePortableRobotPackage,
 } from './lib/robotLoader.js';
 import { normalizeRobotJointLocks } from './lib/robotJointLocks.js';
 import { sha256ArrayBuffer } from './lib/hash.js';
@@ -61,7 +61,9 @@ import {
   sampleTeachingTrajectorySegment,
 } from './lib/teachingPlayback.js';
 import {
+  activateWorkspaceRecovery,
   fetchServiceSession,
+  finalizeWorkspaceRecovery,
   loadWorkspaceViews,
   prepareWorkspaceSession,
   resetWorkspaceSession,
@@ -69,6 +71,11 @@ import {
   saveWorkspaceMap,
   saveWorkspaceViews,
 } from './lib/sessionStore.js';
+import {
+  clearProjectDirectoryBinding,
+  loadProjectDirectoryBinding,
+  saveProjectDirectoryBinding,
+} from './lib/projectDirectoryStore.js';
 
 const initialValidation = { status: 'idle', unreachableCount: 0, checkedAt: null };
 const pointColorModes = new Set(['height', 'source', 'white']);
@@ -130,6 +137,23 @@ const appPageFromLocation = () => {
   if (typeof window === 'undefined') return APP_PAGE_WORKBENCH;
   const path = window.location.pathname.replace(/\/+$/, '') || '/';
   return path.endsWith('/teaching-data') ? APP_PAGE_TEACHING_DATA : APP_PAGE_WORKBENCH;
+};
+
+const formatRecoveryTimestamp = (value) => {
+  const timestamp = Number(value);
+  if (!Number.isFinite(timestamp) || timestamp <= 0) return '保存时间未知';
+  try {
+    return new Intl.DateTimeFormat('zh-CN', {
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false,
+    }).format(new Date(timestamp));
+  } catch {
+    return new Date(timestamp).toLocaleString();
+  }
 };
 
 const defaultLimits = {
@@ -339,6 +363,7 @@ function suggestedSlice(positions, bounds) {
 export default function App() {
   const mapInputRef = useRef(null);
   const pathInputRef = useRef(null);
+  const projectDirectoryInputRef = useRef(null);
   const mapDetailsButtonRef = useRef(null);
   const toastTimerRef = useRef(null);
   const view2dRef = useRef(null);
@@ -351,13 +376,16 @@ export default function App() {
   const hydrationRevisionRef = useRef(0);
   const latestWorkspaceRef = useRef(null);
   const focusRevisionRef = useRef(0);
-  const viewResetRevisionRef = useRef(0);
   const robotNotificationRef = useRef('');
   const cameraTeachingRevisionRef = useRef(0);
   const zividCaptureProviderRef = useRef(null);
   const parkingMergePlannerRef = useRef(null);
   const teachingCaptureBusyRef = useRef(false);
   const projectExportBusyRef = useRef(false);
+  const projectDirectoryRef = useRef(null);
+  const projectDirectoryWriteChainRef = useRef(Promise.resolve());
+  const projectDirectoryFailureNotifiedRef = useRef(false);
+  const portableRobotPackageRef = useRef(null);
   const teachingPlaybackFrameRef = useRef(null);
   const teachingPlaybackRuntimeRef = useRef(null);
   const spaceMouseInputRef = useRef(createSpaceMouseInputState());
@@ -382,13 +410,13 @@ export default function App() {
   const [inspectorCollapsed, setInspectorCollapsed] = useState(false);
   const [mapDetailsOpen, setMapDetailsOpen] = useState(false);
   const [synchronizedFocus, setSynchronizedFocus] = useState(null);
-  const [viewResetRequest, setViewResetRequest] = useState(null);
   const [selectedRobot, setSelectedRobot] = useState(null);
   const [robotLoadState, setRobotLoadState] = useState({ status: 'idle' });
   const [robotPose, setRobotPose] = useState(() => normalizeRobotPose(null));
   const [robotJointValues, setRobotJointValues] = useState({});
   const [lockedRobotJointNames, setLockedRobotJointNames] = useState([]);
   const [robotControlEnabled, setRobotControlEnabled] = useState(false);
+  const [robotHeightLocked, setRobotHeightLocked] = useState(false);
   const [robotCollisionProtectionEnabled, setRobotCollisionProtectionEnabled] = useState(false);
   const [teachingTasks, setTeachingTasks] = useState([]);
   const [activeTeachingTaskId, setActiveTeachingTaskId] = useState(null);
@@ -410,8 +438,15 @@ export default function App() {
     status: 'idle',
     byteLength: 0,
   });
+  const [projectDirectoryState, setProjectDirectoryState] = useState({
+    status: 'detached',
+    name: '',
+    savedAt: null,
+    writable: false,
+  });
   const [teachingPlayback, setTeachingPlayback] = useState(createIdleTeachingPlayback);
   const [sessionState, setSessionState] = useState({ status: 'checking', restored: false });
+  const [lastProjectRecovery, setLastProjectRecovery] = useState(null);
   const [loadState, setLoadState] = useState({
     loading: true,
     progress: 0.08,
@@ -440,6 +475,7 @@ export default function App() {
     robotPose,
     robotJointValues,
     lockedRobotJointNames,
+    robotHeightLocked,
     teachingTasks,
     activeTeachingTaskId,
     activeTeachingParkingPointId,
@@ -497,6 +533,7 @@ export default function App() {
       }
       teachingPlaybackFrameRef.current = null;
       teachingPlaybackRuntimeRef.current = null;
+      releasePortableRobotPackage(portableRobotPackageRef.current?.resourceId);
     },
     [],
   );
@@ -535,6 +572,25 @@ export default function App() {
     [notify],
   );
 
+  const reportProjectDirectoryFailure = useCallback(
+    (error) => {
+      console.warn('工程目录增量保存失败', error);
+      const binding = projectDirectoryRef.current;
+      setProjectDirectoryState({
+        status: 'error',
+        name: binding?.name || '',
+        savedAt: binding?.savedAt || null,
+        writable: Boolean(binding?.handle),
+        error: error?.message || '工程目录写入失败',
+      });
+      if (!projectDirectoryFailureNotifiedRef.current) {
+        projectDirectoryFailureNotifiedRef.current = true;
+        notify(`工程目录自动保存失败：${error?.message || '请重新加载工程目录'}`, 'warning');
+      }
+    },
+    [notify],
+  );
+
   const persistWorkspaceNow = useCallback(() => {
     const sessionId = sessionIdRef.current;
     const current = latestWorkspaceRef.current;
@@ -558,9 +614,16 @@ export default function App() {
           robotPose: current.robotPose,
           robotJointValues: current.robotJointValues,
           lockedRobotJointNames: current.lockedRobotJointNames,
+          robotHeightLocked: current.robotHeightLocked,
           teachingTasks: current.teachingTasks,
           jointPoses: current.jointPoses,
           meshRenderQuality: current.meshRenderQuality,
+          pointColorMode: current.pointColorMode,
+          showWaypoints3D: current.showWaypoints3D,
+          activeTeachingTaskId: current.activeTeachingTaskId,
+          activeTeachingParkingPointId: current.activeTeachingParkingPointId,
+          collapsedPanel: current.collapsedPanel,
+          inspectorCollapsed: current.inspectorCollapsed,
         })
       : null;
     const snapshot = {
@@ -579,12 +642,14 @@ export default function App() {
         showWaypoints3D: current.showWaypoints3D,
         collapsedPanel: current.collapsedPanel,
         inspectorCollapsed: current.inspectorCollapsed,
+        robotHeightLocked: current.robotHeightLocked,
         selectedRobot: current.selectedRobot
           ? {
               ...current.selectedRobot,
               origin: current.robotPose,
               joints: current.robotJointValues,
               lockedJoints: current.lockedRobotJointNames,
+              heightLocked: current.robotHeightLocked,
             }
           : null,
       },
@@ -593,8 +658,49 @@ export default function App() {
       .catch(() => undefined)
       .then(() => saveWorkspaceConfig(sessionId, mapId, snapshot))
       .catch(reportSessionFailure);
-    return sessionWriteChainRef.current;
-  }, [reportSessionFailure]);
+
+    const directoryBinding = projectDirectoryRef.current;
+    if (directoryBinding?.handle && project) {
+      const expectedHandle = directoryBinding.handle;
+      setProjectDirectoryState((currentState) => ({
+        ...currentState,
+        status: 'saving',
+        name: directoryBinding.name,
+        writable: true,
+      }));
+      projectDirectoryWriteChainRef.current = projectDirectoryWriteChainRef.current
+        .catch(() => undefined)
+        .then(async () => {
+          const activeBinding = projectDirectoryRef.current;
+          if (!activeBinding || activeBinding.handle !== expectedHandle) return null;
+          const { updateProjectDirectory } = await import('./lib/projectArchive.js');
+          const result = await updateProjectDirectory(expectedHandle, project, {
+            manifest: activeBinding.manifest,
+            rawPayload: activeBinding.rawPayload,
+          });
+          if (projectDirectoryRef.current?.handle !== expectedHandle) return result;
+          projectDirectoryRef.current = {
+            ...activeBinding,
+            manifest: result.manifest,
+            rawPayload: result.rawPayload,
+            savedAt: result.savedAt,
+          };
+          projectDirectoryFailureNotifiedRef.current = false;
+          setProjectDirectoryState({
+            status: 'synced',
+            name: activeBinding.name,
+            savedAt: result.savedAt,
+            writable: true,
+          });
+          return result;
+        })
+        .catch(reportProjectDirectoryFailure);
+    }
+    return Promise.allSettled([
+      sessionWriteChainRef.current,
+      projectDirectoryWriteChainRef.current,
+    ]);
+  }, [reportProjectDirectoryFailure, reportSessionFailure]);
 
   const queueWorkspaceSave = useCallback(() => {
     if (!sessionReadyRef.current) return;
@@ -687,6 +793,7 @@ export default function App() {
         setRobotJointValues({});
         setLockedRobotJointNames([]);
         setRobotControlEnabled(false);
+        setRobotHeightLocked(false);
         setRobotCollisionProtectionEnabled(false);
         setTeachingTasks([]);
         setActiveTeachingTaskId(null);
@@ -711,19 +818,27 @@ export default function App() {
             sessionIdRef.current,
             mapId,
             name,
-            createGeometryCache(
-              geometry,
-              bounds,
-              sourceByteLength,
-              sourceHash,
-              sourceHashKind,
-              {
-                fileModifiedAt: nextMap.fileModifiedAt,
-                mimeType: nextMap.mimeType,
-                loadedAt: nextMap.loadedAt,
-                sourceKind: nextMap.sourceKind,
-              },
-            ),
+            {
+              ...createGeometryCache(
+                geometry,
+                bounds,
+                sourceByteLength,
+                sourceHash,
+                sourceHashKind,
+                {
+                  fileModifiedAt: nextMap.fileModifiedAt,
+                  mimeType: nextMap.mimeType,
+                  loadedAt: nextMap.loadedAt,
+                  sourceKind: nextMap.sourceKind,
+                },
+              ),
+              portableRobotPackage: portableRobotPackageRef.current
+                ? {
+                    ...portableRobotPackageRef.current,
+                    resourceId: undefined,
+                  }
+                : null,
+            },
           );
         } catch (error) {
           reportSessionFailure(error);
@@ -824,6 +939,7 @@ export default function App() {
 
         const stored = await prepareWorkspaceSession(identity.sessionId);
         if (!isCurrent()) return;
+        setLastProjectRecovery(stored.recovery || null);
 
         let restored = false;
         let repaired = false;
@@ -832,13 +948,35 @@ export default function App() {
             !stored.map || (stored.config && stored.config.mapId === stored.map.mapId);
           const snapshot = configMatchesMap ? stored.config?.config : null;
           const project = snapshot?.project ? normalizeProject(snapshot.project) : null;
+          const storedRobotPackage = stored.map?.portableRobotPackage || null;
+          const portableResourceId = storedRobotPackage
+            ? registerPortableRobotPackage(storedRobotPackage)
+            : null;
+          if (storedRobotPackage) {
+            portableRobotPackageRef.current = {
+              ...storedRobotPackage,
+              resourceId: portableResourceId,
+            };
+          }
           const restoredRobot = normalizeRobotDescriptor(
-            project?.robot || snapshot?.ui?.selectedRobot,
+            portableResourceId
+              ? {
+                  ...(project?.robot || snapshot?.ui?.selectedRobot),
+                  portableResourceId,
+                }
+              : project?.robot || snapshot?.ui?.selectedRobot,
           );
           const restoredMapId = stored.map?.mapId || stored.config?.mapId || null;
           const instantViews = loadWorkspaceViews(identity.sessionId, restoredMapId);
-          const preferredView2d = instantViews?.view2d ?? project?.view2d ?? null;
-          const preferredView3d = instantViews?.view3d ?? project?.view3d ?? null;
+          const recoveryViews = stored.config?.workspaceViews || stored.map?.workspaceViews || null;
+          const preferredView2d = instantViews?.view2d
+            ?? recoveryViews?.view2d
+            ?? project?.view2d
+            ?? null;
+          const preferredView3d = instantViews?.view3d
+            ?? recoveryViews?.view3d
+            ?? project?.view3d
+            ?? null;
           setCollapsedPanel(
             snapshot?.ui?.collapsedPanel === '3d' || snapshot?.ui?.collapsedPanel === '2d'
               ? snapshot.ui.collapsedPanel
@@ -866,6 +1004,14 @@ export default function App() {
                 )
               : [],
           );
+          setRobotHeightLocked(Boolean(
+            restoredRobot
+            && (
+              project?.robot?.heightLocked
+              ?? snapshot?.ui?.robotHeightLocked
+              ?? snapshot?.ui?.selectedRobot?.heightLocked
+            )
+          ));
           setRobotControlEnabled(false);
           setRobotLoadState({ status: restoredRobot ? 'pending' : 'idle' });
           restored = restored || Boolean(restoredRobot);
@@ -1044,6 +1190,8 @@ export default function App() {
           }
         } catch (error) {
           console.warn('已忽略损坏的工作区快照', error);
+          releasePortableRobotPackage(portableRobotPackageRef.current?.resourceId);
+          portableRobotPackageRef.current = null;
           await resetWorkspaceSession(identity.sessionId);
           if (!isCurrent()) return;
           setMapData(null);
@@ -1060,6 +1208,7 @@ export default function App() {
           setRobotJointValues({});
           setLockedRobotJointNames([]);
           setRobotControlEnabled(false);
+          setRobotHeightLocked(false);
           setTeachingTasks([]);
           setActiveTeachingTaskId(null);
           setActiveTeachingParkingPointId(null);
@@ -1072,12 +1221,72 @@ export default function App() {
           repaired = true;
         }
 
+        if (stored.activatedRecoveryId && restored && !repaired) {
+          try {
+            const finalized = await finalizeWorkspaceRecovery(stored.activatedRecoveryId);
+            if (!isCurrent()) return;
+            if (finalized) setLastProjectRecovery(null);
+          } catch (error) {
+            console.warn('上一次工程已恢复，但临时恢复副本未能清理', error);
+          }
+        }
+
+        try {
+          const savedDirectory = await loadProjectDirectoryBinding();
+          if (savedDirectory?.sessionId === identity.sessionId && savedDirectory.handle) {
+            const {
+              queryProjectDirectoryPermission,
+              readProjectDirectoryMetadata,
+            } = await import('./lib/projectArchive.js');
+            const permission = await queryProjectDirectoryPermission(savedDirectory.handle, false);
+            if (permission === 'granted') {
+              const metadata = await readProjectDirectoryMetadata(savedDirectory.handle);
+              projectDirectoryRef.current = {
+                handle: savedDirectory.handle,
+                name: savedDirectory.name || metadata.name,
+                projectFile: metadata.projectPath,
+                manifest: metadata.manifest,
+                rawPayload: metadata.rawPayload,
+                savedAt: metadata.manifest.updatedAt || savedDirectory.savedAt || null,
+              };
+              setProjectDirectoryState({
+                status: 'synced',
+                name: savedDirectory.name || metadata.name,
+                savedAt: metadata.manifest.updatedAt || savedDirectory.savedAt || null,
+                writable: true,
+              });
+            } else {
+              setProjectDirectoryState({
+                status: 'permission',
+                name: savedDirectory.name || savedDirectory.handle.name || '工程目录',
+                savedAt: savedDirectory.savedAt || null,
+                writable: false,
+              });
+            }
+          } else if (savedDirectory) {
+            await clearProjectDirectoryBinding();
+          }
+        } catch (error) {
+          console.warn('工程目录关联恢复失败', error);
+          projectDirectoryRef.current = null;
+          setProjectDirectoryState({
+            status: 'detached',
+            name: '',
+            savedAt: null,
+            writable: false,
+          });
+        }
+
         sessionReadyRef.current = true;
         sessionFailureNotifiedRef.current = false;
         setSessionState({ status: 'ready', restored });
         setLoadState({ loading: false, progress: 1, phase: '' });
 
-        if (stored.restarted) {
+        if (stored.activatedRecoveryId && restored && !repaired) {
+          notify('上一次未完成工程已完整恢复', 'success');
+        } else if (stored.restarted && stored.recovery) {
+          notify('检测到服务重启，未完成工程已保护，可前往“示教数据”页面恢复', 'info');
+        } else if (stored.restarted) {
           notify('服务已重启，已建立全新工作会话', 'info');
         } else if (repaired) {
           notify('上次快照无法读取，已安全重置', 'warning');
@@ -1116,6 +1325,7 @@ export default function App() {
     robotPose,
     robotJointValues,
     lockedRobotJointNames,
+    robotHeightLocked,
     teachingTasks,
     activeTeachingTaskId,
     activeTeachingParkingPointId,
@@ -1151,6 +1361,20 @@ export default function App() {
     return () => window.clearInterval(timer);
   }, [sessionState.status]);
 
+  const detachProjectDirectory = useCallback((message = '') => {
+    if (!projectDirectoryRef.current && projectDirectoryState.status === 'detached') return;
+    projectDirectoryRef.current = null;
+    projectDirectoryFailureNotifiedRef.current = false;
+    setProjectDirectoryState({
+      status: 'detached',
+      name: '',
+      savedAt: null,
+      writable: false,
+    });
+    clearProjectDirectoryBinding().catch(() => undefined);
+    if (message) notify(message, 'info');
+  }, [notify, projectDirectoryState.status]);
+
   const loadExample = useCallback(
     async (options = {}) => {
       if (
@@ -1158,6 +1382,9 @@ export default function App() {
         && (waypoints.length || teachingTasks.length || jointPoses.length)
         && !window.confirm('加载新地图会清空当前导航图、虚拟示教任务与已记录关节姿态，继续吗？')
       ) return;
+      if (!options.preserveGraph && projectDirectoryRef.current) {
+        detachProjectDirectory('地图已更换；原工程目录已解除关联，避免覆盖其固定资源');
+      }
       setLoadState({ loading: true, progress: 0, phase: '读取示例地图' });
       try {
         let responseMetadata = null;
@@ -1177,7 +1404,14 @@ export default function App() {
         notify(error.message || '示例地图加载失败', 'error');
       }
     },
-    [jointPoses.length, notify, processMapBuffer, teachingTasks.length, waypoints.length],
+    [
+      detachProjectDirectory,
+      jointPoses.length,
+      notify,
+      processMapBuffer,
+      teachingTasks.length,
+      waypoints.length,
+    ],
   );
 
   const handleMapFile = async (event) => {
@@ -1191,6 +1425,9 @@ export default function App() {
     if (!file.name.toLowerCase().endsWith('.ply')) {
       notify('请选择 .ply 点云地图文件', 'error');
       return;
+    }
+    if (projectDirectoryRef.current) {
+      detachProjectDirectory('地图已更换；原工程目录已解除关联，避免覆盖其固定资源');
     }
     setLoadState({ loading: true, progress: 0, phase: '读取本地地图' });
     try {
@@ -1208,70 +1445,161 @@ export default function App() {
     }
   };
 
-  const handlePathFile = async (event) => {
-    const file = event.target.files?.[0];
-    event.target.value = '';
-    if (!file) return;
+  const applyImportedProject = async (importProject, sourceName) => {
+    const previousDirectoryBinding = projectDirectoryRef.current;
+    projectDirectoryRef.current = null;
+    const previousPortableResourceId = portableRobotPackageRef.current?.resourceId || null;
+    let nextPortableResourceId = null;
+    let portableResourceCommitted = false;
+    setLoadState({
+      loading: true,
+      progress: 0.04,
+      phase: '读取工程',
+      detail: sourceName,
+    });
     try {
-      const { readProjectFile } = await import('./lib/projectArchive.js');
-      const importedFile = await readProjectFile(file);
+      const importedFile = await importProject(({ phase, detail, progress }) => setLoadState({
+          loading: true,
+          progress: 0.08 + (Number(progress) || 0) * 0.42,
+          phase,
+          detail,
+        }));
       const payload = importedFile.payload;
       const project = normalizeProject(payload);
-      setWaypoints(project.waypoints);
-      setEdges(project.edges);
-      setTeachingTasks(project.teachingTasks);
-      setJointPoses(project.jointPoses);
-      setActiveTeachingTaskId(project.teachingTasks[0]?.id || null);
-      setActiveTeachingParkingPointId(project.teachingTasks[0]?.parkingPoints?.[0]?.id || null);
-      setSelectedWaypointId(null);
-      setSelectedEdgeId(null);
-      setConnectionSourceId(null);
-      setMode('select');
-      setMeshRenderQuality(normalizeMeshRenderQuality(project.rendering?.meshQuality));
-      const importedRobot = normalizeRobotDescriptor(project.robot);
-      setSelectedRobot(importedRobot);
+      const portableRobotPackage = importedFile.resources?.robot || null;
+      if (portableRobotPackage) {
+        nextPortableResourceId = registerPortableRobotPackage(portableRobotPackage);
+      }
+      const importedRobot = normalizeRobotDescriptor(
+        nextPortableResourceId
+          ? { ...project.robot, portableResourceId: nextPortableResourceId }
+          : project.robot,
+      );
+      const importedMeshQuality = normalizeMeshRenderQuality(project.rendering?.meshQuality);
+      const importedRobotPose = importedRobot
+        ? normalizeRobotPose(project.robot?.origin)
+        : normalizeRobotPose(null);
+      const importedRobotJoints = importedRobot
+        ? normalizeRobotJointValues(project.robot?.joints)
+        : {};
+      const importedLockedJoints = importedRobot
+        ? normalizeRobotJointLocks(project.robot?.lockedJoints)
+        : [];
+      const importedRobotHeightLocked = Boolean(
+        importedRobot && project.robot?.heightLocked,
+      );
       setZividCameraPoses({});
       setCameraTeachingCommand(null);
       setCameraTeachingResult({ status: 'idle', revision: 0 });
       zividCaptureProviderRef.current = null;
       teachingCaptureBusyRef.current = false;
       setTeachingCaptureState({ status: 'idle', message: '' });
-      setRobotPose(
-        importedRobot ? normalizeRobotPose(project.robot?.origin) : normalizeRobotPose(null),
-      );
-      setRobotJointValues(
-        importedRobot ? normalizeRobotJointValues(project.robot?.joints) : {},
-      );
-      setLockedRobotJointNames(
-        importedRobot ? normalizeRobotJointLocks(project.robot?.lockedJoints) : [],
-      );
       setRobotControlEnabled(false);
       setRobotCollisionProtectionEnabled(false);
-      setRobotLoadState({ status: importedRobot ? 'pending' : 'idle' });
       setSynchronizedFocus(null);
+      setSelectedRobot(importedRobot);
+      setRobotPose(importedRobotPose);
+      setRobotJointValues(importedRobotJoints);
+      setLockedRobotJointNames(importedLockedJoints);
+      setRobotHeightLocked(importedRobotHeightLocked);
+      setRobotLoadState({ status: importedRobot ? 'pending' : 'idle' });
+      let effectiveMap = mapData;
+      if (importedFile.resources?.map) {
+        const portableMapRecord = {
+          ...importedFile.resources.map,
+          mapId: createId('map-portable'),
+          name: importedFile.resources.map.name || project.map?.fileName || sourceName,
+          portableRobotPackage,
+        };
+        setLoadState({
+          loading: true,
+          progress: 0.56,
+          phase: '恢复归档地图',
+          detail: `${portableMapRecord.pointCount.toLocaleString('zh-CN')} 点 / ${portableMapRecord.faceCount.toLocaleString('zh-CN')} 面`,
+        });
+        effectiveMap = await processMapCache(portableMapRecord, {
+          preserveGraph: true,
+          preferredSlice: project.slice,
+          preferredView: project.view2d,
+          preferredView3d: project.view3d,
+          announce: false,
+          keepLoading: true,
+        });
+        if (sessionReadyRef.current && sessionIdRef.current) {
+          setLoadState({
+            loading: true,
+            progress: 0.86,
+            phase: '保存便携工程快照',
+            detail: '地图与机器人资源将保留到本地工作会话',
+          });
+          await saveWorkspaceMap(
+            sessionIdRef.current,
+            portableMapRecord.mapId,
+            portableMapRecord.name,
+            portableMapRecord,
+          );
+        }
+      }
+      const importedTaskIds = new Set(project.teachingTasks.map((task) => task.id));
+      const importedTaskId = importedTaskIds.has(project.workspace?.activeTeachingTaskId)
+        ? project.workspace.activeTeachingTaskId
+        : project.teachingTasks[0]?.id || null;
+      const importedTask = project.teachingTasks.find((task) => task.id === importedTaskId) || null;
+      const importedParkingPointIds = new Set(
+        (importedTask?.parkingPoints || []).map((parkingPoint) => parkingPoint.id),
+      );
+      const importedParkingPointId = importedParkingPointIds.has(
+        project.workspace?.activeTeachingParkingPointId,
+      )
+        ? project.workspace.activeTeachingParkingPointId
+        : importedTask?.parkingPoints?.[0]?.id || null;
+      const importedPointColorMode = pointColorModes.has(project.workspace?.pointColorMode)
+        ? project.workspace.pointColorMode
+        : 'height';
+      const importedShowWaypoints3D = project.workspace?.showWaypoints3D !== false;
+      const importedCollapsedPanel = ['2d', '3d'].includes(project.workspace?.collapsedPanel)
+        ? project.workspace.collapsedPanel
+        : null;
+      const importedInspectorCollapsed = project.workspace?.inspectorCollapsed === true;
+      const importedConnected = project.edges.length > 0
+        && project.edges.every((edge) => edge.status === 'connected');
+      const importedChecked = project.edges.some((edge) => edge.status !== 'unchecked');
+      const importedValidation = importedChecked
+        ? {
+            status: importedConnected ? 'connected' : 'partial',
+            unreachableCount: project.edges.filter((edge) => edge.status === 'unreachable').length,
+            checkedAt: null,
+          }
+        : initialValidation;
+      const importedBounds = effectiveMap?.bounds || project.map?.bounds;
+      const importedSlice = project.slice
+        ? importedBounds ? clampSlice(project.slice, importedBounds) : project.slice
+        : effectiveMap?.positions && importedBounds
+          ? clampSlice(suggestedSlice(effectiveMap.positions, importedBounds), importedBounds)
+          : heightRange;
+      setWaypoints(project.waypoints);
+      setEdges(project.edges);
+      setTeachingTasks(project.teachingTasks);
+      setJointPoses(project.jointPoses);
+      setActiveTeachingTaskId(importedTaskId);
+      setActiveTeachingParkingPointId(importedParkingPointId);
+      setSelectedWaypointId(null);
+      setSelectedEdgeId(null);
+      setConnectionSourceId(null);
+      setMode('select');
+      setMeshRenderQuality(importedMeshQuality);
+      setPointColorMode(importedPointColorMode);
+      setShowWaypoints3D(importedShowWaypoints3D);
+      setCollapsedPanel(importedCollapsedPanel);
+      setInspectorCollapsed(importedInspectorCollapsed);
       setRestoredView2d(project.view2d);
       view2dRef.current = project.view2d;
       setRestoredView3d(project.view3d);
       view3dRef.current = project.view3d;
-      const importedConnected = project.edges.length > 0 && project.edges.every((edge) => edge.status === 'connected');
-      const importedChecked = project.edges.some((edge) => edge.status !== 'unchecked');
-      setValidation(
-        importedChecked
-          ? {
-              status: importedConnected ? 'connected' : 'partial',
-              unreachableCount: project.edges.filter((edge) => edge.status === 'unreachable').length,
-              checkedAt: null,
-            }
-          : initialValidation,
-      );
+      setValidation(importedValidation);
 
-      if (project.slice) {
-        const importedBounds = mapData?.bounds || project.map?.bounds;
-        setHeightRange(
-          importedBounds ? clampSlice(project.slice, importedBounds) : project.slice,
-        );
-      }
-      if (!mapData && project.map?.bounds) {
+      if (project.slice || importedFile.resources?.map) setHeightRange(importedSlice);
+      if (!effectiveMap && project.map?.bounds) {
         setMapData({
           mapId: createId('map-meta'),
           name: project.map.fileName || '未绑定地图',
@@ -1294,25 +1622,232 @@ export default function App() {
           metadataOnly: true,
         });
       }
+      if (previousPortableResourceId && previousPortableResourceId !== nextPortableResourceId) {
+        releasePortableRobotPackage(previousPortableResourceId);
+      }
+      portableRobotPackageRef.current = portableRobotPackage
+        ? { ...portableRobotPackage, resourceId: nextPortableResourceId }
+        : null;
+      portableResourceCommitted = true;
+      if (sessionReadyRef.current && sessionIdRef.current && effectiveMap) {
+        const importedSnapshot = {
+          schemaVersion: 1,
+          project: buildExport({
+            mapData: effectiveMap,
+            heightRange: importedSlice,
+            waypoints: project.waypoints,
+            edges: project.edges,
+            view2d: project.view2d,
+            view3d: project.view3d,
+            robot: importedRobot,
+            robotPose: importedRobotPose,
+            robotJointValues: importedRobotJoints,
+            lockedRobotJointNames: importedLockedJoints,
+            robotHeightLocked: importedRobotHeightLocked,
+            teachingTasks: project.teachingTasks,
+            jointPoses: project.jointPoses,
+            meshRenderQuality: importedMeshQuality,
+            pointColorMode: importedPointColorMode,
+            showWaypoints3D: importedShowWaypoints3D,
+            activeTeachingTaskId: importedTaskId,
+            activeTeachingParkingPointId: importedParkingPointId,
+            collapsedPanel: importedCollapsedPanel,
+            inspectorCollapsed: importedInspectorCollapsed,
+          }),
+          ui: {
+            mode: 'select',
+            connectionSourceId: null,
+            selectedWaypointId: null,
+            selectedEdgeId: null,
+            activeTeachingTaskId: importedTaskId,
+            activeTeachingParkingPointId: importedParkingPointId,
+            validation: importedValidation,
+            pointColorMode: importedPointColorMode,
+            meshRenderQuality: importedMeshQuality,
+            showWaypoints3D: importedShowWaypoints3D,
+            collapsedPanel: importedCollapsedPanel,
+            inspectorCollapsed: importedInspectorCollapsed,
+            robotHeightLocked: importedRobotHeightLocked,
+            selectedRobot: importedRobot
+              ? {
+                  ...importedRobot,
+                  origin: importedRobotPose,
+                  joints: importedRobotJoints,
+                  lockedJoints: importedLockedJoints,
+                  heightLocked: importedRobotHeightLocked,
+                }
+              : null,
+          },
+        };
+        sessionWriteChainRef.current = sessionWriteChainRef.current
+          .catch(() => undefined)
+          .then(() => saveWorkspaceConfig(
+            sessionIdRef.current,
+            effectiveMap.mapId,
+            importedSnapshot,
+          ));
+        await sessionWriteChainRef.current;
+      }
+      if (importedFile.directory?.handle && importedFile.directory.writable) {
+        const directoryBinding = {
+          ...importedFile.directory,
+          manifest: importedFile.manifest,
+          rawPayload: importedFile.rawPayload,
+          savedAt: importedFile.manifest?.updatedAt || importedFile.manifest?.exportedAt || null,
+        };
+        projectDirectoryRef.current = directoryBinding;
+        projectDirectoryFailureNotifiedRef.current = false;
+        setProjectDirectoryState({
+          status: 'synced',
+          name: directoryBinding.name,
+          savedAt: directoryBinding.savedAt,
+          writable: true,
+        });
+        try {
+          await saveProjectDirectoryBinding({
+            handle: directoryBinding.handle,
+            name: directoryBinding.name,
+            projectFile: directoryBinding.projectFile,
+            sessionId: sessionIdRef.current,
+          });
+        } catch (error) {
+          console.warn('工程目录可用，但刷新后可能需要重新授权', error);
+          notify('工程已打开并会增量保存；当前浏览器无法记住目录授权', 'warning');
+        }
+      } else {
+        projectDirectoryRef.current = null;
+        await clearProjectDirectoryBinding().catch(() => undefined);
+        setProjectDirectoryState({
+          status: importedFile.directory ? 'readonly' : 'detached',
+          name: importedFile.directory?.name || '',
+          savedAt: null,
+          writable: false,
+        });
+      }
+      setLoadState({ loading: false, progress: 1, phase: '' });
+      const sourceLabel = importedFile.source === 'directory'
+        ? '工程目录'
+        : importedFile.source === 'directory-readonly'
+          ? '工程目录（只读）'
+          : importedFile.source === 'zip'
+            ? 'ZIP 工程包'
+            : '工程配置';
       notify(
-        `${importedFile.source === 'zip' ? 'ZIP 工程包' : '工程配置'}已加载 · ${project.waypoints.length} 导航点 / ${project.teachingTasks.length} 示教任务${importedFile.source === 'zip' ? ` / ${importedFile.manifest?.statistics?.cameraFrameCount || 0} 相机帧` : ''}`,
+        `${sourceLabel}已加载${importedFile.portable ? '（完整）' : ''} · ${project.waypoints.length} 导航点 / ${project.teachingTasks.length} 示教任务${importedFile.manifest ? ` / ${importedFile.manifest?.statistics?.cameraFrameCount || 0} 相机帧` : ''}${importedFile.portable ? ' · 地图与机器人资源已恢复' : ''}${importedFile.source === 'directory' ? ' · 已启用增量保存' : ''}`,
       );
 
       const referencedMap = project.map?.fileName;
-      if ((!mapData || mapData.metadataOnly) && referencedMap === 'xian_map.ply') {
+      if (!importedFile.resources?.map && (!effectiveMap || effectiveMap.metadataOnly) && referencedMap === 'xian_map.ply') {
         await loadExample({
           preserveGraph: true,
           preferredSlice: project.slice,
           preferredView: project.view2d,
           preferredView3d: project.view3d,
         });
-      } else if (project.slice && mapData?.bounds) {
-        setHeightRange(clampSlice(project.slice, mapData.bounds));
+      } else if (project.slice && effectiveMap?.bounds) {
+        setHeightRange(clampSlice(project.slice, effectiveMap.bounds));
       }
     } catch (error) {
+      projectDirectoryRef.current = previousDirectoryBinding;
+      if (!portableResourceCommitted && nextPortableResourceId !== previousPortableResourceId) {
+        releasePortableRobotPackage(nextPortableResourceId);
+      }
+      setLoadState({ loading: false, progress: 0, phase: '' });
       notify(`工程文件无效：${error.message}`, 'error');
     }
   };
+
+  const handlePathFile = async (event) => {
+    const file = event.target.files?.[0];
+    event.target.value = '';
+    if (!file) return;
+    await applyImportedProject(async (onProgress) => {
+      const { readProjectFile } = await import('./lib/projectArchive.js');
+      return readProjectFile(file, { onProgress });
+    }, file.name);
+  };
+
+  const handleProjectDirectoryFiles = async (event) => {
+    const files = Array.from(event.target.files || []);
+    event.target.value = '';
+    if (!files.length) return;
+    await applyImportedProject(async (onProgress) => {
+      const { readProjectDirectoryFiles } = await import('./lib/projectArchive.js');
+      return readProjectDirectoryFiles(files, { onProgress });
+    }, files[0]?.webkitRelativePath?.split('/')?.[0] || '工程目录');
+  };
+
+  const openProjectDirectory = async () => {
+    if (loadState.loading) return;
+    if (typeof window.showDirectoryPicker !== 'function') {
+      projectDirectoryInputRef.current?.click();
+      return;
+    }
+    try {
+      const directoryHandle = await window.showDirectoryPicker({
+        id: 'atlas-virtual-teaching-project',
+        mode: 'readwrite',
+      });
+      await applyImportedProject(async (onProgress) => {
+        const { readProjectDirectoryHandle } = await import('./lib/projectArchive.js');
+        return readProjectDirectoryHandle(directoryHandle, {
+          onProgress,
+          requestPermission: true,
+        });
+      }, directoryHandle.name || '工程目录');
+    } catch (error) {
+      if (error?.name === 'AbortError') return;
+      setLoadState({ loading: false, progress: 0, phase: '' });
+      notify(`工程目录打开失败：${error?.message || '无法读取所选目录'}`, 'error');
+    }
+  };
+
+  const openLastProject = useCallback(async () => {
+    const recovery = lastProjectRecovery;
+    if (!recovery?.available) {
+      notify('当前没有可恢复的上一次工程', 'info');
+      return;
+    }
+    const current = latestWorkspaceRef.current;
+    const hasCurrentWork = Boolean(
+      current?.mapData
+      || current?.selectedRobot
+      || current?.waypoints?.length
+      || current?.edges?.length
+      || current?.teachingTasks?.length
+      || current?.jointPoses?.length,
+    );
+    if (hasCurrentWork) {
+      const confirmed = window.confirm(
+        `恢复上一次工程会替换当前工作现场。\n\n待恢复：${recovery.mapName || '未命名工程'}\n保存时间：${formatRecoveryTimestamp(recovery.savedAt)}\n\n是否继续？`,
+      );
+      if (!confirmed) return;
+    }
+
+    const sessionId = sessionIdRef.current;
+    const wasSessionReady = sessionReadyRef.current;
+    sessionReadyRef.current = false;
+    if (sessionSaveTimerRef.current) {
+      window.clearTimeout(sessionSaveTimerRef.current);
+      sessionSaveTimerRef.current = null;
+    }
+    setLoadState({
+      loading: true,
+      progress: 0.18,
+      phase: '恢复上一次工程',
+      detail: `正在校验并恢复 ${recovery.mapName || '未完成工程'} 的地图、机器人、示教任务与视角`,
+    });
+
+    try {
+      await sessionWriteChainRef.current.catch(() => undefined);
+      await activateWorkspaceRecovery(sessionId);
+      window.location.reload();
+    } catch (error) {
+      sessionReadyRef.current = wasSessionReady;
+      setLoadState({ loading: false, progress: 0, phase: '' });
+      notify(`上一次工程恢复失败：${error.message}`, 'error');
+    }
+  }, [lastProjectRecovery, notify]);
 
   const setActiveMode = (nextMode) => {
     setMode(nextMode);
@@ -2404,8 +2939,8 @@ export default function App() {
   );
 
   const exportProject = async () => {
-    if (!mapData) {
-      notify('请先加载地图或路径配置', 'error');
+    if (!mapData?.geometry) {
+      notify('请先加载完整地图；仅有配置元数据时无法生成便携工程包', 'error');
       return;
     }
     if (projectExportBusyRef.current) return;
@@ -2420,8 +2955,14 @@ export default function App() {
       return;
     }
     projectExportBusyRef.current = true;
-    setProjectExportState({ status: 'packing', byteLength: 0 });
-    notify('正在整理配置、RGB 与点云资源…', 'info');
+    setProjectExportState({
+      status: 'packing',
+      byteLength: 0,
+      phase: '冻结地图资源',
+      detail: mapData.name,
+      progress: 0,
+    });
+    notify('正在打包地图、机器人、配置与示教视觉资源…', 'info');
     try {
       const payload = buildExport({
         mapData,
@@ -2434,15 +2975,50 @@ export default function App() {
         robotPose,
         robotJointValues,
         lockedRobotJointNames,
+        robotHeightLocked,
         teachingTasks,
         jointPoses,
         meshRenderQuality,
+        pointColorMode,
+        showWaypoints3D,
+        activeTeachingTaskId,
+        activeTeachingParkingPointId,
+        collapsedPanel,
+        inspectorCollapsed,
       });
       const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
       const { downloadProjectArchive } = await import('./lib/projectArchive.js');
+      const mapResource = createGeometryCache(
+        mapData.geometry,
+        mapData.bounds,
+        mapData.byteLength,
+        mapData.sourceHash,
+        mapData.sourceHashKind,
+        {
+          fileModifiedAt: mapData.fileModifiedAt,
+          mimeType: mapData.mimeType,
+          loadedAt: mapData.loadedAt,
+          sourceKind: mapData.sourceKind,
+        },
+      );
+      const reusableRobotPackage = portableRobotPackageRef.current?.relativePath
+        === selectedRobot?.relativePath
+        ? portableRobotPackageRef.current
+        : null;
       const archive = await downloadProjectArchive(
         payload,
         `virtual-teaching-${stamp}.zip`,
+        {
+          mapResource,
+          existingRobotPackage: reusableRobotPackage,
+          onProgress: ({ phase, detail, progress }) => setProjectExportState({
+            status: 'packing',
+            byteLength: 0,
+            phase,
+            detail,
+            progress: Number(progress) || 0,
+          }),
+        },
       );
       setProjectExportState({
         status: 'ready',
@@ -2452,8 +3028,8 @@ export default function App() {
       const sizeMb = archive.byteLength / (1024 * 1024);
       notify(
         teachingTasks.length
-          ? `示教工程 ZIP 已导出 · ${sizeMb >= 0.1 ? `${sizeMb.toFixed(1)} MB` : `${Math.max(1, Math.round(archive.byteLength / 1024))} KB`}`
-          : '工程 ZIP 已导出 · 当前未包含示教任务',
+          ? `便携工程 ZIP 已导出 · ${sizeMb >= 0.1 ? `${sizeMb.toFixed(1)} MB` : `${Math.max(1, Math.round(archive.byteLength / 1024))} KB`}`
+          : '便携工程 ZIP 已导出 · 已包含地图与机器人资源，当前未包含示教任务',
         teachingTasks.length ? 'success' : 'info',
       );
     } catch (error) {
@@ -2472,12 +3048,20 @@ export default function App() {
         notify('机器人模型描述无效', 'error');
         return;
       }
+      const currentRobotKey = selectedRobot?.relativePath || selectedRobot?.id || '';
+      const nextRobotKey = robot.relativePath || robot.id || '';
+      if (projectDirectoryRef.current && currentRobotKey !== nextRobotKey) {
+        detachProjectDirectory('机器人模型已更换；原工程目录已解除关联，避免资源身份不一致');
+      }
+      releasePortableRobotPackage(portableRobotPackageRef.current?.resourceId);
+      portableRobotPackageRef.current = null;
       robotNotificationRef.current = '';
       setSelectedRobot(robot);
       setRobotPose(normalizeRobotPose(null));
       setRobotJointValues({});
       setLockedRobotJointNames([]);
       setRobotControlEnabled(false);
+      setRobotHeightLocked(false);
       setRobotCollisionProtectionEnabled(false);
       setZividCameraPoses({});
       setCameraTeachingCommand(null);
@@ -2499,7 +3083,7 @@ export default function App() {
         'info',
       );
     },
-    [mapData?.geometry, notify],
+    [detachProjectDirectory, mapData?.geometry, notify, selectedRobot],
   );
   const handleRobotLoadState = useCallback((nextState) => {
     setRobotLoadState(nextState);
@@ -2624,12 +3208,29 @@ export default function App() {
       setRobotControlEnabled(nextEnabled);
       notify(
         nextEnabled
-          ? '机器人控制已启用 · WASD 全向移动 / ←→ 原地旋转'
+          ? robotHeightLocked
+            ? '机器人控制已启用 · WASD 全向移动 / ←→ 原地旋转 / Z 高度已锁'
+            : '机器人控制已启用 · WASD 全向移动 / ←→ 原地旋转 / ↑↓ 调整高度'
           : '机器人控制已关闭 · WASD 与 ←→ 已交还相机',
         'info',
       );
     },
-    [notify, robotLoadState.status],
+    [notify, robotHeightLocked, robotLoadState.status],
+  );
+
+  const handleRobotHeightLockChange = useCallback(
+    (locked) => {
+      if (!selectedRobot || robotLoadState.status !== 'loaded') return;
+      const nextLocked = Boolean(locked);
+      setRobotHeightLocked(nextLocked);
+      notify(
+        nextLocked
+          ? `机器人高度已锁定 · Z ${robotPose.position.z.toFixed(3)} m`
+          : '机器人高度已解锁 · 可用 ↑/↓ 重新微调',
+        nextLocked ? 'success' : 'info',
+      );
+    },
+    [notify, robotLoadState.status, robotPose.position.z, selectedRobot],
   );
 
   useEffect(() => {
@@ -2660,17 +3261,6 @@ export default function App() {
     },
     [queueWorkspaceSave],
   );
-
-  const resetAllViews = useCallback(() => {
-    if (!mapData?.bounds) {
-      notify('请先加载地图', 'warning');
-      return;
-    }
-    setSynchronizedFocus(null);
-    viewResetRevisionRef.current += 1;
-    setViewResetRequest({ revision: viewResetRevisionRef.current });
-    notify('2D 与 3D 视角已重置', 'info');
-  }, [mapData?.bounds, notify]);
 
   const navigateAppPage = useCallback((nextPage) => {
     const normalized = nextPage === APP_PAGE_TEACHING_DATA
@@ -2921,7 +3511,6 @@ export default function App() {
   const progressLabel = loadState.progress < 1
     ? `${Math.round(loadState.progress * 100)}%`
     : 'PROCESS';
-
   return (
     <>
     <div
@@ -2931,6 +3520,14 @@ export default function App() {
     >
       <input ref={mapInputRef} className="visually-hidden" type="file" accept=".ply" onChange={handleMapFile} />
       <input ref={pathInputRef} className="visually-hidden" type="file" accept=".zip,.json,application/zip,application/x-zip-compressed,application/json" onChange={handlePathFile} />
+      <input
+        ref={projectDirectoryInputRef}
+        className="visually-hidden"
+        type="file"
+        webkitdirectory=""
+        multiple
+        onChange={handleProjectDirectoryFiles}
+      />
 
       <header className="topbar">
         <div className="brand-block">
@@ -2956,14 +3553,36 @@ export default function App() {
         </div>
 
         <div className="topbar-actions">
-          <button type="button" className="action-button subtle" onClick={() => loadExample()}>
-            <Box size={15} /> 示例地图
+          <button type="button" className="action-button subtle topbar-file-action" aria-label="示例地图" title="加载内置示例地图" onClick={() => loadExample()}>
+            <Box size={15} /> <span>示例地图</span>
           </button>
-          <button type="button" className="action-button" onClick={() => mapInputRef.current?.click()}>
-            <Upload size={15} /> 加载地图
+          <button type="button" className="action-button topbar-file-action" aria-label="加载地图" title="选择本地 PLY 地图" onClick={() => mapInputRef.current?.click()}>
+            <Upload size={15} /> <span>加载地图</span>
           </button>
-          <button type="button" className="action-button" onClick={() => pathInputRef.current?.click()} title="加载 ZIP 工程包或兼容旧版 JSON">
-            <FileArchive size={15} /> 加载路径
+          <button
+            type="button"
+            className={`action-button topbar-file-action project-load-action is-${projectDirectoryState.status}`}
+            aria-label="加载工程"
+            data-project-directory-picker="true"
+            data-project-directory-state={projectDirectoryState.status}
+            onClick={(event) => {
+              if (event.altKey) pathInputRef.current?.click();
+              else openProjectDirectory();
+            }}
+            disabled={loadState.loading}
+            title={projectDirectoryState.status === 'synced'
+              ? `${projectDirectoryState.name} · 修改会直接增量保存到工程目录`
+              : projectDirectoryState.status === 'saving'
+                ? `${projectDirectoryState.name} · 正在增量保存`
+                : projectDirectoryState.status === 'permission'
+                  ? `${projectDirectoryState.name} · 请重新选择目录以恢复写入权限`
+                  : projectDirectoryState.status === 'readonly'
+                    ? `${projectDirectoryState.name} · 当前浏览器仅能读取目录，工作仍由本地会话保护`
+                    : '选择包含 atlas.project.json（新工程）或 manifest.json（兼容工程）的解压目录；按住 Alt 点击可导入旧 ZIP/JSON'}
+          >
+            <FolderOpen size={15} />
+            <span>加载工程</span>
+            <i className="project-directory-indicator" aria-hidden="true" />
           </button>
           <RobotPicker
             selectedRobot={selectedRobot}
@@ -2984,16 +3603,6 @@ export default function App() {
             <Database size={15} />
             <span>示教数据</span>
             <b>{teachingTasks.length}</b>
-          </button>
-          <button
-            type="button"
-            className="action-button view-reset-action"
-            onClick={resetAllViews}
-            disabled={!mapData?.bounds}
-            aria-label="重置全部视角"
-            title="同时恢复 3D 与 2D 地图的初始视角"
-          >
-            <RotateCcw size={15} /> 重置视角
           </button>
           <div className="service-pill" title="局域网服务默认端口">
             <Server size={13} />
@@ -3076,13 +3685,13 @@ export default function App() {
                 focusRequest={synchronizedFocus}
                 initialView={restoredView3d}
                 onViewChange={handleView3dChange}
-                resetRequest={viewResetRequest}
                 robotDescriptor={selectedRobot}
                 robotLoadState={robotLoadState}
                 robotPose={robotPose}
                 robotJointValues={robotJointValues}
                 lockedRobotJointNames={lockedRobotJointNames}
                 robotControlEnabled={robotControlEnabled}
+                robotHeightLocked={robotHeightLocked}
                 robotTrajectoryActive={['playing', 'paused'].includes(teachingPlayback.status)}
                 robotParkingGhost={robotParkingGhost}
                 spaceMouseInputRef={spaceMouseInputRef}
@@ -3093,6 +3702,7 @@ export default function App() {
                 onRobotPoseChange={handleRobotPoseChange}
                 onRobotJointValuesChange={handleRobotJointValuesChange}
                 onRobotControlChange={handleRobotControlChange}
+                onRobotHeightLockChange={handleRobotHeightLockChange}
                 onZividCameraPoseChange={handleZividCameraPoseChange}
                 onCameraTeachingResult={handleCameraTeachingResult}
                 onParkingMergePlannerChange={handleParkingMergePlannerChange}
@@ -3203,7 +3813,6 @@ export default function App() {
                 onProjectionStats={handleProjectionStats}
                 onViewChange={handleViewChange}
                 focusRequest={synchronizedFocus}
-                resetRequest={viewResetRequest}
               />
             </div>
           </section>
@@ -3223,6 +3832,7 @@ export default function App() {
           robotJointValues={robotJointValues}
           lockedRobotJointNames={lockedRobotJointNames}
           robotControlEnabled={robotControlEnabled}
+          robotHeightLocked={robotHeightLocked}
           meshRenderQuality={meshRenderQuality}
           onMeshRenderQualityChange={setMeshRenderQuality}
           spaceMouseInputRef={spaceMouseInputRef}
@@ -3272,10 +3882,11 @@ export default function App() {
           className={`session-guard is-${sessionState.status}`}
           data-session-state={sessionState.status}
           data-session-restored={sessionState.restored ? 'true' : 'false'}
+          data-recovery-available={lastProjectRecovery?.available ? 'true' : 'false'}
           title={
             sessionState.status === 'error'
               ? '自动保护不可用，请到虚拟示教页导出工程备份'
-              : '刷新页面可恢复当前工作现场，服务重启后重置'
+              : '刷新页面自动恢复当前工作现场；服务或计算机重启后可前往示教数据页恢复工程'
           }
         >
           {sessionState.status === 'error' ? <ShieldAlert size={10} /> : <ShieldCheck size={10} />}
@@ -3283,8 +3894,31 @@ export default function App() {
             ? 'SESSION CHECK'
             : sessionState.status === 'error'
               ? 'SESSION UNPROTECTED'
-              : 'SESSION AUTO-SAVE'}
+              : lastProjectRecovery?.available
+                ? 'RECOVERY READY'
+                : 'SESSION AUTO-SAVE'}
         </span>
+        {projectDirectoryState.status !== 'detached' && (
+          <span
+            className={`project-directory-guard is-${projectDirectoryState.status}`}
+            title={projectDirectoryState.status === 'synced'
+              ? `${projectDirectoryState.name} · 工程配置与新增示教资源已同步`
+              : projectDirectoryState.status === 'saving'
+                ? `${projectDirectoryState.name} · 正在增量写入`
+                : projectDirectoryState.status === 'readonly'
+                  ? `${projectDirectoryState.name} · 浏览器未提供目录写权限`
+                  : projectDirectoryState.error || '需要重新授权工程目录'}
+          >
+            <FolderOpen size={10} />
+            {projectDirectoryState.status === 'saving'
+              ? 'PROJECT SAVING'
+              : projectDirectoryState.status === 'synced'
+                ? 'PROJECT SYNCED'
+                : projectDirectoryState.status === 'readonly'
+                  ? 'PROJECT READ ONLY'
+                  : 'PROJECT ATTENTION'}
+          </span>
+        )}
         <span className="statusbar__hint">
           {mode === 'connect' && connectionSourceId
             ? '起点已锁定 · 请选择终点'
@@ -3339,7 +3973,9 @@ export default function App() {
           parkingMergePlannerReady={parkingMergePlannerReady}
           projectExportState={projectExportState}
           sessionState={sessionState}
+          recovery={lastProjectRecovery}
           onBack={() => navigateAppPage(APP_PAGE_WORKBENCH)}
+          onOpenLastProject={openLastProject}
           onSelectTask={selectTeachingTask}
           onRenameTask={renameTeachingTask}
           onDeleteTask={deleteTeachingTask}

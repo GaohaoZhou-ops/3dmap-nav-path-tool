@@ -6,6 +6,8 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
+    "test:archive": "node tests/project_archive_smoke.mjs",
+    "test:directory": "node tests/project_directory_smoke.mjs",
     "preview": "vite preview",
     "service:start": "./scripts/start.sh",
     "service:status": "./scripts/status.sh",

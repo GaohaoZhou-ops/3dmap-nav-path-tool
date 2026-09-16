@@ -5,6 +5,7 @@ import { STLLoader } from 'three/examples/jsm/loaders/STLLoader.js';
 
 const ROBOT_FILE_PREFIX = '/__atlas/robot-files/';
 const SUPPORTED_FORMATS = new Set(['urdf', 'glb', 'gltf', 'stl']);
+const portableRobotPackages = new Map();
 // The bundled BOTX package documents this GLB as the browser equivalent of the
 // 99 MB official STL. Its geometry is already expressed in metres and centred
 // on XY, so only the URDF's -90 degree yaw remains necessary.
@@ -37,6 +38,93 @@ const extensionForPath = (value) => {
   const pathname = String(value || '').split(/[?#]/)[0];
   const dot = pathname.lastIndexOf('.');
   return dot >= 0 ? pathname.slice(dot + 1).toLowerCase() : '';
+};
+
+const portableMimeType = (path) => ({
+  glb: 'model/gltf-binary',
+  gltf: 'model/gltf+json',
+  jpeg: 'image/jpeg',
+  jpg: 'image/jpeg',
+  json: 'application/json',
+  png: 'image/png',
+  stl: 'model/stl',
+  urdf: 'application/xml',
+  xml: 'application/xml',
+}[extensionForPath(path)] || 'application/octet-stream');
+
+const resolvePortablePath = (basePath, reference) => {
+  const source = String(reference || '').trim().replaceAll('\\', '/');
+  const packageMatch = /^package:\/\/([^/]+)\/(.+)$/i.exec(source);
+  const parts = packageMatch
+    ? [packageMatch[1], ...packageMatch[2].split('/')]
+    : [...String(basePath || '').split('/').filter(Boolean), ...source.split('/')];
+  const normalized = [];
+  let escapedRoot = false;
+  parts.forEach((part) => {
+    if (!part || part === '.') return;
+    if (part === '..') {
+      if (!normalized.length) escapedRoot = true;
+      else normalized.pop();
+    }
+    else normalized.push(part);
+  });
+  return escapedRoot ? null : sanitizeRelativePath(normalized.join('/'));
+};
+
+export function registerPortableRobotPackage(robotPackage) {
+  if (!robotPackage || !Array.isArray(robotPackage.files)) {
+    throw new Error('便携机器人资源包无效');
+  }
+  const relativePath = sanitizeRelativePath(robotPackage.relativePath);
+  if (!relativePath) throw new Error('便携机器人资源包缺少主文件路径');
+  const resourceId = String(
+    robotPackage.resourceDigest
+    || `portable-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+  );
+  if (!portableRobotPackages.has(resourceId)) {
+    const urls = new Map();
+    const files = new Map();
+    robotPackage.files.forEach((file) => {
+      const path = sanitizeRelativePath(file.path);
+      if (!path || files.has(path)) throw new Error(`便携机器人资源路径无效或重复：${file.path}`);
+      const bytes = file.bytes instanceof ArrayBuffer
+        ? file.bytes
+        : ArrayBuffer.isView(file.bytes)
+          ? file.bytes.buffer.slice(file.bytes.byteOffset, file.bytes.byteOffset + file.bytes.byteLength)
+          : null;
+      if (!bytes) throw new Error(`便携机器人资源数据无效：${path}`);
+      const mimeType = String(file.mimeType || portableMimeType(path));
+      files.set(path, { path, mimeType, bytes });
+      urls.set(path, URL.createObjectURL(new Blob([bytes], { type: mimeType })));
+    });
+    if (!files.has(relativePath)) throw new Error(`便携机器人资源缺少主文件：${relativePath}`);
+    portableRobotPackages.set(resourceId, {
+      resourceId,
+      relativePath,
+      packageName: String(robotPackage.packageName || ''),
+      packagePath: sanitizeRelativePath(robotPackage.packagePath) || '',
+      files,
+      urls,
+    });
+  }
+  return resourceId;
+}
+
+export function releasePortableRobotPackage(resourceId) {
+  const entry = portableRobotPackages.get(String(resourceId || ''));
+  if (!entry) return false;
+  entry.urls.forEach((url) => URL.revokeObjectURL(url));
+  portableRobotPackages.delete(entry.resourceId);
+  return true;
+}
+
+const portablePackageFor = (descriptor) => (
+  portableRobotPackages.get(String(descriptor?.portableResourceId || '')) || null
+);
+
+const portableUrlFor = (descriptor, path) => {
+  const normalized = sanitizeRelativePath(path);
+  return normalized ? portablePackageFor(descriptor)?.urls.get(normalized) || null : null;
 };
 
 const finitePoseValue = (value, fallback = 0) => {
@@ -91,19 +179,27 @@ export function normalizeRobotDescriptor(value) {
     : ROBOT_FILE_PREFIX;
   const fileName = relativePath.split('/').at(-1);
   const fallbackName = fileName.replace(/\.[^.]+$/, '');
+  const portableResourceId = value.portableResourceId
+    ? String(value.portableResourceId)
+    : null;
+  const portablePackage = portableResourceId
+    ? portableRobotPackages.get(portableResourceId) || null
+    : null;
+  const portableUrl = portablePackage?.urls.get(relativePath) || null;
+  const portableManifestPath = packagePath ? `${packagePath}/web-model.json` : 'web-model.json';
   return {
     id: relativePath,
     name: String(value.name || fallbackName),
     fileName,
     relativePath,
     format,
-    url: `${ROBOT_FILE_PREFIX}${encodePath(relativePath)}`,
+    url: portableUrl || `${ROBOT_FILE_PREFIX}${encodePath(relativePath)}`,
     packageName: value.packageName ? String(value.packageName) : packagePath,
     packagePath,
     packageBaseUrl,
-    manifestUrl: value.manifestUrl && packagePath
-      ? `${packageBaseUrl}web-model.json`
-      : null,
+    manifestUrl: portablePackage?.urls.get(portableManifestPath)
+      || (value.manifestUrl && packagePath ? `${packageBaseUrl}web-model.json` : null),
+    portableResourceId,
     origin: normalizeRobotPose(value.origin),
     joints: normalizeRobotJointValues(value.joints),
   };
@@ -186,15 +282,70 @@ const resolvePackageUrl = (filename) => {
   return `${ROBOT_FILE_PREFIX}${encodePath(`${match[1]}/${match[2]}`)}`;
 };
 
-const resolveAssetUrl = (filename, descriptor, override = false) => {
-  if (override) return new URL(filename, new URL(descriptor.packageBaseUrl, window.location.href)).href;
+const resolveAssetReference = (filename, descriptor, override = false) => {
+  const portablePackage = portablePackageFor(descriptor);
+  if (portablePackage) {
+    const descriptorDirectory = descriptor.relativePath.split('/').slice(0, -1).join('/');
+    const path = override
+      ? resolvePortablePath(descriptor.packagePath || '', filename)
+      : resolvePortablePath(descriptorDirectory, filename);
+    const url = portableUrlFor(descriptor, path);
+    if (!url) throw new Error(`便携机器人包缺少资源：${path || filename}`);
+    return { url, path };
+  }
+  if (override) {
+    return {
+      url: new URL(filename, new URL(descriptor.packageBaseUrl, window.location.href)).href,
+      path: resolvePortablePath(descriptor.packagePath || '', filename),
+    };
+  }
   const packageUrl = resolvePackageUrl(filename);
-  if (packageUrl) return new URL(packageUrl, window.location.href).href;
-  return new URL(filename, new URL(descriptor.url, window.location.href)).href;
+  if (packageUrl) {
+    return {
+      url: new URL(packageUrl, window.location.href).href,
+      path: resolvePortablePath('', filename),
+    };
+  }
+  return {
+    url: new URL(filename, new URL(descriptor.url, window.location.href)).href,
+    path: resolvePortablePath(descriptor.relativePath.split('/').slice(0, -1).join('/'), filename),
+  };
 };
 
-const loadAsset = async (url, signal) => {
-  const format = extensionForPath(url);
+export function resolveRobotResourceUrl(value, filename, options = {}) {
+  const descriptor = normalizeRobotDescriptor(value);
+  if (!descriptor) throw new Error('机器人模型描述无效');
+  try {
+    return resolveAssetReference(filename, descriptor, options.packageRelative === true).url;
+  } catch (error) {
+    if (options.optional === true && portablePackageFor(descriptor)) return null;
+    throw error;
+  }
+}
+
+const portableGltfBaseUrl = (resourceId, path) => {
+  const directory = String(path || '').split('/').slice(0, -1);
+  return `https://atlas-portable.invalid/${encodeURIComponent(resourceId)}/${directory
+    .map((part) => encodeURIComponent(part)).join('/')}${directory.length ? '/' : ''}`;
+};
+
+const portableUrlFromGltfRequest = (descriptor, requestedUrl) => {
+  const portablePackage = portablePackageFor(descriptor);
+  if (!portablePackage) return null;
+  try {
+    const url = new URL(requestedUrl);
+    if (url.hostname !== 'atlas-portable.invalid') return null;
+    const pathParts = url.pathname.split('/').filter(Boolean);
+    if (decodeURIComponent(pathParts.shift() || '') !== portablePackage.resourceId) return null;
+    const path = sanitizeRelativePath(pathParts.map((part) => decodeURIComponent(part)).join('/'));
+    return path ? portablePackage.urls.get(path) || null : null;
+  } catch {
+    return null;
+  }
+};
+
+const loadAsset = async (url, signal, formatHint = '', portableContext = null) => {
+  const format = String(formatHint || extensionForPath(url)).toLowerCase();
   const buffer = await fetchBuffer(url, signal, `网格 ${decodeURIComponent(url.split('/').at(-1))}`);
   if (format === 'stl') {
     const geometry = new STLLoader().parse(buffer);
@@ -204,9 +355,17 @@ const loadAsset = async (url, signal) => {
     return { type: 'geometry', geometry };
   }
   if (format === 'glb' || format === 'gltf') {
-    const loader = new GLTFLoader();
+    const manager = new THREE.LoadingManager();
+    if (portableContext?.descriptor?.portableResourceId) {
+      manager.setURLModifier((requestedUrl) => (
+        portableUrlFromGltfRequest(portableContext.descriptor, requestedUrl) || requestedUrl
+      ));
+    }
+    const loader = new GLTFLoader(manager);
     loader.setMeshoptDecoder(MeshoptDecoder);
-    const resourceBaseUrl = new URL('./', url).href;
+    const resourceBaseUrl = portableContext?.descriptor?.portableResourceId
+      ? portableGltfBaseUrl(portableContext.descriptor.portableResourceId, portableContext.path)
+      : new URL('./', url).href;
     const gltf = await loader.parseAsync(buffer, resourceBaseUrl);
     return { type: 'scene', scene: gltf.scene };
   }
@@ -328,9 +487,23 @@ async function loadUrdfRobot(descriptor, signal, onProgress) {
       if (!filename) throw new Error(`${linkName} 的 visual 缺少 mesh filename`);
       const override = meshOverrides[filename] || null;
       const selectedFile = override?.file || filename;
-      const url = resolveAssetUrl(selectedFile, descriptor, Boolean(override?.file));
-      if (!assetCache.has(url)) assetCache.set(url, loadAsset(url, signal));
-      const asset = await assetCache.get(url);
+      const assetReference = resolveAssetReference(
+        selectedFile,
+        descriptor,
+        Boolean(override?.file),
+      );
+      if (!assetCache.has(assetReference.url)) {
+        assetCache.set(
+          assetReference.url,
+          loadAsset(
+            assetReference.url,
+            signal,
+            extensionForPath(selectedFile),
+            { descriptor, path: assetReference.path },
+          ),
+        );
+      }
+      const asset = await assetCache.get(assetReference.url);
       object = instantiateAsset(asset, material);
       const urdfScale = parseNumbers(meshElement.getAttribute('scale'), 3, [1, 1, 1]);
       const appliedScale = override?.applyUrdfScale === false
@@ -456,7 +629,13 @@ async function loadUrdfRobot(descriptor, signal, onProgress) {
 
 async function loadDirectRobot(descriptor, signal, onProgress) {
   onProgress?.({ loaded: 0, total: 1, phase: `读取 ${descriptor.fileName}` });
-  const asset = await loadAsset(new URL(descriptor.url, window.location.href).href, signal);
+  const url = new URL(descriptor.url, window.location.href).href;
+  const asset = await loadAsset(
+    url,
+    signal,
+    descriptor.format,
+    { descriptor, path: descriptor.relativePath },
+  );
   const robot = new THREE.Group();
   robot.name = descriptor.name;
   robot.add(instantiateAsset(asset));

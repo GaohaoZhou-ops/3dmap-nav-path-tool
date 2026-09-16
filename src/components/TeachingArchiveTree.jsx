@@ -618,6 +618,7 @@ export default function TeachingArchiveTree({
         data-parking-merge-planner-ready={mergePlannerAvailable ? 'true' : 'false'}
         data-parking-merge-server-ready={serverMergeAvailable ? 'true' : 'false'}
         data-project-export-state={projectExportState?.status || 'idle'}
+        data-project-export-phase={projectExportState?.phase || ''}
       >
         <header className="teaching-tree-toolbar">
           <div>
@@ -630,8 +631,10 @@ export default function TeachingArchiveTree({
             type="button"
             aria-label={exportPacking ? '正在打包示教工程 ZIP' : '导出示教工程 ZIP'}
             onClick={onExportProject}
-            disabled={!mapData?.bounds || exportPacking}
-            title="ZIP 内按任务、停车点、姿态分层保存配置、RGB 与点云"
+            disabled={!mapData?.geometry || exportPacking}
+            title={exportPacking
+              ? `${projectExportState?.phase || '正在打包'}${projectExportState?.detail ? ` · ${projectExportState.detail}` : ''}`
+              : '导出可跨设备恢复的地图、机器人、配置、RGB 与点云完整工程包'}
           >
             {exportPacking
               ? <LoaderCircle className="is-spinning" size={11} />

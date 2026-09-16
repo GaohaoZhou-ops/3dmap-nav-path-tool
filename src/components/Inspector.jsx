@@ -78,6 +78,7 @@ export default function Inspector({
   robotJointValues,
   lockedRobotJointNames = [],
   robotControlEnabled,
+  robotHeightLocked = false,
   meshRenderQuality = 'auto',
   onMeshRenderQualityChange,
   spaceMouseInputRef,
@@ -688,9 +689,15 @@ export default function Inspector({
                   </div>
                 )}
                 {robot && (
-                  <div className={`robot-drive-row ${robotControlEnabled ? 'is-active' : ''}`}>
+                  <div className={`robot-drive-row ${robotControlEnabled ? 'is-active' : ''} ${robotHeightLocked ? 'is-height-locked' : ''}`}>
                     <dt>麦轮控制</dt>
-                    <dd>{robotControlEnabled ? '键盘已接管 · WASD / ←→' : '待机 · 点击 3D“机器人”'}</dd>
+                    <dd>{robotControlEnabled
+                      ? robotHeightLocked
+                        ? '键盘已接管 · Z 高度已锁'
+                        : '键盘已接管 · WASD / 方向键'
+                      : robotHeightLocked
+                        ? '待机 · Z 高度已锁'
+                        : '待机 · 点击 3D“机器人”'}</dd>
                   </div>
                 )}
                 {robotLoadState?.status === 'loaded' && robotLoadState.zividCount > 0 && (

@@ -78,21 +78,25 @@ def run():
         assert three_canvas.get_attribute("data-color-mode") == "height"
         assert vector_canvas.get_attribute("data-color-mode") == "height"
         projection_before_resolution = page.locator(".slice-badge strong").inner_text()
-        decrease_resolution = page.get_by_role("button", name="降低点云分辨率")
-        increase_resolution = page.get_by_role("button", name="提高点云分辨率")
-        reset_resolution = page.get_by_role("button", name="重置点云分辨率")
-        decrease_resolution.click()
+        point_density = page.get_by_label("点云显示密度")
+        assert point_density.is_visible()
+        assert point_density.input_value() == "auto"
+        assert page.get_by_role("button", name="重置点云分辨率").count() == 0
+        point_density.select_option("1")
         assert three_canvas.get_attribute("data-resolution-percent") == "10"
         assert three_canvas.get_attribute("data-render-point-count") == "268502"
         assert three_canvas.get_attribute("data-resolution-selection") == "manual"
-        increase_resolution.click()
+        point_density.select_option("2")
         page.wait_for_timeout(80)
         assert three_canvas.get_attribute("data-resolution-percent") == "25"
         assert three_canvas.get_attribute("data-render-point-count") == "671255"
         assert three_canvas.get_attribute("data-resolution-selection") == "manual"
         assert page.locator(".slice-badge strong").inner_text() == projection_before_resolution
         page.screenshot(path="/tmp/atlas-performance-mode.png", full_page=True)
-        reset_resolution.click()
+        point_density.select_option("auto")
+        assert three_canvas.get_attribute("data-resolution-percent") == "25"
+        assert three_canvas.get_attribute("data-resolution-selection") == "auto"
+        point_density.select_option("5")
         assert three_canvas.get_attribute("data-resolution-percent") == "100"
         assert three_canvas.get_attribute("data-render-point-count") == "2685018"
         interaction_button = page.locator(".viewer-interaction-mode")

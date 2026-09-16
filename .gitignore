@@ -71,3 +71,8 @@ robots/
 *.ply
 !maps/xian_map.ply
 !tests/fixtures/*.ply
+
+# Locally recovered/exported projects may contain hundreds of MB of map data
+recovered-projects/
+*.atlas-project/
+*.atlas-project.zip

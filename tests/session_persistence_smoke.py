@@ -52,6 +52,10 @@ def read_workspace_records(page):
             hasBlob: record.blob instanceof Blob,
             positionByteLength: record.positionBuffer?.byteLength || 0,
             colorByteLength: record.colorBuffer?.byteLength || 0,
+            recoveryId: record.recoveryId || null,
+            available: record.available === true,
+            mapName: record.mapName || null,
+            taskCount: record.taskCount || 0,
           }));
         }
         """
@@ -86,7 +90,11 @@ def simulate_service_restart(page):
 def run():
     errors = []
     with sync_playwright() as playwright:
-        browser = playwright.chromium.launch(headless=True)
+        launch_options = {"headless": True}
+        system_chrome = Path("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome")
+        if system_chrome.exists():
+            launch_options["executable_path"] = str(system_chrome)
+        browser = playwright.chromium.launch(**launch_options)
         page = browser.new_page(viewport={"width": 1280, "height": 800})
         page.set_default_timeout(30_000)
         page.on("pageerror", lambda exc: errors.append(str(exc)))
@@ -240,7 +248,7 @@ def run():
         }
         assert "重置视角" in page.get_by_role("button", name="重置3D视角").inner_text()
         assert "重置视角" in page.get_by_role("button", name="重置2D视角").inner_text()
-        assert page.get_by_role("button", name="重置全部视角").is_visible()
+        assert page.get_by_role("button", name="重置全部视角").count() == 0
 
         records = read_workspace_records(page)
         record_by_key = {record["key"]: record for record in records}
@@ -364,7 +372,8 @@ def run():
         for key, expected in immediate_view3d.items():
             assert abs(immediate_restored_view3d[key] - expected) <= max(1e-7, abs(expected) * 1e-8)
 
-        page.get_by_role("button", name="重置全部视角").click()
+        page.get_by_role("button", name="重置3D视角").click()
+        page.get_by_role("button", name="重置2D视角").click()
         page.wait_for_timeout(120)
         assert immediate_restored_canvas.get_attribute("data-view-state") == "reset"
         assert immediate_restored_canvas.get_attribute("data-view-reset-count") == "1"
@@ -377,6 +386,14 @@ def run():
             float(page.locator(".map2d-view").get_attribute("data-view-scale"))
             - immediate_view2d["scale"]
         ) > 0.01
+        recovery_view2d = {
+            key: float(page.locator(".map2d-view").get_attribute(f"data-view-{key}"))
+            for key in ("center-x", "center-y", "scale")
+        }
+        recovery_view3d = {
+            key: float(immediate_restored_canvas.get_attribute(f"data-{key}"))
+            for key in immediate_view3d
+        }
         page.screenshot(path="/tmp/atlas-view-reset.png", full_page=True)
 
         simulate_service_restart(page)
@@ -388,16 +405,69 @@ def run():
         assert page.locator(".three-canvas").count() == 0
         assert page.locator(".waypoint-marker").count() == 0
         assert page.evaluate("localStorage.getItem('atlas-route-studio:view-state-v1')") is None
+        load_project_button = page.get_by_role("button", name="加载工程")
+        assert load_project_button.is_enabled()
+        assert load_project_button.get_attribute("data-project-file-browser") == "true"
+        with page.expect_file_chooser() as chooser_info:
+            load_project_button.click()
+        chooser_info.value.set_files([])
+        assert page.locator(".session-guard").get_attribute(
+            "data-recovery-available"
+        ) == "true"
+        page.screenshot(path="/tmp/atlas-project-recovery.png", full_page=True)
+        page.get_by_role("button", name="打开示教数据管理页").click()
+        page.locator('[data-app-page="teaching-data"]').wait_for()
+        recovery_button = page.get_by_role("button", name="恢复上一次工程")
+        assert recovery_button.is_visible()
         remaining_records = read_workspace_records(page)
         remaining_by_key = {record["key"]: record for record in remaining_records}
         assert "map" not in remaining_by_key
-        assert set(remaining_by_key).issubset({"meta", "config"})
+        assert {"recovery-meta", "recovery-map", "recovery-config"}.issubset(
+            remaining_by_key
+        )
+        assert remaining_by_key["recovery-meta"]["available"]
+        assert remaining_by_key["recovery-meta"]["mapName"] == FIXTURE.name
+        assert remaining_by_key["recovery-map"]["positionByteLength"] == 24 * 3 * 4
+        assert remaining_by_key["recovery-map"]["recoveryId"] == remaining_by_key[
+            "recovery-meta"
+        ]["recoveryId"]
         assert remaining_by_key["meta"]["sessionId"] == session_identity["sessionId"]
+
+        recovery_button.click()
+        page.locator(".loading-curtain").wait_for(state="visible")
+        page.wait_for_function(
+            "document.querySelector('.session-guard')?.dataset.sessionRestored === 'true'"
+        )
+        page.wait_for_load_state("networkidle")
+        wait_for_session(page)
+        assert page.locator(".session-guard").get_attribute("data-session-restored") == "true"
+        assert page.locator(".session-guard").get_attribute(
+            "data-recovery-available"
+        ) == "false"
+        assert page.locator(".map-identity strong").inner_text() == FIXTURE.name
+        assert page.locator(".three-canvas").get_attribute("data-geometry-source") == "session-cache"
+        assert page.locator(".waypoint-marker").count() == 2
+        assert page.locator(".route-edge").count() == 1
+        assert page.get_by_role("button", name="加载工程").is_enabled()
+        recovered_map_view = page.locator(".map2d-view")
+        recovered_canvas = page.locator(".three-canvas")
+        for key, expected in recovery_view2d.items():
+            actual = float(recovered_map_view.get_attribute(f"data-view-{key}"))
+            assert abs(actual - expected) <= max(1e-7, abs(expected) * 1e-8)
+        for key, expected in recovery_view3d.items():
+            actual = float(recovered_canvas.get_attribute(f"data-{key}"))
+            assert abs(actual - expected) <= max(1e-7, abs(expected) * 1e-8)
+        restored_records = read_workspace_records(page)
+        restored_by_key = {record["key"]: record for record in restored_records}
+        assert set(restored_by_key) == {"meta", "map", "config"}
+        assert restored_by_key["map"]["positionByteLength"] == 24 * 3 * 4
+        assert restored_by_key["map"]["mapId"] == restored_by_key["config"]["mapId"]
 
         print("session_id=", session_identity["sessionId"])
         print("restored_map=", FIXTURE.name)
         print("restored_waypoints=", 2)
         print("restored_edges=", 1)
+        print("crash_recovery=", "passed")
         print("page_errors=", errors)
         assert not errors
         browser.close()

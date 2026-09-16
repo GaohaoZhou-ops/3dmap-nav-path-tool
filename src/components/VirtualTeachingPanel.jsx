@@ -239,7 +239,7 @@ export default function VirtualTeachingPanel({
   const canCapture = Boolean(activeTask && activeParkingPoint && robotReady && contextMatches);
   const canCreateParkingPoint = Boolean(activeTask && robotReady && contextMatches);
   const captureInProgress = captureState?.status === 'capturing';
-  const canExport = Boolean(mapData?.bounds);
+  const canExport = Boolean(mapData?.geometry);
   const teachingPointCount = tasks.reduce(
     (count, task) => count + (task.parkingPoints || []).reduce(
       (poseCount, parkingPoint) => poseCount + (parkingPoint.poses?.length || 0),
@@ -404,7 +404,7 @@ export default function VirtualTeachingPanel({
         <div className="teaching-project-export__identity">
           <span><FileArchive size={14} /></span>
           <div>
-            <strong>示教工程包</strong>
+            <strong>便携示教工程包</strong>
             <small>{tasks.length} TASKS · {parkingPointCount} STOPS · {teachingPointCount} POSES</small>
           </div>
         </div>
@@ -414,8 +414,8 @@ export default function VirtualTeachingPanel({
           disabled={!canExport}
           aria-label="导出示教工程 ZIP"
           title={canExport
-            ? '导出地图、导航图、机器人状态与全部示教任务'
-            : '请先加载地图或工程配置'}
+            ? '导出地图几何、机器人模型、导航图与全部示教任务，可在其他设备直接恢复'
+            : '请先加载完整地图'}
         >
           <Download size={12} /> 导出 ZIP
         </button>

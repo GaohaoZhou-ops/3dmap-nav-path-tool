@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   ArrowLeft,
   CircleDot,
+  History,
   Route,
   ShieldCheck,
 } from 'lucide-react';
@@ -30,7 +31,9 @@ export default function TeachingDataPage({
   parkingMergePlannerReady,
   projectExportState,
   sessionState,
+  recovery,
   onBack,
+  onOpenLastProject,
   onSelectTask,
   onRenameTask,
   onDeleteTask,
@@ -147,6 +150,21 @@ export default function TeachingDataPage({
           <i>/</i>
           <strong aria-current="page">示教数据</strong>
         </nav>
+        {recovery?.available && (
+          <button
+            type="button"
+            className="teaching-data-page__recovery"
+            aria-label="恢复上一次工程"
+            onClick={onOpenLastProject}
+            title={`恢复 ${recovery.mapName || '上一次未完成工程'} · ${recovery.taskCount || 0} 个示教任务`}
+          >
+            <History size={13} />
+            <span>
+              <strong>恢复工程</strong>
+              <small>{recovery.mapName || '未完成工程'}</small>
+            </span>
+          </button>
+        )}
         <div className={`teaching-data-page__session is-${sessionState?.status || 'checking'}`}>
           <ShieldCheck size={12} />
           <span>{sessionState?.status === 'ready' ? 'SESSION SYNCED' : 'SESSION CHECK'}</span>

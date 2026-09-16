@@ -152,6 +152,17 @@ const normalizeOpticalPose = (value, side) => {
   };
 };
 
+const normalizeTeachingOpticalTargets = (value) => {
+  if (!value || typeof value !== 'object') return {};
+  return Object.fromEntries(
+    ['left', 'right'].flatMap((side) => (
+      value[side] && typeof value[side] === 'object'
+        ? [[side, normalizeOpticalPose(value[side], side)]]
+        : []
+    )),
+  );
+};
+
 const normalizeVector3Array = (value) => (
   Array.isArray(value)
     ? [0, 1, 2].map((index) => numberOr(value[index]))
@@ -348,6 +359,9 @@ const normalizeTeachingPoint = (point, pointIndex) => {
       point?.mapPose || point?.robotPose || point?.pose,
     ),
     fullBodyJoints: joints,
+    // Server-side merge jobs omit camera media by design, while keeping the
+    // calibrated optical targets required for another planning pass.
+    opticalTargets: normalizeTeachingOpticalTargets(point?.opticalTargets),
     cameraCapture: normalizeTeachingCameraCapture(
       point?.cameraCapture || point?.visionCapture || point?.cameraFrames,
     ),
@@ -575,6 +589,10 @@ export function normalizeProject(payload) {
         lockedJoints: normalizeRobotJointLocks(
           rawRobot.lockedJoints ?? rawRobot.jointLocks ?? rawRobot.lockedJointNames,
         ),
+        heightLocked: booleanOr(
+          rawRobot.heightLocked ?? rawRobot.lockHeight ?? rawRobot.zLocked,
+          false,
+        ),
         origin: {
           position: {
             x: numberOr(rawRobot.origin?.position?.x ?? rawRobot.origin?.x),
@@ -591,6 +609,9 @@ export function normalizeProject(payload) {
     : null;
   const teachingTasks = normalizeTeachingTasks(payload);
   const jointPoses = normalizeJointPoses(payload);
+  const workspace = payload.workspace && typeof payload.workspace === 'object'
+    ? payload.workspace
+    : {};
 
   return {
     waypoints,
@@ -603,6 +624,20 @@ export function normalizeProject(payload) {
     view2d: payload.view2d || null,
     view3d: payload.view3d || null,
     rendering: payload.rendering || null,
+    workspace: {
+      pointColorMode: String(workspace.pointColorMode || ''),
+      showWaypoints3D: workspace.showWaypoints3D !== false,
+      activeTeachingTaskId: workspace.activeTeachingTaskId
+        ? String(workspace.activeTeachingTaskId)
+        : null,
+      activeTeachingParkingPointId: workspace.activeTeachingParkingPointId
+        ? String(workspace.activeTeachingParkingPointId)
+        : null,
+      collapsedPanel: ['2d', '3d'].includes(workspace.collapsedPanel)
+        ? workspace.collapsedPanel
+        : null,
+      inspectorCollapsed: workspace.inspectorCollapsed === true,
+    },
     robot: robot?.relativePath ? robot : null,
     teachingTasks,
     jointPoses,
@@ -620,9 +655,16 @@ export function buildExport({
   robotPose,
   robotJointValues,
   lockedRobotJointNames = [],
+  robotHeightLocked = false,
   teachingTasks = [],
   jointPoses = [],
   meshRenderQuality = 'auto',
+  pointColorMode = 'height',
+  showWaypoints3D = true,
+  activeTeachingTaskId = null,
+  activeTeachingParkingPointId = null,
+  collapsedPanel = null,
+  inspectorCollapsed = false,
 }) {
   const pointById = new Map(waypoints.map((point) => [point.id, point]));
   const exportedRobotPose = robotPose || robot?.origin || {};
@@ -637,6 +679,16 @@ export function buildExport({
     },
     rendering: {
       meshQuality: meshRenderQuality,
+    },
+    workspace: {
+      pointColorMode: ['height', 'source', 'white'].includes(pointColorMode)
+        ? pointColorMode
+        : 'height',
+      showWaypoints3D: showWaypoints3D !== false,
+      activeTeachingTaskId: activeTeachingTaskId || null,
+      activeTeachingParkingPointId: activeTeachingParkingPointId || null,
+      collapsedPanel: ['2d', '3d'].includes(collapsedPanel) ? collapsedPanel : null,
+      inspectorCollapsed: inspectorCollapsed === true,
     },
     map: {
       fileName: mapData?.name || null,
@@ -680,6 +732,7 @@ export function buildExport({
             }),
           ),
           lockedJoints: normalizeRobotJointLocks(lockedRobotJointNames),
+          heightLocked: robotHeightLocked === true,
           origin: {
             position: {
               x: numberOr(exportedRobotPose.position?.x ?? exportedRobotPose.x),

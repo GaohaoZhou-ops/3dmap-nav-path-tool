@@ -8,6 +8,8 @@ import {
   DEFAULT_PARKING_MERGE_RPY_TOLERANCE,
   DEFAULT_PARKING_MERGE_XYZ_TOLERANCE,
 } from './parkingPointMerge.js';
+import { sha256Bytes } from './hash.js';
+import { resolveRobotResourceUrl } from './robotLoader.js';
 
 export const PARKING_MERGE_SERVER_JOB_FORMAT = 'atlas-parking-merge-server-job';
 export const PARKING_MERGE_SERVER_RESULT_FORMAT = 'atlas-parking-merge-server-result';
@@ -54,18 +56,6 @@ const stableValue = (value) => {
 };
 
 const stableStringify = (value) => JSON.stringify(stableValue(value));
-
-const sha256Bytes = async (bytes) => {
-  if (!globalThis.crypto?.subtle) throw new Error('当前浏览器不支持 SHA-256 任务指纹');
-  const view = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
-  const digest = await globalThis.crypto.subtle.digest(
-    'SHA-256',
-    view.buffer.slice(view.byteOffset, view.byteOffset + view.byteLength),
-  );
-  return [...new Uint8Array(digest)]
-    .map((value) => value.toString(16).padStart(2, '0'))
-    .join('');
-};
 
 const sha256Json = (value) => sha256Bytes(encoder.encode(stableStringify(value)));
 
@@ -140,7 +130,8 @@ export const createParkingMergeComputationTask = (task) => ({
       opticalTargets: Object.fromEntries(
         ['left', 'right'].flatMap((side) => {
           const target = cleanOpticalPose(
-            pose.cameraCapture?.frames?.[side]?.opticalPose,
+            pose.cameraCapture?.frames?.[side]?.opticalPose
+              || pose.opticalTargets?.[side],
             side,
           );
           return target ? [[side, target]] : [];
@@ -157,11 +148,6 @@ const normalizeRelativePath = (value) => {
   }
   return parts.join('/');
 };
-
-const encodePath = (value) => normalizeRelativePath(value)
-  .split('/')
-  .map((segment) => encodeURIComponent(segment))
-  .join('/');
 
 const parentLinkName = (node) => {
   let current = node?.parentElement;
@@ -183,7 +169,7 @@ const robotResourceReference = (filename, descriptor) => {
       source,
       relativePath,
       archivePath: `robot/${relativePath}`,
-      url: `/__atlas/robot-files/${encodePath(relativePath)}`,
+      url: resolveRobotResourceUrl(descriptor, source),
     };
   }
   const descriptorPath = normalizeRelativePath(descriptor.relativePath || descriptor.id);
@@ -200,7 +186,7 @@ const robotResourceReference = (filename, descriptor) => {
     source,
     relativePath,
     archivePath: `robot/${relativePath}`,
-    url: `/__atlas/robot-files/${encodePath(relativePath)}`,
+    url: resolveRobotResourceUrl(descriptor, source),
   };
 };
 
@@ -248,15 +234,19 @@ const parseRobotResourceReferences = (urdfSource, descriptor) => {
 const robotSupportReferences = (descriptor) => {
   const packagePath = String(descriptor.packagePath || '').replace(/^\/+|\/+$/g, '');
   if (!packagePath) return [];
-  return ['package.xml', 'RESOURCE_MANIFEST.sha256'].map((name) => {
+  return ['package.xml', 'RESOURCE_MANIFEST.sha256'].flatMap((name) => {
     const relativePath = normalizeRelativePath(`${packagePath}/${name}`);
-    return {
+    const url = resolveRobotResourceUrl(descriptor, name, {
+      packageRelative: true,
+      optional: true,
+    });
+    return url ? [{
       role: name === 'package.xml' ? 'robot-package' : 'robot-upstream-manifest',
       relativePath,
       archivePath: `robot/${relativePath}`,
-      url: `/__atlas/robot-files/${encodePath(relativePath)}`,
+      url,
       optional: true,
-    };
+    }] : [];
   });
 };
 

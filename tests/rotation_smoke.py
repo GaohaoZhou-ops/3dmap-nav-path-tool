@@ -525,13 +525,22 @@ def run():
             ) < 1e-6
 
         resolution = page.get_by_role("group", name="点云显示分辨率")
-        decrease = page.get_by_role("button", name="降低点云分辨率")
-        increase = page.get_by_role("button", name="提高点云分辨率")
-        reset = page.get_by_role("button", name="重置点云分辨率")
+        point_density = page.get_by_label("点云显示密度")
+        assert page.get_by_role("button", name="重置全部视角").count() == 0
+        assert page.get_by_role("button", name="重置3D视角").is_visible()
+        assert page.get_by_role("button", name="重置2D视角").is_visible()
         assert resolution.is_visible()
         assert "100%" in resolution.inner_text()
-        assert increase.is_disabled()
-        assert reset.is_disabled()
+        assert point_density.input_value() == "auto"
+        assert page.get_by_role("button", name="降低点云分辨率").count() == 0
+        assert page.get_by_role("button", name="提高点云分辨率").count() == 0
+        assert page.get_by_role("button", name="重置点云分辨率").count() == 0
+        point_density.select_option("0")
+        assert canvas.get_attribute("data-resolution-percent") == "5"
+        assert canvas.get_attribute("data-resolution-selection") == "manual"
+        point_density.select_option("auto")
+        assert canvas.get_attribute("data-resolution-percent") == "100"
+        assert canvas.get_attribute("data-resolution-selection") == "native"
 
         color_toggle = page.get_by_role("button", name="切换点云颜色模式")
         assert color_toggle.get_attribute("data-color-mode") == "height"
@@ -569,31 +578,27 @@ def run():
         assert page.get_by_label("点云高程比例尺").is_visible()
 
         full_resolution_frame = canvas.screenshot()
-        decrease.click()
+        point_density.select_option("4")
         assert canvas.get_attribute("data-resolution-percent") == "75"
         assert canvas.get_attribute("data-render-point-count") == "18"
         assert canvas.get_attribute("data-resolution-selection") == "manual"
         assert "75%" in resolution.inner_text()
 
-        # Continue to the lowest performance-oriented level. The draw count and
-        # rendered frame must both change, while reset restores the source count.
-        for _ in range(4):
-            decrease.click()
+        # Select the lowest performance-oriented level. The draw count and
+        # rendered frame must both change, while the full option restores the source count.
+        point_density.select_option("0")
         page.wait_for_timeout(80)
         assert canvas.get_attribute("data-resolution-percent") == "5"
         assert canvas.get_attribute("data-render-point-count") == "1"
-        assert decrease.is_disabled()
         performance_frame = canvas.screenshot()
         assert full_resolution_frame != performance_frame
 
-        increase.click()
+        point_density.select_option("1")
         assert canvas.get_attribute("data-resolution-percent") == "10"
         assert canvas.get_attribute("data-render-point-count") == "2"
-        reset.click()
+        point_density.select_option("5")
         assert canvas.get_attribute("data-resolution-percent") == "100"
         assert canvas.get_attribute("data-render-point-count") == "24"
-        assert increase.is_disabled()
-        assert reset.is_disabled()
 
         box = canvas.bounding_box()
         assert box

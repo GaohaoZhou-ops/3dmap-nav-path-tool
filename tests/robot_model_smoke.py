@@ -112,6 +112,11 @@ def run():
         assert control.get_attribute("aria-pressed") == "false"
         assert canvas.get_attribute("data-robot-control-enabled") == "false"
         assert canvas.get_attribute("data-robot-drive-model") == "mecanum-local-frame"
+        height_lock = page.locator(".robot-height-lock-toggle")
+        assert height_lock.is_visible()
+        assert height_lock.get_attribute("aria-label") == "锁定机器人高度"
+        assert height_lock.get_attribute("aria-pressed") == "false"
+        assert canvas.get_attribute("data-robot-height-locked") == "false"
 
         control.click()
         page.wait_for_function(
@@ -202,6 +207,53 @@ def run():
         assert pose_after_yaw["yaw"] > 4
         assert read_camera(canvas) == camera_before_control
 
+        # In robot mode the vertical arrow keys belong to the base-height trim,
+        # not to the camera pitch controls. Both directions preserve the view.
+        robot_z_before = read_pose(canvas)["z"]
+        page.keyboard.press("ArrowUp")
+        page.wait_for_function(
+            "(threshold) => Number(document.querySelector('.three-canvas')?.dataset.robotZ) > threshold",
+            arg=robot_z_before + 0.005,
+        )
+        robot_z_after_up = read_pose(canvas)["z"]
+        assert canvas.get_attribute("data-last-robot-action") == "z-up"
+        assert canvas.get_attribute("data-keyboard-control-owner") == "robot"
+        assert read_camera(canvas) == camera_before_control
+
+        height_lock.click()
+        page.wait_for_function(
+            "document.querySelector('.three-canvas')?.dataset.robotHeightLocked === 'true'"
+        )
+        assert height_lock.get_attribute("aria-label") == "解锁机器人高度"
+        assert height_lock.get_attribute("aria-pressed") == "true"
+        assert "Z HOLD" in page.get_by_label("机器人模型状态").inner_text()
+        assert "Z 高度已锁" in page.locator(".robot-drive-row").inner_text()
+
+        locked_robot_z = read_pose(canvas)["z"]
+        page.keyboard.press("ArrowDown")
+        page.wait_for_timeout(160)
+        assert abs(read_pose(canvas)["z"] - locked_robot_z) < 1e-9
+        assert canvas.get_attribute("data-last-robot-action") == "z-locked"
+        assert int(canvas.get_attribute("data-robot-height-lock-blocked-count")) >= 1
+        assert read_camera(canvas) == camera_before_control
+
+        height_lock.click()
+        page.wait_for_function(
+            "document.querySelector('.three-canvas')?.dataset.robotHeightLocked === 'false'"
+        )
+        page.keyboard.press("ArrowDown")
+        page.wait_for_function(
+            "(threshold) => Number(document.querySelector('.three-canvas')?.dataset.robotZ) < threshold",
+            arg=robot_z_after_up - 0.005,
+        )
+        robot_z_after_trim = read_pose(canvas)["z"]
+        assert canvas.get_attribute("data-last-robot-action") == "z-down"
+        assert read_camera(canvas) == camera_before_control
+        height_lock.click()
+        page.wait_for_function(
+            "document.querySelector('.three-canvas')?.dataset.robotHeightLocked === 'true'"
+        )
+
         robot_before_vertical_camera = read_pose(canvas)
         camera_before_vertical = read_camera(canvas)
         page.keyboard.press("q")
@@ -226,7 +278,7 @@ def run():
         moved_pose = read_pose(canvas)
         assert moved_pose["x"] > pose_after_yaw["x"] + 0.04
         assert moved_pose["y"] > pose_after_yaw["y"] + 0.002
-        assert moved_pose["z"] == 0
+        assert abs(moved_pose["z"] - robot_z_after_trim) < 1e-6
         assert moved_pose["roll"] == 0
         assert moved_pose["pitch"] == 0
 
@@ -262,10 +314,11 @@ def run():
             page.get_by_role("button", name="导出示教工程 ZIP").click()
         exported = read_exported_project(download_info.value)
         assert exported["robot"]["relativePath"].endswith("botx_abx_zivid_m70.urdf")
+        assert exported["robot"]["heightLocked"] is True
         exported_pose = exported["robot"]["origin"]
         assert abs(exported_pose["position"]["x"] - moved_pose["x"]) < 1e-5
         assert abs(exported_pose["position"]["y"] - moved_pose["y"]) < 1e-5
-        assert exported_pose["position"]["z"] == 0
+        assert abs(exported_pose["position"]["z"] - moved_pose["z"]) < 1e-5
         assert exported_pose["rpy"]["roll"] == 0
         assert exported_pose["rpy"]["pitch"] == 0
         assert abs(exported_pose["rpy"]["yaw"] - moved_pose["yaw"]) < 1e-5
@@ -293,6 +346,7 @@ def run():
             """
         )
         assert stored_robot["relativePath"].endswith("botx_abx_zivid_m70.urdf")
+        assert stored_robot["heightLocked"] is True
         assert abs(stored_robot["origin"]["position"]["x"] - moved_pose["x"]) < 1e-5
         assert abs(stored_robot["origin"]["position"]["y"] - moved_pose["y"]) < 1e-5
         assert abs(stored_robot["origin"]["rpy"]["yaw"] - moved_pose["yaw"]) < 1e-5
@@ -307,6 +361,10 @@ def run():
         assert page.locator(".session-guard").get_attribute("data-session-restored") == "true"
         assert page.locator(".robot-picker").get_attribute("data-robot-picker-state") == "loaded"
         assert canvas.get_attribute("data-robot-control-enabled") == "false"
+        assert canvas.get_attribute("data-robot-height-locked") == "true"
+        assert page.locator(".robot-height-lock-toggle").get_attribute(
+            "aria-pressed"
+        ) == "true"
         assert page.get_by_role("button", name="定位机器人模型").get_attribute(
             "aria-pressed"
         ) == "false"
@@ -316,6 +374,10 @@ def run():
         assert abs(restored_pose["yaw"] - moved_pose["yaw"]) < 1e-5
         page.get_by_role("button", name="定位机器人模型").click()
         page.wait_for_timeout(250)
+        restored_locked_pose = read_pose(canvas)
+        page.keyboard.press("ArrowDown")
+        page.wait_for_timeout(160)
+        assert read_pose(canvas) == restored_locked_pose
 
         dimensions = page.evaluate(
             "({sw:document.body.scrollWidth,cw:document.body.clientWidth,"

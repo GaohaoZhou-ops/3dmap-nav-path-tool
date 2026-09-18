@@ -102,6 +102,8 @@ const createIdleTeachingPlayback = () => ({
   poseName: '',
   poseOrdinal: 0,
   poseCount: 0,
+  reachedPoseIds: [],
+  reachedPoseCount: 0,
   elapsedDurationMs: 0,
   totalDurationMs: 0,
   overallProgress: 0,
@@ -112,6 +114,9 @@ const createIdleTeachingPlayback = () => ({
 const teachingPlaybackStateFromRuntime = (runtime, status = runtime?.status || 'idle') => {
   const segment = runtime?.plan?.segments?.[runtime.segmentIndex] || null;
   if (!runtime || !segment) return createIdleTeachingPlayback();
+  const reachedPoseIds = runtime.reachedPoseIds instanceof Set
+    ? [...runtime.reachedPoseIds]
+    : [];
   const segmentProgress = segment.durationMs > 0
     ? Math.max(0, Math.min(1, runtime.segmentElapsedMs / segment.durationMs))
     : 1;
@@ -132,6 +137,8 @@ const teachingPlaybackStateFromRuntime = (runtime, status = runtime?.status || '
     poseName: segment.target?.poseName || '',
     poseOrdinal: segment.target?.poseOrdinal || 0,
     poseCount: runtime.plan.poseCount,
+    reachedPoseIds,
+    reachedPoseCount: reachedPoseIds.length,
     elapsedDurationMs,
     totalDurationMs: runtime.plan.totalDurationMs,
     overallProgress: runtime.plan.totalDurationMs > 0
@@ -140,6 +147,14 @@ const teachingPlaybackStateFromRuntime = (runtime, status = runtime?.status || '
     segmentProgress,
     speed: runtime.speed,
   };
+};
+
+const markTeachingPlaybackPoseReached = (runtime, segment) => {
+  const poseId = segment?.phase === 'hold' ? segment.target?.poseId : '';
+  if (!poseId || !(runtime?.reachedPoseIds instanceof Set)) return false;
+  const previousSize = runtime.reachedPoseIds.size;
+  runtime.reachedPoseIds.add(poseId);
+  return runtime.reachedPoseIds.size !== previousSize;
 };
 
 const appPageFromLocation = () => {
@@ -3553,6 +3568,7 @@ export default function App() {
       const finalSample = sampleTeachingTrajectorySegment(activeSegment, 1);
       setRobotPose(normalizeRobotPose(finalSample.robotPose));
       setRobotJointValues(normalizeRobotJointValues(finalSample.robotJointValues));
+      markTeachingPlaybackPoseReached(runtime, activeSegment);
       runtime.segmentElapsedMs -= activeSegment.durationMs;
       runtime.segmentIndex += 1;
       crossedBoundary = true;
@@ -3577,6 +3593,7 @@ export default function App() {
     }
 
     const segment = runtime.plan.segments[runtime.segmentIndex];
+    markTeachingPlaybackPoseReached(runtime, segment);
     if (runtime.activeParkingPointId !== segment.target?.parkingPointId) {
       runtime.activeParkingPointId = segment.target?.parkingPointId || null;
       setActiveTeachingParkingPointId(runtime.activeParkingPointId);
@@ -3635,6 +3652,7 @@ export default function App() {
       lastTimestamp: null,
       lastAppliedTimestamp: null,
       activeParkingPointId: null,
+      reachedPoseIds: new Set(),
       speed: 1,
       context: {
         mapId: mapData?.mapId || mapData?.sourceHash || mapData?.name || '',
@@ -4082,6 +4100,7 @@ export default function App() {
                 robotControlEnabled={robotControlEnabled}
                 robotHeightLocked={robotHeightLocked}
                 robotTrajectoryActive={['playing', 'paused'].includes(teachingPlayback.status)}
+                teachingPlayback={teachingPlayback}
                 robotParkingGhost={robotParkingGhost}
                 teachingSpaceMode={teachingSpaceMode}
                 teachingTasks={teachingTasks}

@@ -2,6 +2,7 @@ import * as THREE from 'three';
 
 export const VISION_COVERAGE_MODE = 'surface-truncated-optical-frusta';
 export const VISION_COVERAGE_SURFACE_STOP = 'first-point-depth-grid';
+export const TEACHING_SURFACE_PROJECTION_MODE = 'continuous-frustum-front-envelope';
 
 const DEFAULT_GRID_COLUMNS = 14;
 const DEFAULT_GRID_ROWS = 9;
@@ -433,21 +434,25 @@ export const markTeachingSurfaceCoverageRange = (
         grid.rows - 1,
         Math.max(0, Math.floor(((normalizedY + 1) / 2) * grid.rows)),
       );
-      const surfaceDepth = grid.surfaceDepths[row * grid.columns + column];
-      if (!Number.isFinite(surfaceDepth)) continue;
+      const cellIndex = row * grid.columns + column;
+      const measuredSurfaceDepth = grid.surfaceDepths[cellIndex];
+      const stopDepth = Number.isFinite(measuredSurfaceDepth)
+        ? measuredSurfaceDepth
+        : finiteNumber(grid.depths[cellIndex], grid.far);
 
-      const cellWidth = (2 * frame.tangentX * surfaceDepth) / grid.columns;
-      const cellHeight = (2 * frame.tangentY * surfaceDepth) / grid.rows;
+      const cellWidth = (2 * frame.tangentX * stopDepth) / grid.columns;
+      const cellHeight = (2 * frame.tangentY * stopDepth) / grid.rows;
       const adaptiveTolerance = Math.max(
         minimumTolerance,
-        surfaceDepth * relativeTolerance,
+        stopDepth * relativeTolerance,
         Math.hypot(cellWidth, cellHeight) * cellTolerance,
       );
       const tolerance = Math.min(maximumTolerance, adaptiveTolerance);
-      if (
-        localZ >= surfaceDepth - tolerance
-        && localZ <= surfaceDepth + tolerance
-      ) {
+      // Treat the sampled depth as an occlusion envelope rather than a narrow
+      // vertex band. This colors the complete camera-facing surface, including
+      // mesh spans that cross an empty sampling cell, while still rejecting
+      // geometry hidden behind the first measured surface.
+      if (localZ <= stopDepth + tolerance) {
         targetMask[pointIndex] = 1;
         newlyCovered += 1;
         break;
@@ -472,6 +477,222 @@ export const buildTeachingSurfaceCoverageMask = (
     options,
   );
   return { mask, coveredPointCount };
+};
+
+const createCoverageDataTexture = (data, width, height, format) => {
+  const texture = new THREE.DataTexture(data, width, height, format, THREE.FloatType);
+  texture.minFilter = THREE.NearestFilter;
+  texture.magFilter = THREE.NearestFilter;
+  texture.wrapS = THREE.ClampToEdgeWrapping;
+  texture.wrapT = THREE.ClampToEdgeWrapping;
+  texture.generateMipmaps = false;
+  texture.flipY = false;
+  texture.unpackAlignment = 1;
+  texture.needsUpdate = true;
+  return texture;
+};
+
+export const createTeachingSurfaceProjectionOverlay = (
+  geometry,
+  preparedFrames,
+  options = {},
+) => {
+  if (!geometry || !Array.isArray(preparedFrames) || !preparedFrames.length) return null;
+  const frames = preparedFrames.filter((frame) => (
+    frame?.grid?.columns > 0
+    && frame?.grid?.rows > 0
+    && frame?.worldToCamera?.length >= 16
+  ));
+  if (!frames.length) return null;
+
+  const frameTextureWidth = 6;
+  const frameTextureHeight = frames.length;
+  const frameData = new Float32Array(frameTextureWidth * frameTextureHeight * 4);
+  const depthTextureWidth = Math.max(...frames.map((frame) => frame.grid.columns));
+  const depthTextureHeight = frames.reduce((sum, frame) => sum + frame.grid.rows, 0);
+  const depthData = new Float32Array(depthTextureWidth * depthTextureHeight);
+  let depthRowOffset = 0;
+
+  frames.forEach((frame, frameIndex) => {
+    const frameOffset = frameIndex * frameTextureWidth * 4;
+    for (let column = 0; column < 4; column += 1) {
+      for (let component = 0; component < 4; component += 1) {
+        frameData[frameOffset + column * 4 + component] = finiteNumber(
+          frame.worldToCamera[column * 4 + component],
+          component === column ? 1 : 0,
+        );
+      }
+    }
+    frameData.set([
+      finiteNumber(frame.tangentX, 1),
+      finiteNumber(frame.tangentY, 1),
+      finiteNumber(frame.grid.near, 0.3),
+      finiteNumber(frame.grid.far, 1.3),
+    ], frameOffset + 16);
+    frameData.set([
+      frame.grid.columns,
+      frame.grid.rows,
+      depthRowOffset,
+      0,
+    ], frameOffset + 20);
+
+    for (let row = 0; row < frame.grid.rows; row += 1) {
+      for (let column = 0; column < frame.grid.columns; column += 1) {
+        const cellIndex = row * frame.grid.columns + column;
+        depthData[(depthRowOffset + row) * depthTextureWidth + column] = finiteNumber(
+          frame.grid.depths[cellIndex],
+          frame.grid.far,
+        );
+      }
+    }
+    depthRowOffset += frame.grid.rows;
+  });
+
+  const frameTexture = createCoverageDataTexture(
+    frameData,
+    frameTextureWidth,
+    frameTextureHeight,
+    THREE.RGBAFormat,
+  );
+  const depthTexture = createCoverageDataTexture(
+    depthData,
+    depthTextureWidth,
+    depthTextureHeight,
+    THREE.RedFormat,
+  );
+  const opacity = THREE.MathUtils.clamp(finiteNumber(options.opacity, 0.05), 0, 1);
+  const color = new THREE.Color(options.color ?? 0x2df098);
+  const material = new THREE.ShaderMaterial({
+    uniforms: {
+      atlasCoverageFrameData: { value: frameTexture },
+      atlasCoverageDepthData: { value: depthTexture },
+      atlasCoverageFrameTextureSize: {
+        value: new THREE.Vector2(frameTextureWidth, frameTextureHeight),
+      },
+      atlasCoverageDepthTextureSize: {
+        value: new THREE.Vector2(depthTextureWidth, depthTextureHeight),
+      },
+      atlasCoverageTint: { value: color },
+      atlasCoverageOpacity: { value: opacity },
+    },
+    vertexShader: `
+      varying vec3 vAtlasCoverageWorldPosition;
+
+      void main() {
+        vec4 worldPosition = modelMatrix * vec4(position, 1.0);
+        vAtlasCoverageWorldPosition = worldPosition.xyz;
+        gl_Position = projectionMatrix * viewMatrix * worldPosition;
+      }
+    `,
+    fragmentShader: `
+      precision highp float;
+      precision highp int;
+
+      uniform sampler2D atlasCoverageFrameData;
+      uniform sampler2D atlasCoverageDepthData;
+      uniform vec2 atlasCoverageFrameTextureSize;
+      uniform vec2 atlasCoverageDepthTextureSize;
+      uniform vec3 atlasCoverageTint;
+      uniform float atlasCoverageOpacity;
+      varying vec3 vAtlasCoverageWorldPosition;
+
+      vec4 atlasCoverageFrameTexel(int frameIndex, float column) {
+        return texture2D(
+          atlasCoverageFrameData,
+          vec2(
+            (column + 0.5) / atlasCoverageFrameTextureSize.x,
+            (float(frameIndex) + 0.5) / atlasCoverageFrameTextureSize.y
+          )
+        );
+      }
+
+      void main() {
+        bool covered = false;
+        for (int frameIndex = 0; frameIndex < ${frames.length}; frameIndex += 1) {
+          mat4 worldToCamera = mat4(
+            atlasCoverageFrameTexel(frameIndex, 0.0),
+            atlasCoverageFrameTexel(frameIndex, 1.0),
+            atlasCoverageFrameTexel(frameIndex, 2.0),
+            atlasCoverageFrameTexel(frameIndex, 3.0)
+          );
+          vec4 projection = atlasCoverageFrameTexel(frameIndex, 4.0);
+          vec4 grid = atlasCoverageFrameTexel(frameIndex, 5.0);
+          vec3 localPosition = (
+            worldToCamera * vec4(vAtlasCoverageWorldPosition, 1.0)
+          ).xyz;
+          if (localPosition.z < projection.z || localPosition.z > projection.w) continue;
+
+          vec2 normalizedPosition = vec2(
+            localPosition.x / max(localPosition.z * projection.x, 0.0001),
+            localPosition.y / max(localPosition.z * projection.y, 0.0001)
+          );
+          if (
+            abs(normalizedPosition.x) > 1.0
+            || abs(normalizedPosition.y) > 1.0
+          ) continue;
+
+          float column = floor(clamp(
+            (normalizedPosition.x + 1.0) * 0.5 * grid.x,
+            0.0,
+            grid.x - 0.0001
+          ));
+          float row = floor(clamp(
+            (normalizedPosition.y + 1.0) * 0.5 * grid.y,
+            0.0,
+            grid.y - 0.0001
+          ));
+          float stopDepth = texture2D(
+            atlasCoverageDepthData,
+            vec2(
+              (column + 0.5) / atlasCoverageDepthTextureSize.x,
+              (grid.z + row + 0.5) / atlasCoverageDepthTextureSize.y
+            )
+          ).r;
+          float cellWidth = (2.0 * projection.x * stopDepth) / grid.x;
+          float cellHeight = (2.0 * projection.y * stopDepth) / grid.y;
+          float tolerance = min(
+            0.12,
+            max(
+              0.018,
+              max(stopDepth * 0.025, length(vec2(cellWidth, cellHeight)) * 0.72)
+            )
+          );
+          if (localPosition.z <= stopDepth + tolerance) {
+            covered = true;
+            break;
+          }
+        }
+        if (!covered) discard;
+        gl_FragColor = vec4(atlasCoverageTint, atlasCoverageOpacity);
+      }
+    `,
+    transparent: true,
+    depthTest: true,
+    depthWrite: false,
+    depthFunc: THREE.LessEqualDepth,
+    side: THREE.DoubleSide,
+    polygonOffset: true,
+    polygonOffsetFactor: -2,
+    polygonOffsetUnits: -2,
+    toneMapped: false,
+  });
+  const mesh = new THREE.Mesh(geometry, material);
+  mesh.name = 'teaching-surface-continuous-projection';
+  mesh.renderOrder = 3;
+  mesh.userData.coverageProjection = {
+    mode: TEACHING_SURFACE_PROJECTION_MODE,
+    rasterization: 'per-fragment-depth-atlas',
+    frameCount: frames.length,
+    binaryUnion: true,
+  };
+  return { mesh, material, textures: [frameTexture, depthTexture] };
+};
+
+export const disposeTeachingSurfaceProjectionOverlay = (projection) => {
+  if (!projection) return;
+  projection.mesh?.removeFromParent?.();
+  projection.material?.dispose?.();
+  projection.textures?.forEach((texture) => texture?.dispose?.());
 };
 
 const createRecordedOpticalAxisArrow = (direction, color, length, shaftRadius) => {

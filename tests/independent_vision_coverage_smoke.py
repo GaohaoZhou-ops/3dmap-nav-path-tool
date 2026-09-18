@@ -24,6 +24,22 @@ def image_pixel_difference(left_png, right_png):
 def coverage_metrics(canvas):
     return {
         "state": canvas.get_attribute("data-vision-coverage-state"),
+        "render_enabled": canvas.get_attribute(
+            "data-vision-coverage-render-enabled"
+        ),
+        "render_state": canvas.get_attribute("data-vision-coverage-render-state"),
+        "generation_mode": canvas.get_attribute(
+            "data-vision-coverage-generation-mode"
+        ),
+        "playback_status": canvas.get_attribute(
+            "data-vision-coverage-playback-status"
+        ),
+        "available_frames": int(
+            canvas.get_attribute("data-vision-coverage-available-frame-count") or 0
+        ),
+        "reached_poses": int(
+            canvas.get_attribute("data-vision-coverage-reached-pose-count") or 0
+        ),
         "mode": canvas.get_attribute("data-vision-coverage-mode"),
         "surface_stop": canvas.get_attribute("data-vision-coverage-surface-stop"),
         "visual_mode": canvas.get_attribute("data-vision-coverage-visual-mode"),
@@ -85,7 +101,7 @@ def run():
         page.locator('[data-session-state="ready"]').wait_for()
         page.locator(".loading-curtain").wait_for(state="hidden")
         page.locator('[data-independent-teaching-input="true"]').set_input_files(
-            str(ROOT / "tests/fixtures/hybrid-camera-surface-map.ply")
+            str(ROOT / "tests/fixtures/continuous-camera-projection-map.ply")
         )
         page.locator(".loading-curtain").wait_for(state="hidden")
         page.wait_for_function(
@@ -168,7 +184,16 @@ def run():
         assert first_surface_tint_count > 0
         assert canvas.get_attribute("data-teaching-surface-tint-overlap-mode") == "binary-union"
         assert canvas.get_attribute("data-teaching-surface-tint-maximum-weight") == "1"
-        assert canvas.get_attribute("data-teaching-surface-tint-opacity") == "0.2"
+        assert canvas.get_attribute("data-teaching-surface-tint-opacity") == "0.05"
+        assert (
+            canvas.get_attribute("data-teaching-surface-tint-projection-mode")
+            == "continuous-frustum-front-envelope"
+        )
+        assert (
+            canvas.get_attribute("data-teaching-surface-tint-rasterization")
+            == "per-fragment-depth-atlas+vertex-points"
+        )
+        assert canvas.get_attribute("data-teaching-surface-tint-mesh-projection") == "active"
         assert (
             canvas.get_attribute("data-teaching-surface-tint-camera-isolation")
             == "main-view-only"
@@ -209,7 +234,15 @@ def run():
             canvas.get_attribute("data-teaching-surface-tint-covered-point-count") or 0
         ) == first_surface_tint_count
         assert canvas.get_attribute("data-teaching-surface-tint-maximum-weight") == "1"
-        assert canvas.get_attribute("data-teaching-surface-tint-opacity") == "0.2"
+        assert canvas.get_attribute("data-teaching-surface-tint-opacity") == "0.05"
+        assert (
+            canvas.get_attribute("data-teaching-surface-tint-projection-mode")
+            == "continuous-frustum-front-envelope"
+        )
+        assert (
+            canvas.get_attribute("data-teaching-surface-tint-rasterization")
+            == "per-fragment-depth-atlas+vertex-points"
+        )
         zivid_after_overlap_capture = zivid_canvas.screenshot()
         overlap_camera_difference = image_pixel_difference(
             zivid_before_capture,
@@ -229,6 +262,120 @@ def run():
         assert readout.get_attribute("data-surface-tint-point-count") == str(
             first_surface_tint_count
         )
+        assert readout.get_attribute("data-projection-rendering") == "enabled"
+        assert readout.locator("em").count() == 0
+        opacity_slider = readout.get_by_role(
+            "slider", name="表面贴图渲染透明度", exact=True
+        )
+        assert opacity_slider.input_value() == "5"
+        assert readout.locator("output").inner_text() == "5%"
+        assert readout.get_attribute("data-surface-tint-opacity") == "0.05"
+        assert overlap_metrics["render_enabled"] == "true"
+        assert overlap_metrics["render_state"] == "enabled"
+        assert (
+            canvas.get_attribute("data-teaching-surface-tint-render-enabled")
+            == "true"
+        )
+
+        low_opacity_frame = canvas.screenshot()
+        opacity_slider.focus()
+        opacity_slider.press("Home")
+        for _ in range(35):
+            opacity_slider.press("ArrowRight")
+        page.wait_for_function(
+            "document.querySelector('.three-canvas')?.dataset.teachingSurfaceTintOpacity === '0.35'"
+        )
+        assert opacity_slider.input_value() == "35"
+        assert readout.locator("output").inner_text() == "35%"
+        assert readout.get_attribute("data-surface-tint-opacity") == "0.35"
+        high_opacity_frame = canvas.screenshot()
+        surface_opacity_difference = image_pixel_difference(
+            low_opacity_frame,
+            high_opacity_frame,
+        )
+        assert surface_opacity_difference["maximum"] > 10
+        zivid_after_opacity_change = zivid_canvas.screenshot()
+        zivid_opacity_difference = image_pixel_difference(
+            zivid_after_overlap_capture,
+            zivid_after_opacity_change,
+        )
+        assert zivid_opacity_difference["maximum"] <= 1
+        assert zivid_opacity_difference["mean"] <= 0.5
+        opacity_slider.press("Home")
+        for _ in range(5):
+            opacity_slider.press("ArrowRight")
+        page.wait_for_function(
+            "document.querySelector('.three-canvas')?.dataset.teachingSurfaceTintOpacity === '0.05'"
+        )
+
+        visible_projection_frame = canvas.screenshot()
+        disable_projection = readout.get_by_role(
+            "button", name="关闭投影渲染", exact=True
+        )
+        assert disable_projection.get_attribute("aria-pressed") == "true"
+        disable_projection.click()
+        page.wait_for_function(
+            """
+            () => {
+              const canvas = document.querySelector('.three-canvas');
+              return canvas?.dataset.visionCoverageRenderEnabled === 'false'
+                && canvas?.dataset.visionCoverageState === 'disabled';
+            }
+            """
+        )
+        page.wait_for_timeout(250)
+        disabled_metrics = coverage_metrics(canvas)
+        assert disabled_metrics["state"] == "disabled"
+        assert disabled_metrics["render_enabled"] == "false"
+        assert disabled_metrics["render_state"] == "disabled"
+        assert disabled_metrics["poses"] == overlap_metrics["poses"]
+        assert disabled_metrics["frames"] == overlap_metrics["frames"]
+        assert disabled_metrics["optical_points"] == overlap_metrics["optical_points"]
+        assert disabled_metrics["coordinate_frames"] == overlap_metrics["coordinate_frames"]
+        assert disabled_metrics["coordinate_axes"] == overlap_metrics["coordinate_axes"]
+        assert (
+            disabled_metrics["optical_pose_signature"]
+            == captured_optical_pose_signature
+        )
+        assert readout.get_attribute("data-projection-rendering") == "disabled"
+        assert (
+            canvas.get_attribute("data-teaching-surface-tint-render-enabled")
+            == "false"
+        )
+        assert int(
+            canvas.get_attribute("data-teaching-surface-tint-covered-point-count") or 0
+        ) == first_surface_tint_count
+        hidden_projection_frame = canvas.screenshot(
+            path="/tmp/atlas-independent-vision-coverage-hidden.png"
+        )
+        projection_toggle_difference = image_pixel_difference(
+            visible_projection_frame,
+            hidden_projection_frame,
+        )
+        assert projection_toggle_difference["maximum"] > 10
+
+        enable_projection = readout.get_by_role(
+            "button", name="开启投影渲染", exact=True
+        )
+        assert enable_projection.get_attribute("aria-pressed") == "false"
+        enable_projection.click()
+        page.wait_for_function(
+            """
+            () => {
+              const canvas = document.querySelector('.three-canvas');
+              return canvas?.dataset.visionCoverageRenderEnabled === 'true'
+                && canvas?.dataset.visionCoverageState === 'visible';
+            }
+            """
+        )
+        restored_toggle_metrics = coverage_metrics(canvas)
+        assert restored_toggle_metrics["render_state"] == "enabled"
+        assert restored_toggle_metrics["frames"] == overlap_metrics["frames"]
+        assert (
+            restored_toggle_metrics["optical_pose_signature"]
+            == captured_optical_pose_signature
+        )
+        assert readout.get_attribute("data-projection-rendering") == "enabled"
         robot_position_before_move = (
             float(canvas.get_attribute("data-robot-x") or 0),
             float(canvas.get_attribute("data-robot-y") or 0),
@@ -256,6 +403,111 @@ def run():
         assert moved_metrics["optical_points"] == 4
         assert moved_metrics["coordinate_frames"] == 4
         assert moved_metrics["coordinate_axes"] == 12
+
+        # Playback starts with an empty projection and reveals each captured
+        # pose only after the chassis/joints have reached its hold segment.
+        page.get_by_role("button", name="打开示教数据管理页").click()
+        page.locator('[data-app-page="teaching-data"]').wait_for()
+        page.get_by_role(
+            "button", name="选择示教任务 独立示教覆盖检查"
+        ).click()
+        page.get_by_role(
+            "button", name="播放示教任务 独立示教覆盖检查"
+        ).click()
+        page.locator('[data-app-page="teaching-data"]').wait_for(state="detached")
+        playback_dock = page.get_by_label("示教任务轨迹播放控制", exact=True)
+        playback_dock.wait_for()
+        page.get_by_role("combobox", name="示教轨迹播放速度").select_option("0.5")
+        page.wait_for_function(
+            """
+            () => {
+              const canvas = document.querySelector('.three-canvas');
+              const dock = document.querySelector(
+                '[aria-label="示教任务轨迹播放控制"]'
+              );
+              return canvas?.dataset.visionCoverageGenerationMode
+                  === 'pose-arrival-progressive'
+                && canvas?.dataset.visionCoverageState === 'waiting'
+                && Number(canvas?.dataset.visionCoverageFrameCount) === 0
+                && Number(canvas?.dataset.visionCoverageAvailableFrameCount) === 4
+                && dock?.dataset.playbackReachedPose === '0/2'
+                && dock?.dataset.playbackPhase !== 'hold';
+            }
+            """,
+            timeout=30_000,
+        )
+        waiting_metrics = coverage_metrics(canvas)
+        assert waiting_metrics["generation_mode"] == "pose-arrival-progressive"
+        assert waiting_metrics["playback_status"] == "playing"
+        assert waiting_metrics["available_frames"] == 4
+        assert waiting_metrics["reached_poses"] == 0
+        assert waiting_metrics["frames"] == 0
+        assert waiting_metrics["optical_points"] == 0
+        assert waiting_metrics["coordinate_axes"] == 0
+        assert readout.get_attribute("data-playback-reached-pose-count") == "0"
+        assert readout.get_attribute("data-available-frame-count") == "4"
+        page.screenshot(
+            path="/tmp/atlas-independent-vision-coverage-playback-waiting.png",
+            full_page=True,
+        )
+
+        page.wait_for_function(
+            """
+            () => {
+              const canvas = document.querySelector('.three-canvas');
+              const dock = document.querySelector(
+                '[aria-label="示教任务轨迹播放控制"]'
+              );
+              return dock?.dataset.playbackPhase === 'hold'
+                && dock?.dataset.playbackReachedPose === '1/2'
+                && Number(canvas?.dataset.visionCoverageReachedPoseCount) === 1
+                && Number(canvas?.dataset.visionCoverageFrameCount) === 2;
+            }
+            """,
+            timeout=60_000,
+        )
+        first_arrival_metrics = coverage_metrics(canvas)
+        assert first_arrival_metrics["state"] == "visible"
+        assert first_arrival_metrics["reached_poses"] == 1
+        assert first_arrival_metrics["frames"] == 2
+        assert first_arrival_metrics["optical_points"] == 2
+        assert first_arrival_metrics["coordinate_frames"] == 2
+        assert first_arrival_metrics["coordinate_axes"] == 6
+        page.screenshot(
+            path="/tmp/atlas-independent-vision-coverage-playback-first-arrival.png",
+            full_page=True,
+        )
+
+        page.wait_for_function(
+            """
+            () => {
+              const canvas = document.querySelector('.three-canvas');
+              const dock = document.querySelector(
+                '[aria-label="示教任务轨迹播放控制"]'
+              );
+              return dock?.dataset.playbackStatus === 'completed'
+                && dock?.dataset.playbackReachedPose === '2/2'
+                && Number(canvas?.dataset.visionCoverageReachedPoseCount) === 2
+                && Number(canvas?.dataset.visionCoverageFrameCount) === 4;
+            }
+            """,
+            timeout=90_000,
+        )
+        completed_playback_metrics = coverage_metrics(canvas)
+        assert completed_playback_metrics["generation_mode"] == "pose-arrival-progressive"
+        assert completed_playback_metrics["playback_status"] == "completed"
+        assert completed_playback_metrics["reached_poses"] == 2
+        assert completed_playback_metrics["frames"] == 4
+        assert completed_playback_metrics["optical_pose_signature"] == (
+            captured_optical_pose_signature
+        )
+        page.get_by_role(
+            "button", name="关闭示教轨迹播放控制", exact=True
+        ).click()
+        playback_dock.wait_for(state="detached")
+        page.wait_for_function(
+            "document.querySelector('.three-canvas')?.dataset.visionCoverageGenerationMode === 'static-all-records'"
+        )
         page.get_by_role("button", name="原点", exact=True).click()
         page.wait_for_timeout(800)
         page.screenshot(path="/tmp/atlas-independent-vision-coverage.png", full_page=True)
@@ -296,7 +548,14 @@ def run():
 
         print("coverage_metrics=", metrics)
         print("overlap_coverage_metrics=", overlap_metrics)
+        print("disabled_coverage_metrics=", disabled_metrics)
+        print("projection_toggle_difference=", projection_toggle_difference)
+        print("surface_opacity_difference=", surface_opacity_difference)
+        print("zivid_opacity_difference=", zivid_opacity_difference)
         print("moved_coverage_metrics=", moved_metrics)
+        print("playback_waiting_metrics=", waiting_metrics)
+        print("playback_first_arrival_metrics=", first_arrival_metrics)
+        print("playback_completed_metrics=", completed_playback_metrics)
         print("surface_tint_points=", first_surface_tint_count)
         print("zivid_first_difference=", first_camera_difference)
         print("zivid_overlap_difference=", overlap_camera_difference)

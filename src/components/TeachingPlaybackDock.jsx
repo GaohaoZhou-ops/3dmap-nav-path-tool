@@ -40,6 +40,7 @@ export default function TeachingPlaybackDock({
       data-playback-task={playback.taskId || ''}
       data-playback-phase={playback.phase || ''}
       data-playback-pose={`${playback.poseOrdinal || 0}/${playback.poseCount || 0}`}
+      data-playback-reached-pose={`${playback.reachedPoseCount || 0}/${playback.poseCount || 0}`}
       data-playback-progress={overallProgress.toFixed(4)}
       data-playback-segment-progress={Math.max(0, Math.min(1, playback.segmentProgress || 0)).toFixed(4)}
       data-playback-segment={`${(playback.segmentIndex || 0) + 1}/${playback.segmentCount || 0}`}

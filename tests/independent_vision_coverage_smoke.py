@@ -26,9 +26,27 @@ def coverage_metrics(canvas):
         "state": canvas.get_attribute("data-vision-coverage-state"),
         "mode": canvas.get_attribute("data-vision-coverage-mode"),
         "surface_stop": canvas.get_attribute("data-vision-coverage-surface-stop"),
+        "visual_mode": canvas.get_attribute("data-vision-coverage-visual-mode"),
+        "outline_mode": canvas.get_attribute("data-vision-coverage-outline-mode"),
+        "internal_rays": canvas.get_attribute("data-vision-coverage-internal-rays"),
         "infinite": canvas.get_attribute("data-vision-coverage-infinite"),
         "poses": int(canvas.get_attribute("data-vision-coverage-pose-count") or 0),
         "frames": int(canvas.get_attribute("data-vision-coverage-frame-count") or 0),
+        "optical_points": int(
+            canvas.get_attribute("data-vision-coverage-optical-point-count") or 0
+        ),
+        "coordinate_frames": int(
+            canvas.get_attribute("data-vision-coverage-coordinate-frame-count") or 0
+        ),
+        "coordinate_axes": int(
+            canvas.get_attribute("data-vision-coverage-coordinate-axis-count") or 0
+        ),
+        "retention_mode": canvas.get_attribute(
+            "data-vision-coverage-retention-mode"
+        ),
+        "optical_pose_signature": canvas.get_attribute(
+            "data-vision-coverage-optical-pose-signature"
+        ),
         "cells": int(canvas.get_attribute("data-vision-coverage-cell-count") or 0),
         "hit_cells": int(
             canvas.get_attribute("data-vision-coverage-hit-cell-count") or 0
@@ -129,9 +147,17 @@ def run():
         assert metrics["state"] == "visible"
         assert metrics["mode"] == "surface-truncated-optical-frusta"
         assert metrics["surface_stop"] == "first-point-depth-grid"
+        assert metrics["visual_mode"] == "continuous-volume"
+        assert metrics["outline_mode"] == "outer-silhouette"
+        assert metrics["internal_rays"] == "false"
         assert metrics["infinite"] == "false"
         assert metrics["poses"] == 1
         assert metrics["frames"] == 2
+        assert metrics["optical_points"] == 2
+        assert metrics["coordinate_frames"] == 2
+        assert metrics["coordinate_axes"] == 6
+        assert metrics["retention_mode"] == "captured-pose-static"
+        assert metrics["optical_pose_signature"]
         assert metrics["cells"] > 0
         assert 0 < metrics["hit_cells"] < metrics["cells"]
         assert 0.3 <= metrics["minimum_depth"] <= metrics["maximum_depth"]
@@ -142,6 +168,7 @@ def run():
         assert first_surface_tint_count > 0
         assert canvas.get_attribute("data-teaching-surface-tint-overlap-mode") == "binary-union"
         assert canvas.get_attribute("data-teaching-surface-tint-maximum-weight") == "1"
+        assert canvas.get_attribute("data-teaching-surface-tint-opacity") == "0.2"
         assert (
             canvas.get_attribute("data-teaching-surface-tint-camera-isolation")
             == "main-view-only"
@@ -173,10 +200,16 @@ def run():
         overlap_metrics = coverage_metrics(canvas)
         assert overlap_metrics["poses"] == 2
         assert overlap_metrics["frames"] == 4
+        assert overlap_metrics["optical_points"] == 4
+        assert overlap_metrics["coordinate_frames"] == 4
+        assert overlap_metrics["coordinate_axes"] == 12
+        captured_optical_pose_signature = overlap_metrics["optical_pose_signature"]
+        assert captured_optical_pose_signature
         assert int(
             canvas.get_attribute("data-teaching-surface-tint-covered-point-count") or 0
         ) == first_surface_tint_count
         assert canvas.get_attribute("data-teaching-surface-tint-maximum-weight") == "1"
+        assert canvas.get_attribute("data-teaching-surface-tint-opacity") == "0.2"
         zivid_after_overlap_capture = zivid_canvas.screenshot()
         overlap_camera_difference = image_pixel_difference(
             zivid_before_capture,
@@ -189,14 +222,40 @@ def run():
         assert readout.is_visible()
         assert readout.get_attribute("data-coverage-pose-count") == "2"
         assert readout.get_attribute("data-coverage-frame-count") == "4"
+        assert readout.get_attribute("data-coverage-optical-point-count") == "4"
+        assert readout.get_attribute("data-coverage-coordinate-frame-count") == "4"
+        assert readout.get_attribute("data-coverage-coordinate-axis-count") == "12"
         assert readout.get_attribute("data-surface-tint-state") == "visible"
         assert readout.get_attribute("data-surface-tint-point-count") == str(
             first_surface_tint_count
+        )
+        robot_position_before_move = (
+            float(canvas.get_attribute("data-robot-x") or 0),
+            float(canvas.get_attribute("data-robot-y") or 0),
+            float(canvas.get_attribute("data-robot-z") or 0),
         )
         page.get_by_role("button", name="定位机器人模型", exact=True).click()
         page.keyboard.down("d")
         page.wait_for_timeout(1400)
         page.keyboard.up("d")
+        page.wait_for_function(
+            """
+            ([x, y, z]) => {
+              const canvas = document.querySelector('.three-canvas');
+              return Math.hypot(
+                Number(canvas?.dataset.robotX) - x,
+                Number(canvas?.dataset.robotY) - y,
+                Number(canvas?.dataset.robotZ) - z,
+              ) > 0.25;
+            }
+            """,
+            arg=list(robot_position_before_move),
+        )
+        moved_metrics = coverage_metrics(canvas)
+        assert moved_metrics["optical_pose_signature"] == captured_optical_pose_signature
+        assert moved_metrics["optical_points"] == 4
+        assert moved_metrics["coordinate_frames"] == 4
+        assert moved_metrics["coordinate_axes"] == 12
         page.get_by_role("button", name="原点", exact=True).click()
         page.wait_for_timeout(800)
         page.screenshot(path="/tmp/atlas-independent-vision-coverage.png", full_page=True)
@@ -222,6 +281,11 @@ def run():
         assert restored["state"] == "visible"
         assert restored["poses"] == 2
         assert restored["frames"] == 4
+        assert restored["optical_points"] == 4
+        assert restored["coordinate_frames"] == 4
+        assert restored["coordinate_axes"] == 12
+        assert restored["retention_mode"] == "captured-pose-static"
+        assert restored["optical_pose_signature"] == captured_optical_pose_signature
         assert restored["cells"] == overlap_metrics["cells"]
         assert int(
             page.locator(".three-canvas").get_attribute(
@@ -232,6 +296,7 @@ def run():
 
         print("coverage_metrics=", metrics)
         print("overlap_coverage_metrics=", overlap_metrics)
+        print("moved_coverage_metrics=", moved_metrics)
         print("surface_tint_points=", first_surface_tint_count)
         print("zivid_first_difference=", first_camera_difference)
         print("zivid_overlap_difference=", overlap_camera_difference)

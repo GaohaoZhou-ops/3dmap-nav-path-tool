@@ -135,6 +135,9 @@ const ROBOT_PARKING_GHOST_OPACITY = 0.24;
 const EMPTY_VISION_COVERAGE_STATS = Object.freeze({
   poseCount: 0,
   frameCount: 0,
+  opticalPointCount: 0,
+  coordinateFrameCount: 0,
+  coordinateAxisCount: 0,
   cellCount: 0,
   hitCellCount: 0,
   minimumDepth: null,
@@ -147,6 +150,7 @@ const EMPTY_TEACHING_SURFACE_TINT_STATS = Object.freeze({
 });
 const TEACHING_SURFACE_COVERAGE_ATTRIBUTE = 'atlasTeachingCoverage';
 const TEACHING_SURFACE_TINT_CHUNK_SIZE = 50_000;
+const TEACHING_SURFACE_TINT_OPACITY = 0.2;
 const ROBOT_POSE_REPORT_INTERVAL = 70;
 const ROBOT_JOINT_REPORT_INTERVAL = 70;
 const ZIVID_CAMERA_POSE_REPORT_INTERVAL = 70;
@@ -995,13 +999,13 @@ vec3 atlasTeachingTint = vec3(0.1765, 0.9412, 0.5961);
 diffuseColor.rgb = mix(
   diffuseColor.rgb,
   atlasTeachingTint,
-  atlasTeachingSurface * 0.78
+  atlasTeachingSurface * ${TEACHING_SURFACE_TINT_OPACITY.toFixed(2)}
 );`,
       );
     material.userData.mapColorShader = shader;
   };
   material.customProgramCacheKey = () => (
-    surface ? 'atlas-map-color-v6-surface-tint' : 'atlas-map-color-v6-points-tint'
+    surface ? 'atlas-map-color-v8-surface-tint' : 'atlas-map-color-v8-points-tint'
   );
 };
 
@@ -5818,6 +5822,9 @@ export default function PointCloudViewer({
     const preparedFrames = prepareTeachingVisionCoverageFrames(records);
     const poseIds = new Set();
     let frameCount = 0;
+    let opticalPointCount = 0;
+    let coordinateFrameCount = 0;
+    let coordinateAxisCount = 0;
     let cellCount = 0;
     let hitCellCount = 0;
     let minimumDepth = Number.POSITIVE_INFINITY;
@@ -5830,6 +5837,9 @@ export default function PointCloudViewer({
       const coverage = volume.userData.coverage || {};
       group.add(volume);
       frameCount += 1;
+      opticalPointCount += Number(coverage.opticalPointCount) || 0;
+      coordinateFrameCount += Number(coverage.coordinateFrameCount) || 0;
+      coordinateAxisCount += Number(coverage.coordinateAxisCount) || 0;
       cellCount += Number(coverage.renderCellCount) || 0;
       hitCellCount += Number(coverage.surfaceCellCount) || 0;
       if (record.poseId) poseIds.add(record.poseId);
@@ -5844,6 +5854,9 @@ export default function PointCloudViewer({
     const nextStats = {
       poseCount: poseIds.size,
       frameCount,
+      opticalPointCount,
+      coordinateFrameCount,
+      coordinateAxisCount,
       cellCount,
       hitCellCount,
       minimumDepth: Number.isFinite(minimumDepth) ? minimumDepth : null,
@@ -5852,6 +5865,9 @@ export default function PointCloudViewer({
     setVisionCoverageStats((current) => (
       current.poseCount === nextStats.poseCount
       && current.frameCount === nextStats.frameCount
+      && current.opticalPointCount === nextStats.opticalPointCount
+      && current.coordinateFrameCount === nextStats.coordinateFrameCount
+      && current.coordinateAxisCount === nextStats.coordinateAxisCount
       && current.cellCount === nextStats.cellCount
       && current.hitCellCount === nextStats.hitCellCount
       && current.minimumDepth === nextStats.minimumDepth
@@ -5860,14 +5876,40 @@ export default function PointCloudViewer({
         : nextStats
     ));
 
+    const opticalPoseSignature = preparedFrames.map(({ record }) => {
+      const opticalPose = record?.frame?.opticalPose;
+      const components = [
+        opticalPose?.position?.x,
+        opticalPose?.position?.y,
+        opticalPose?.position?.z,
+        opticalPose?.quaternion?.x,
+        opticalPose?.quaternion?.y,
+        opticalPose?.quaternion?.z,
+        opticalPose?.quaternion?.w,
+      ].map((value, index) => {
+        const numericValue = Number(value);
+        const fallback = index === 6 ? 1 : 0;
+        return (Number.isFinite(numericValue) ? numericValue : fallback).toFixed(8);
+      });
+      return `${record?.key || record?.side || 'camera'}:${components.join(',')}`;
+    }).join('|');
+
     if (canvas) {
       canvas.dataset.visionCoverageState = frameCount ? 'visible' : independent ? 'empty' : 'hidden';
       canvas.dataset.visionCoverageMode = VISION_COVERAGE_MODE;
       canvas.dataset.visionCoverageSurfaceStop = VISION_COVERAGE_SURFACE_STOP;
+      canvas.dataset.visionCoverageVisualMode = 'continuous-volume';
+      canvas.dataset.visionCoverageOutlineMode = 'outer-silhouette';
+      canvas.dataset.visionCoverageInternalRays = 'false';
       canvas.dataset.visionCoverageIndependentOnly = 'true';
       canvas.dataset.visionCoverageInfinite = 'false';
       canvas.dataset.visionCoveragePoseCount = String(nextStats.poseCount);
       canvas.dataset.visionCoverageFrameCount = String(frameCount);
+      canvas.dataset.visionCoverageOpticalPointCount = String(opticalPointCount);
+      canvas.dataset.visionCoverageCoordinateFrameCount = String(coordinateFrameCount);
+      canvas.dataset.visionCoverageCoordinateAxisCount = String(coordinateAxisCount);
+      canvas.dataset.visionCoverageRetentionMode = 'captured-pose-static';
+      canvas.dataset.visionCoverageOpticalPoseSignature = opticalPoseSignature;
       canvas.dataset.visionCoverageCellCount = String(cellCount);
       canvas.dataset.visionCoverageHitCellCount = String(hitCellCount);
       canvas.dataset.visionCoverageMinimumDepth = nextStats.minimumDepth?.toFixed(6) || '';
@@ -5907,6 +5949,7 @@ export default function PointCloudViewer({
       canvas.dataset.teachingSurfaceTintMaximumWeight = '1';
       canvas.dataset.teachingSurfaceTintCameraIsolation = 'main-view-only';
       canvas.dataset.teachingSurfaceTintColor = '#2df098';
+      canvas.dataset.teachingSurfaceTintOpacity = String(TEACHING_SURFACE_TINT_OPACITY);
     };
 
     const totalPointCount = sourcePosition.count;
@@ -6622,6 +6665,9 @@ export default function PointCloudViewer({
               aria-label="独立示教相机视觉覆盖范围"
               data-coverage-pose-count={visionCoverageStats.poseCount}
               data-coverage-frame-count={visionCoverageStats.frameCount}
+              data-coverage-optical-point-count={visionCoverageStats.opticalPointCount}
+              data-coverage-coordinate-frame-count={visionCoverageStats.coordinateFrameCount}
+              data-coverage-coordinate-axis-count={visionCoverageStats.coordinateAxisCount}
               data-coverage-cell-count={visionCoverageStats.cellCount}
               data-surface-tint-state={teachingSurfaceTintStats.status}
               data-surface-tint-point-count={teachingSurfaceTintStats.coveredPointCount}
@@ -6633,7 +6679,8 @@ export default function PointCloudViewer({
                   {visionCoverageStats.poseCount} 组姿态 · {visionCoverageStats.frameCount} 个视域
                   {' · '}{teachingSurfaceTintStats.coveredPointCount} 个染色点
                 </strong>
-                <em>表面染色取并集 · 重叠不加深</em>
+                <em>记录光学点 + RGB XYZ 坐标轴随姿态常驻</em>
+                <em>表面染色 20% · 取并集且重叠不加深</em>
                 <em>命中表面即停止 · 无回波止于最大量程</em>
               </div>
               <span className="vision-coverage-readout__sides" aria-hidden="true">

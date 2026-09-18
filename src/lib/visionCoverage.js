@@ -14,6 +14,11 @@ const CAMERA_SIDE_COLORS = Object.freeze({
   left: 0x59dbe8,
   right: 0xf4c95d,
 });
+const RECORDED_OPTICAL_AXIS_META = Object.freeze([
+  Object.freeze({ axis: 'x', direction: [1, 0, 0], color: 0xf0443e, css: '#f0443e' }),
+  Object.freeze({ axis: 'y', direction: [0, 1, 0], color: 0x38c75a, css: '#38c75a' }),
+  Object.freeze({ axis: 'z', direction: [0, 0, 1], color: 0x3c82f6, css: '#3c82f6' }),
+]);
 
 const finiteNumber = (value, fallback = 0) => {
   const parsed = Number(value);
@@ -176,15 +181,6 @@ export const buildVisionCoverageDepthGrid = (
   };
 };
 
-const addTriangle = (target, first, second, third) => {
-  target.push(...first, ...second, ...third);
-};
-
-const addQuad = (target, first, second, third, fourth) => {
-  addTriangle(target, first, second, third);
-  addTriangle(target, first, third, fourth);
-};
-
 const localSurfacePoint = (normalizedX, normalizedY, depth, tangentX, tangentY) => [
   normalizedX * tangentX * depth,
   normalizedY * tangentY * depth,
@@ -192,75 +188,110 @@ const localSurfacePoint = (normalizedX, normalizedY, depth, tangentX, tangentY) 
 ];
 
 const buildCoverageGeometry = (grid) => {
-  const positions = [];
   const tangentX = Math.tan(THREE.MathUtils.degToRad(grid.horizontalFov / 2));
   const tangentY = Math.tan(THREE.MathUtils.degToRad(grid.verticalFov / 2));
-  const origin = [0, 0, 0];
+  const vertexColumns = grid.columns + 1;
+  const vertexRows = grid.rows + 1;
+  const farVertexCount = vertexColumns * vertexRows;
+  const originIndex = farVertexCount;
+  const positions = new Float32Array((farVertexCount + 1) * 3);
   const cellDepth = (column, row) => (
     column < 0 || column >= grid.columns || row < 0 || row >= grid.rows
       ? null
       : grid.depths[row * grid.columns + column]
   );
-  const cellCorners = (column, row, depth) => {
-    const x0 = -1 + (column / grid.columns) * 2;
-    const x1 = -1 + ((column + 1) / grid.columns) * 2;
-    const y0 = -1 + (row / grid.rows) * 2;
-    const y1 = -1 + ((row + 1) / grid.rows) * 2;
-    return [
-      localSurfacePoint(x0, y0, depth, tangentX, tangentY),
-      localSurfacePoint(x1, y0, depth, tangentX, tangentY),
-      localSurfacePoint(x1, y1, depth, tangentX, tangentY),
-      localSurfacePoint(x0, y1, depth, tangentX, tangentY),
-    ];
+  const vertexDepth = (column, row) => {
+    let depth = Number.POSITIVE_INFINITY;
+    for (let rowOffset = -1; rowOffset <= 0; rowOffset += 1) {
+      for (let columnOffset = -1; columnOffset <= 0; columnOffset += 1) {
+        const candidate = cellDepth(column + columnOffset, row + rowOffset);
+        if (Number.isFinite(candidate)) depth = Math.min(depth, candidate);
+      }
+    }
+    return Number.isFinite(depth) ? depth : grid.far;
   };
 
-  for (let row = 0; row < grid.rows; row += 1) {
-    for (let column = 0; column < grid.columns; column += 1) {
-      const depth = cellDepth(column, row);
-      if (!Number.isFinite(depth)) continue;
-      const corners = cellCorners(column, row, depth);
-      addQuad(positions, corners[0], corners[1], corners[2], corners[3]);
-
-      if (column === 0 || !Number.isFinite(cellDepth(column - 1, row))) {
-        addTriangle(positions, origin, corners[3], corners[0]);
-      }
-      if (
-        column === grid.columns - 1
-        || !Number.isFinite(cellDepth(column + 1, row))
-      ) {
-        addTriangle(positions, origin, corners[1], corners[2]);
-      }
-      if (row === 0 || !Number.isFinite(cellDepth(column, row - 1))) {
-        addTriangle(positions, origin, corners[0], corners[1]);
-      }
-      if (
-        row === grid.rows - 1
-        || !Number.isFinite(cellDepth(column, row + 1))
-      ) {
-        addTriangle(positions, origin, corners[2], corners[3]);
-      }
-
-      const rightDepth = cellDepth(column + 1, row);
-      if (Number.isFinite(rightDepth) && Math.abs(rightDepth - depth) > 1e-4) {
-        const rightCorners = cellCorners(column + 1, row, rightDepth);
-        addQuad(positions, corners[1], rightCorners[0], rightCorners[3], corners[2]);
-      }
-      const lowerDepth = cellDepth(column, row + 1);
-      if (Number.isFinite(lowerDepth) && Math.abs(lowerDepth - depth) > 1e-4) {
-        const lowerCorners = cellCorners(column, row + 1, lowerDepth);
-        addQuad(positions, corners[3], corners[2], lowerCorners[1], lowerCorners[0]);
-      }
+  for (let row = 0; row < vertexRows; row += 1) {
+    for (let column = 0; column < vertexColumns; column += 1) {
+      const vertexIndex = row * vertexColumns + column;
+      const point = localSurfacePoint(
+        -1 + (column / grid.columns) * 2,
+        -1 + (row / grid.rows) * 2,
+        vertexDepth(column, row),
+        tangentX,
+        tangentY,
+      );
+      positions.set(point, vertexIndex * 3);
     }
   }
 
+  const indices = [];
+  for (let row = 0; row < grid.rows; row += 1) {
+    for (let column = 0; column < grid.columns; column += 1) {
+      const topLeft = row * vertexColumns + column;
+      const topRight = topLeft + 1;
+      const bottomLeft = (row + 1) * vertexColumns + column;
+      const bottomRight = bottomLeft + 1;
+      indices.push(topLeft, topRight, bottomRight, topLeft, bottomRight, bottomLeft);
+    }
+  }
+  for (let column = 0; column < grid.columns; column += 1) {
+    indices.push(originIndex, column + 1, column);
+    const bottomLeft = grid.rows * vertexColumns + column;
+    indices.push(originIndex, bottomLeft, bottomLeft + 1);
+  }
+  for (let row = 0; row < grid.rows; row += 1) {
+    const leftTop = row * vertexColumns;
+    const leftBottom = (row + 1) * vertexColumns;
+    indices.push(originIndex, leftTop, leftBottom);
+    const rightTop = row * vertexColumns + grid.columns;
+    const rightBottom = (row + 1) * vertexColumns + grid.columns;
+    indices.push(originIndex, rightBottom, rightTop);
+  }
+
   const geometry = new THREE.BufferGeometry();
-  geometry.setAttribute(
-    'position',
-    new THREE.Float32BufferAttribute(positions, 3),
-  );
+  geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+  geometry.setIndex(indices);
   geometry.computeBoundingBox();
   geometry.computeBoundingSphere();
-  return geometry;
+
+  const outlinePositions = [];
+  const addOutlineSegment = (startIndex, endIndex) => {
+    const startOffset = startIndex * 3;
+    const endOffset = endIndex * 3;
+    outlinePositions.push(
+      positions[startOffset],
+      positions[startOffset + 1],
+      positions[startOffset + 2],
+      positions[endOffset],
+      positions[endOffset + 1],
+      positions[endOffset + 2],
+    );
+  };
+  const topLeft = 0;
+  const topRight = grid.columns;
+  const bottomLeft = grid.rows * vertexColumns;
+  const bottomRight = bottomLeft + grid.columns;
+  [topLeft, topRight, bottomRight, bottomLeft].forEach((cornerIndex) => {
+    addOutlineSegment(originIndex, cornerIndex);
+  });
+  for (let column = 0; column < grid.columns; column += 1) {
+    addOutlineSegment(column, column + 1);
+    addOutlineSegment(bottomLeft + column, bottomLeft + column + 1);
+  }
+  for (let row = 0; row < grid.rows; row += 1) {
+    addOutlineSegment(row * vertexColumns, (row + 1) * vertexColumns);
+    addOutlineSegment(
+      row * vertexColumns + grid.columns,
+      (row + 1) * vertexColumns + grid.columns,
+    );
+  }
+  const outlineGeometry = new THREE.BufferGeometry();
+  outlineGeometry.setAttribute(
+    'position',
+    new THREE.Float32BufferAttribute(outlinePositions, 3),
+  );
+  return { geometry, outlineGeometry };
 };
 
 export const collectTeachingVisionCoverageFrames = (tasks) => (
@@ -443,6 +474,105 @@ export const buildTeachingSurfaceCoverageMask = (
   return { mask, coveredPointCount };
 };
 
+const createRecordedOpticalAxisArrow = (direction, color, length, shaftRadius) => {
+  const group = new THREE.Group();
+  const shaftLength = length * 0.74;
+  const headLength = length - shaftLength;
+  const material = new THREE.MeshBasicMaterial({
+    color,
+    transparent: true,
+    opacity: 0.96,
+    depthTest: false,
+    depthWrite: false,
+    fog: false,
+    toneMapped: false,
+  });
+  const shaft = new THREE.Mesh(
+    new THREE.CylinderGeometry(shaftRadius, shaftRadius, shaftLength, 10),
+    material,
+  );
+  shaft.name = 'captured-optical-axis-shaft';
+  shaft.position.y = shaftLength / 2;
+
+  const head = new THREE.Mesh(
+    new THREE.CylinderGeometry(0, shaftRadius * 3.1, headLength, 12),
+    material.clone(),
+  );
+  head.name = 'captured-optical-axis-head';
+  head.position.y = shaftLength + headLength / 2;
+  group.add(shaft, head);
+  group.quaternion.setFromUnitVectors(
+    new THREE.Vector3(0, 1, 0),
+    direction,
+  );
+  group.traverse((child) => { child.renderOrder = 11; });
+  return group;
+};
+
+const createRecordedOpticalAxisLabel = (text, color, size) => {
+  if (typeof document === 'undefined') return null;
+  const canvas = document.createElement('canvas');
+  canvas.width = 64;
+  canvas.height = 64;
+  const context = canvas.getContext('2d');
+  if (!context) return null;
+  context.fillStyle = color;
+  context.font = '700 38px "SFMono-Regular", Menlo, monospace';
+  context.textAlign = 'center';
+  context.textBaseline = 'middle';
+  context.shadowColor = 'rgba(0, 0, 0, 0.95)';
+  context.shadowBlur = 6;
+  context.fillText(text, canvas.width / 2, canvas.height / 2);
+
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.colorSpace = THREE.SRGBColorSpace;
+  const label = new THREE.Sprite(new THREE.SpriteMaterial({
+    map: texture,
+    transparent: true,
+    opacity: 0.98,
+    depthTest: false,
+    depthWrite: false,
+    fog: false,
+    toneMapped: false,
+  }));
+  label.name = `captured-optical-axis-label:${text.toLowerCase()}`;
+  label.scale.set(size, size, 1);
+  label.renderOrder = 12;
+  return label;
+};
+
+const createRecordedOpticalCoordinateFrame = (far) => {
+  const axisLength = THREE.MathUtils.clamp(finiteNumber(far, 1.3) * 0.13, 0.12, 0.2);
+  const shaftRadius = axisLength * 0.025;
+  const group = new THREE.Group();
+  group.name = 'captured-optical-coordinate-frame';
+  group.userData.axisConvention = 'optical-local:+x-right,+y-down,+z-forward';
+  group.userData.axisColors = 'x:red,y:green,z:blue';
+
+  RECORDED_OPTICAL_AXIS_META.forEach(({ axis, direction, color, css }) => {
+    const directionVector = new THREE.Vector3(...direction);
+    const arrow = createRecordedOpticalAxisArrow(
+      directionVector,
+      color,
+      axisLength,
+      shaftRadius,
+    );
+    arrow.name = `captured-optical-axis:${axis}`;
+    group.add(arrow);
+
+    const label = createRecordedOpticalAxisLabel(
+      axis.toUpperCase(),
+      css,
+      axisLength * 0.27,
+    );
+    if (label) {
+      label.position.copy(directionVector).multiplyScalar(axisLength * 1.13);
+      group.add(label);
+    }
+  });
+  return group;
+};
+
 export const createTeachingVisionCoverageVolume = (record, options = {}) => {
   const pose = record?.frame?.opticalPose;
   if (!pose?.position || !pose?.quaternion) return null;
@@ -454,11 +584,11 @@ export const createTeachingVisionCoverageVolume = (record, options = {}) => {
   if (!grid.renderCellCount) return null;
 
   const color = CAMERA_SIDE_COLORS[record.side] || CAMERA_SIDE_COLORS.left;
-  const geometry = buildCoverageGeometry(grid);
+  const { geometry, outlineGeometry } = buildCoverageGeometry(grid);
   const material = new THREE.MeshBasicMaterial({
     color,
     transparent: true,
-    opacity: record.side === 'right' ? 0.085 : 0.095,
+    opacity: record.side === 'right' ? 0.11 : 0.12,
     depthTest: true,
     depthWrite: false,
     side: THREE.DoubleSide,
@@ -471,18 +601,17 @@ export const createTeachingVisionCoverageVolume = (record, options = {}) => {
   mesh.name = 'surface-truncated-vision-volume';
   mesh.renderOrder = 8;
 
-  const edgesGeometry = new THREE.EdgesGeometry(geometry, 32);
-  const edgesMaterial = new THREE.LineBasicMaterial({
+  const outlineMaterial = new THREE.LineBasicMaterial({
     color,
     transparent: true,
-    opacity: 0.34,
+    opacity: 0.58,
     depthTest: true,
     depthWrite: false,
     toneMapped: false,
   });
-  const edges = new THREE.LineSegments(edgesGeometry, edgesMaterial);
-  edges.name = 'vision-volume-surface-edges';
-  edges.renderOrder = 9;
+  const outline = new THREE.LineSegments(outlineGeometry, outlineMaterial);
+  outline.name = 'vision-volume-outer-silhouette';
+  outline.renderOrder = 9;
 
   const opticalMarker = new THREE.Mesh(
     new THREE.SphereGeometry(0.014, 12, 8),
@@ -497,6 +626,8 @@ export const createTeachingVisionCoverageVolume = (record, options = {}) => {
   );
   opticalMarker.name = 'captured-optical-center';
   opticalMarker.renderOrder = 10;
+
+  const opticalCoordinateFrame = createRecordedOpticalCoordinateFrame(grid.far);
 
   const group = new THREE.Group();
   group.name = `teaching-vision-coverage:${record.key || record.side}`;
@@ -517,10 +648,17 @@ export const createTeachingVisionCoverageVolume = (record, options = {}) => {
     side: record.side,
     mode: VISION_COVERAGE_MODE,
     surfaceStop: VISION_COVERAGE_SURFACE_STOP,
+    visualMode: 'continuous-volume',
+    outlineMode: 'outer-silhouette',
+    internalRayCount: 0,
+    opticalPointCount: 1,
+    coordinateFrameCount: 1,
+    coordinateAxisCount: RECORDED_OPTICAL_AXIS_META.length,
+    retentionMode: 'captured-pose-static',
     ...grid,
     depths: undefined,
     surfaceDepths: undefined,
   };
-  group.add(mesh, edges, opticalMarker);
+  group.add(mesh, outline, opticalMarker, opticalCoordinateFrame);
   return group;
 };

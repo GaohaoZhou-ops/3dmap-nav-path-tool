@@ -6,6 +6,7 @@ import { clone as cloneSkeleton } from 'three/examples/jsm/utils/SkeletonUtils.j
 import {
   Bot,
   Box,
+  Camera,
   Crosshair,
   Eye,
   EyeOff,
@@ -49,6 +50,14 @@ import {
   setRobotJointValue,
 } from '../lib/robotLoader.js';
 import { normalizeRobotJointLocks } from '../lib/robotJointLocks.js';
+import {
+  collectTeachingVisionCoverageFrames,
+  createTeachingVisionCoverageVolume,
+  markTeachingSurfaceCoverageRange,
+  prepareTeachingVisionCoverageFrames,
+  VISION_COVERAGE_MODE,
+  VISION_COVERAGE_SURFACE_STOP,
+} from '../lib/visionCoverage.js';
 import {
   applyRobotCollisionHighlights,
   collectRobotCollisionProxies,
@@ -123,6 +132,21 @@ const ROBOT_VERTICAL_SPEED = 0.12;
 const ROBOT_ROTATION_SPEED = THREE.MathUtils.degToRad(72);
 const ROBOT_PARKING_GHOST_COLOR = 0x63e6ee;
 const ROBOT_PARKING_GHOST_OPACITY = 0.24;
+const EMPTY_VISION_COVERAGE_STATS = Object.freeze({
+  poseCount: 0,
+  frameCount: 0,
+  cellCount: 0,
+  hitCellCount: 0,
+  minimumDepth: null,
+  maximumDepth: null,
+});
+const EMPTY_TEACHING_SURFACE_TINT_STATS = Object.freeze({
+  status: 'hidden',
+  coveredPointCount: 0,
+  totalPointCount: 0,
+});
+const TEACHING_SURFACE_COVERAGE_ATTRIBUTE = 'atlasTeachingCoverage';
+const TEACHING_SURFACE_TINT_CHUNK_SIZE = 50_000;
 const ROBOT_POSE_REPORT_INTERVAL = 70;
 const ROBOT_JOINT_REPORT_INTERVAL = 70;
 const ZIVID_CAMERA_POSE_REPORT_INTERVAL = 70;
@@ -898,12 +922,15 @@ const installMapColorShader = (material, bounds, colorMode, { surface = false } 
       .replace(
         '#include <common>',
         `#include <common>
+attribute float ${TEACHING_SURFACE_COVERAGE_ATTRIBUTE};
 varying float vAtlasHeight;
+varying float vAtlasTeachingCoverage;
 ${surface ? 'varying vec3 vAtlasViewPosition;' : ''}`,
       )
       .replace(
         '#include <begin_vertex>',
         `#include <begin_vertex>
+vAtlasTeachingCoverage = ${TEACHING_SURFACE_COVERAGE_ATTRIBUTE};
 #ifdef USE_INSTANCING
   vAtlasHeight = (modelMatrix * instanceMatrix * vec4(transformed, 1.0)).z;
 #else
@@ -922,6 +949,7 @@ vAtlasViewPosition = -mvPosition.xyz;`,
         '#include <common>',
         `#include <common>
 varying float vAtlasHeight;
+varying float vAtlasTeachingCoverage;
 ${surface ? 'varying vec3 vAtlasViewPosition;' : ''}
 uniform float atlasPointColorMode;
 uniform float atlasHeightMin;
@@ -957,12 +985,23 @@ vec3 atlasDy = dFdy(vAtlasViewPosition);
 vec3 atlasFaceNormal = normalize(cross(atlasDx, atlasDy));
 vec3 atlasLightDirection = normalize(vec3(0.32, 0.46, 0.83));
 float atlasSurfaceLight = 0.68 + 0.32 * abs(dot(atlasFaceNormal, atlasLightDirection));
-diffuseColor.rgb *= atlasSurfaceLight;` : ''}`,
+diffuseColor.rgb *= atlasSurfaceLight;` : ''}
+float atlasTeachingSurface = smoothstep(
+  0.18,
+  0.82,
+  clamp(vAtlasTeachingCoverage, 0.0, 1.0)
+);
+vec3 atlasTeachingTint = vec3(0.1765, 0.9412, 0.5961);
+diffuseColor.rgb = mix(
+  diffuseColor.rgb,
+  atlasTeachingTint,
+  atlasTeachingSurface * 0.78
+);`,
       );
     material.userData.mapColorShader = shader;
   };
   material.customProgramCacheKey = () => (
-    surface ? 'atlas-map-color-v5-surface' : 'atlas-map-color-v5-points'
+    surface ? 'atlas-map-color-v6-surface-tint' : 'atlas-map-color-v6-points-tint'
   );
 };
 
@@ -1359,6 +1398,8 @@ export default function PointCloudViewer({
   robotHeightLocked = false,
   robotTrajectoryActive = false,
   robotParkingGhost = null,
+  teachingSpaceMode = 'map',
+  teachingTasks = [],
   spaceMouseInputRef,
   viewportCanvasRef,
   cameraTeachingCommand,
@@ -1366,6 +1407,7 @@ export default function PointCloudViewer({
   onRobotLoadState,
   onRobotPoseChange,
   onRobotJointValuesChange,
+  onResetRobotJointPose,
   onRobotControlChange,
   onRobotHeightLockChange,
   onZividCameraPoseChange,
@@ -1382,6 +1424,7 @@ export default function PointCloudViewer({
   const sliceGroupRef = useRef(null);
   const routeGroupRef = useRef(null);
   const waypointGroupRef = useRef(null);
+  const visionCoverageGroupRef = useRef(null);
   const robotLayerRef = useRef(null);
   const loadedRobotRef = useRef(null);
   const robotParkingGhostLayerRef = useRef(null);
@@ -1457,6 +1500,12 @@ export default function PointCloudViewer({
   });
   const [robotCollisionStatus, setRobotCollisionStatus] = useState(
     () => createRobotCollisionStatus(),
+  );
+  const [visionCoverageStats, setVisionCoverageStats] = useState(
+    EMPTY_VISION_COVERAGE_STATS,
+  );
+  const [teachingSurfaceTintStats, setTeachingSurfaceTintStats] = useState(
+    EMPTY_TEACHING_SURFACE_TINT_STATS,
   );
   interactionModeRef.current = interactionMode;
   colorModeRef.current = colorMode;
@@ -2559,6 +2608,9 @@ export default function PointCloudViewer({
     writeRobotJointLockDataset(renderer.domElement, lockedRobotJointNamesRef.current);
     renderer.domElement.dataset.geometrySource =
       mapData.geometrySource || geometry.userData.geometrySource || 'ply-parse';
+    renderer.domElement.dataset.teachingSpaceMode = mapData.teachingSpaceMode || 'map';
+    renderer.domElement.dataset.coordinateFrame = mapData.coordinateFrame || 'map';
+    renderer.domElement.dataset.spaceOrigin = '0,0,0';
     mount.appendChild(renderer.domElement);
 
     const bounds = geometry.boundingBox;
@@ -2678,6 +2730,14 @@ export default function PointCloudViewer({
     Object.entries(geometry.attributes).forEach(([name, attribute]) => {
       displayGeometry.setAttribute(name, attribute);
     });
+    const teachingSurfaceCoverageAttribute = new THREE.Float32BufferAttribute(
+      new Float32Array(geometry.getAttribute('position').count),
+      1,
+    );
+    displayGeometry.setAttribute(
+      TEACHING_SURFACE_COVERAGE_ATTRIBUTE,
+      teachingSurfaceCoverageAttribute,
+    );
     displayGeometry.setIndex(
       new THREE.BufferAttribute(pointRenderOrder, 1),
     );
@@ -2710,6 +2770,10 @@ export default function PointCloudViewer({
       Object.entries(geometry.attributes).forEach(([name, attribute]) => {
         surfaceGeometry.setAttribute(name, attribute);
       });
+      surfaceGeometry.setAttribute(
+        TEACHING_SURFACE_COVERAGE_ATTRIBUTE,
+        teachingSurfaceCoverageAttribute,
+      );
       const sourceMeshIndex = geometry.getIndex();
       const sampledFaceCapacity = Math.max(
         0,
@@ -2945,10 +3009,33 @@ export default function PointCloudViewer({
 
     const size = new THREE.Vector3();
     bounds.getSize(size);
-    const gridSize = Math.max(size.x, size.y, 10);
+    const independentTeachingSpace = mapData.teachingSpaceMode === 'independent';
+    const gridExtentFromOrigin = Math.max(
+      Math.abs(bounds.min.x),
+      Math.abs(bounds.max.x),
+      Math.abs(bounds.min.y),
+      Math.abs(bounds.max.y),
+      5,
+    );
+    const gridSize = independentTeachingSpace
+      ? gridExtentFromOrigin * 2
+      : Math.max(size.x, size.y, 10);
     const grid = new THREE.GridHelper(gridSize, 40, 0x3f7478, 0x173035);
     grid.rotation.x = Math.PI / 2;
-    grid.position.set(center.x, center.y, bounds.min.z - Math.max(size.z * 0.03, 0.03));
+    grid.position.set(
+      independentTeachingSpace ? 0 : center.x,
+      independentTeachingSpace ? 0 : center.y,
+      independentTeachingSpace ? 0 : bounds.min.z - Math.max(size.z * 0.03, 0.03),
+    );
+    grid.name = independentTeachingSpace
+      ? 'virtual-origin-reference-plane'
+      : 'map-reference-plane';
+    renderer.domElement.dataset.referencePlane = grid.name;
+    renderer.domElement.dataset.referencePlanePosition = [
+      grid.position.x,
+      grid.position.y,
+      grid.position.z,
+    ].join(',');
     grid.material.transparent = true;
     grid.material.opacity = 0.28;
     scene.add(grid);
@@ -3009,18 +3096,28 @@ export default function PointCloudViewer({
     const sliceGroup = new THREE.Group();
     const routeGroup = new THREE.Group();
     const waypointGroup = new THREE.Group();
+    const visionCoverageGroup = new THREE.Group();
     const robotLayer = new THREE.Group();
     const robotParkingGhostLayer = new THREE.Group();
     routeGroup.name = 'directed-route-edges';
     waypointGroup.name = 'navigation-waypoint-markers';
+    visionCoverageGroup.name = 'independent-teaching-vision-coverage';
     robotLayer.name = 'loaded-robot-model';
     robotParkingGhostLayer.name = 'robot-parking-ghost-layer';
     robotParkingGhostLayer.userData.ownedResources = new Set();
     robotLayer.visible = true;
-    scene.add(sliceGroup, robotLayer, robotParkingGhostLayer, routeGroup, waypointGroup);
+    scene.add(
+      sliceGroup,
+      visionCoverageGroup,
+      robotLayer,
+      robotParkingGhostLayer,
+      routeGroup,
+      waypointGroup,
+    );
     sliceGroupRef.current = sliceGroup;
     routeGroupRef.current = routeGroup;
     waypointGroupRef.current = waypointGroup;
+    visionCoverageGroupRef.current = visionCoverageGroup;
     robotLayerRef.current = robotLayer;
     robotParkingGhostLayerRef.current = robotParkingGhostLayer;
     robotPoseRef.current = applyRobotPose(robotLayer, robotPoseRef.current);
@@ -4651,6 +4748,7 @@ export default function PointCloudViewer({
       disposeObject(sliceGroup);
       disposeObject(routeGroup);
       disposeObject(waypointGroup);
+      disposeObject(visionCoverageGroup);
       clearRobotParkingGhostLayer(robotParkingGhostLayer);
       renderer.dispose();
       if (viewportCanvasRef?.current === renderer.domElement) {
@@ -4661,6 +4759,7 @@ export default function PointCloudViewer({
       sliceGroupRef.current = null;
       routeGroupRef.current = null;
       waypointGroupRef.current = null;
+      visionCoverageGroupRef.current = null;
       robotLayerRef.current = null;
       loadedRobotRef.current = null;
       robotParkingGhostLayerRef.current = null;
@@ -4700,7 +4799,7 @@ export default function PointCloudViewer({
       if (cloudMaterialRef.current === material) cloudMaterialRef.current = null;
       if (meshMaterialRef.current === meshMaterial) meshMaterialRef.current = null;
     };
-  }, [mapData?.geometry, viewportCanvasRef]);
+  }, [mapData?.geometry, mapData?.teachingSpaceMode, viewportCanvasRef]);
 
   useEffect(() => {
     const layer = robotLayerRef.current;
@@ -5701,6 +5800,221 @@ export default function PointCloudViewer({
   }, [heightRange, mapData?.geometry]);
 
   useEffect(() => {
+    const group = visionCoverageGroupRef.current;
+    const displayGeometry = displayGeometryRef.current;
+    const sourcePosition = mapData?.geometry?.getAttribute('position');
+    if (!group || !displayGeometry || !sourcePosition) return undefined;
+    while (group.children.length) {
+      const child = group.children[0];
+      group.remove(child);
+      disposeObject(child);
+    }
+
+    const canvas = controlsRef.current?.domElement;
+    const independent = teachingSpaceMode === 'independent';
+    const records = independent
+      ? collectTeachingVisionCoverageFrames(teachingTasks)
+      : [];
+    const preparedFrames = prepareTeachingVisionCoverageFrames(records);
+    const poseIds = new Set();
+    let frameCount = 0;
+    let cellCount = 0;
+    let hitCellCount = 0;
+    let minimumDepth = Number.POSITIVE_INFINITY;
+    let maximumDepth = Number.NEGATIVE_INFINITY;
+
+    preparedFrames.forEach((preparedFrame) => {
+      const { record, grid } = preparedFrame;
+      const volume = createTeachingVisionCoverageVolume(record, { grid });
+      if (!volume) return;
+      const coverage = volume.userData.coverage || {};
+      group.add(volume);
+      frameCount += 1;
+      cellCount += Number(coverage.renderCellCount) || 0;
+      hitCellCount += Number(coverage.surfaceCellCount) || 0;
+      if (record.poseId) poseIds.add(record.poseId);
+      if (Number.isFinite(coverage.minimumDepth)) {
+        minimumDepth = Math.min(minimumDepth, coverage.minimumDepth);
+      }
+      if (Number.isFinite(coverage.maximumDepth)) {
+        maximumDepth = Math.max(maximumDepth, coverage.maximumDepth);
+      }
+    });
+
+    const nextStats = {
+      poseCount: poseIds.size,
+      frameCount,
+      cellCount,
+      hitCellCount,
+      minimumDepth: Number.isFinite(minimumDepth) ? minimumDepth : null,
+      maximumDepth: Number.isFinite(maximumDepth) ? maximumDepth : null,
+    };
+    setVisionCoverageStats((current) => (
+      current.poseCount === nextStats.poseCount
+      && current.frameCount === nextStats.frameCount
+      && current.cellCount === nextStats.cellCount
+      && current.hitCellCount === nextStats.hitCellCount
+      && current.minimumDepth === nextStats.minimumDepth
+      && current.maximumDepth === nextStats.maximumDepth
+        ? current
+        : nextStats
+    ));
+
+    if (canvas) {
+      canvas.dataset.visionCoverageState = frameCount ? 'visible' : independent ? 'empty' : 'hidden';
+      canvas.dataset.visionCoverageMode = VISION_COVERAGE_MODE;
+      canvas.dataset.visionCoverageSurfaceStop = VISION_COVERAGE_SURFACE_STOP;
+      canvas.dataset.visionCoverageIndependentOnly = 'true';
+      canvas.dataset.visionCoverageInfinite = 'false';
+      canvas.dataset.visionCoveragePoseCount = String(nextStats.poseCount);
+      canvas.dataset.visionCoverageFrameCount = String(frameCount);
+      canvas.dataset.visionCoverageCellCount = String(cellCount);
+      canvas.dataset.visionCoverageHitCellCount = String(hitCellCount);
+      canvas.dataset.visionCoverageMinimumDepth = nextStats.minimumDepth?.toFixed(6) || '';
+      canvas.dataset.visionCoverageMaximumDepth = nextStats.maximumDepth?.toFixed(6) || '';
+    }
+
+    const coverageAttributes = [...new Set([
+      displayGeometry.getAttribute(TEACHING_SURFACE_COVERAGE_ATTRIBUTE),
+      surfaceGeometryRef.current?.geometry?.getAttribute(
+        TEACHING_SURFACE_COVERAGE_ATTRIBUTE,
+      ),
+    ].filter(Boolean))];
+    const commitSurfaceMask = (mask) => {
+      coverageAttributes.forEach((attribute) => {
+        if (attribute.array.length !== mask.length) return;
+        attribute.array.set(mask);
+        attribute.needsUpdate = true;
+      });
+    };
+    const updateSurfaceTintStats = (nextTintStats) => {
+      setTeachingSurfaceTintStats((current) => (
+        current.status === nextTintStats.status
+        && current.coveredPointCount === nextTintStats.coveredPointCount
+        && current.totalPointCount === nextTintStats.totalPointCount
+          ? current
+          : nextTintStats
+      ));
+      if (!canvas) return;
+      canvas.dataset.teachingSurfaceTintState = nextTintStats.status;
+      canvas.dataset.teachingSurfaceTintCoveredPointCount = String(
+        nextTintStats.coveredPointCount,
+      );
+      canvas.dataset.teachingSurfaceTintTotalPointCount = String(
+        nextTintStats.totalPointCount,
+      );
+      canvas.dataset.teachingSurfaceTintOverlapMode = 'binary-union';
+      canvas.dataset.teachingSurfaceTintMaximumWeight = '1';
+      canvas.dataset.teachingSurfaceTintCameraIsolation = 'main-view-only';
+      canvas.dataset.teachingSurfaceTintColor = '#2df098';
+    };
+
+    const totalPointCount = sourcePosition.count;
+    if (!independent || !preparedFrames.length || !coverageAttributes.length) {
+      commitSurfaceMask(new Float32Array(totalPointCount));
+      updateSurfaceTintStats({
+        status: independent ? 'empty' : 'hidden',
+        coveredPointCount: 0,
+        totalPointCount,
+      });
+      if (canvas) canvas.dataset.teachingSurfaceTintProgress = '1';
+      return undefined;
+    }
+
+    let cancelled = false;
+    let scheduledWork = null;
+    let cursor = 0;
+    let coveredPointCount = 0;
+    const mask = new Float32Array(totalPointCount);
+    const surfaceTintChunkSize = Math.max(
+      2_000,
+      Math.floor(
+        TEACHING_SURFACE_TINT_CHUNK_SIZE
+        / Math.max(1, preparedFrames.length / 2),
+      ),
+    );
+    updateSurfaceTintStats({
+      status: 'computing',
+      coveredPointCount: 0,
+      totalPointCount,
+    });
+    if (canvas) canvas.dataset.teachingSurfaceTintProgress = '0';
+
+    const cancelScheduledWork = () => {
+      if (!scheduledWork) return;
+      if (scheduledWork.type === 'idle' && typeof window.cancelIdleCallback === 'function') {
+        window.cancelIdleCallback(scheduledWork.id);
+      } else {
+        window.cancelAnimationFrame(scheduledWork.id);
+      }
+      scheduledWork = null;
+    };
+    const scheduleWork = (callback) => {
+      if (typeof window.requestIdleCallback === 'function') {
+        scheduledWork = {
+          type: 'idle',
+          id: window.requestIdleCallback(callback, { timeout: 80 }),
+        };
+      } else {
+        scheduledWork = {
+          type: 'frame',
+          id: window.requestAnimationFrame(() => callback({
+            didTimeout: true,
+            timeRemaining: () => 0,
+          })),
+        };
+      }
+    };
+    const processSurfaceTintChunk = (deadline) => {
+      scheduledWork = null;
+      if (cancelled) return;
+      const startedAt = performance.now();
+      do {
+        const nextCursor = Math.min(
+          totalPointCount,
+          cursor + surfaceTintChunkSize,
+        );
+        coveredPointCount += markTeachingSurfaceCoverageRange(
+          sourcePosition,
+          preparedFrames,
+          mask,
+          cursor,
+          nextCursor,
+        );
+        cursor = nextCursor;
+      } while (
+        cursor < totalPointCount
+        && deadline?.timeRemaining?.() > 3
+        && performance.now() - startedAt < 12
+      );
+
+      if (canvas) {
+        canvas.dataset.teachingSurfaceTintProgress = String(
+          totalPointCount ? cursor / totalPointCount : 1,
+        );
+      }
+      if (cursor < totalPointCount) {
+        scheduleWork(processSurfaceTintChunk);
+        return;
+      }
+
+      commitSurfaceMask(mask);
+      updateSurfaceTintStats({
+        status: coveredPointCount ? 'visible' : 'empty',
+        coveredPointCount,
+        totalPointCount,
+      });
+      if (canvas) canvas.dataset.teachingSurfaceTintProgress = '1';
+    };
+    scheduleWork(processSurfaceTintChunk);
+
+    return () => {
+      cancelled = true;
+      cancelScheduledWork();
+    };
+  }, [mapData?.geometry, teachingSpaceMode, teachingTasks]);
+
+  useEffect(() => {
     const group = routeGroupRef.current;
     const waypointGroup = waypointGroupRef.current;
     const sphere = mapData?.geometry?.boundingSphere;
@@ -5985,7 +6299,7 @@ export default function PointCloudViewer({
 
   return (
     <div
-      className={`point-cloud-view ${shiftPanArmed ? 'is-shift-pan-armed' : ''} ${effectiveViewportPan ? 'is-viewport-pan-mode' : ''} ${persistentPanMode ? 'is-persistent-pan-mode' : ''} ${robotControlActive ? 'is-robot-driving' : ''} ${endEffectorControlActive ? 'is-end-effector-control' : ''} ${chassisDragMode ? 'is-chassis-drag-mode' : ''} ${chassisDragging ? 'is-chassis-dragging' : ''} ${robotTrajectoryActive ? 'is-teaching-trajectory-active' : ''} ${robotParkingGhostVisible ? 'is-parking-ghost-visible' : ''}`}
+      className={`point-cloud-view ${shiftPanArmed ? 'is-shift-pan-armed' : ''} ${effectiveViewportPan ? 'is-viewport-pan-mode' : ''} ${persistentPanMode ? 'is-persistent-pan-mode' : ''} ${robotControlActive ? 'is-robot-driving' : ''} ${endEffectorControlActive ? 'is-end-effector-control' : ''} ${chassisDragMode ? 'is-chassis-drag-mode' : ''} ${chassisDragging ? 'is-chassis-dragging' : ''} ${robotTrajectoryActive ? 'is-teaching-trajectory-active' : ''} ${robotParkingGhostVisible ? 'is-parking-ghost-visible' : ''} ${visionCoverageStats.frameCount ? 'is-vision-coverage-active' : ''} ${teachingSurfaceTintStats.status === 'visible' ? 'is-teaching-surface-tinted' : ''}`}
       ref={mountRef}
       data-robot-trajectory-active={robotTrajectoryActive ? 'true' : 'false'}
       data-parking-ghost-state={robotParkingGhostVisible ? 'visible' : 'hidden'}
@@ -6151,6 +6465,24 @@ export default function PointCloudViewer({
                     {robotHeightLockActive ? <Lock size={12} /> : <Unlock size={12} />}
                     {robotHeightLockActive ? '高度已锁' : '锁定高度'}
                   </button>
+                  <button
+                    type="button"
+                    className="robot-pose-reset"
+                    aria-label="复位机器人关节姿态"
+                    data-resettable-joint-count={robotLoadState?.movableJoints?.length || 0}
+                    disabled={
+                      robotTrajectoryActive
+                      || !robotLoadState?.movableJoints?.length
+                    }
+                    title={robotTrajectoryActive
+                      ? '示教轨迹播放期间由规划器接管机器人，停止后可复位姿态'
+                      : robotLoadState?.movableJoints?.length
+                        ? '将全部可动关节恢复为初始角度，不改变机器人底盘位置与朝向'
+                        : '当前机器人模型没有可复位的关节'}
+                    onClick={() => onResetRobotJointPose?.()}
+                  >
+                    <RotateCcw size={12} /> 姿态复位
+                  </button>
                 </>
               )}
               <button
@@ -6281,6 +6613,34 @@ export default function PointCloudViewer({
                 <i />
                 <span>HIGH</span>
               </div>
+            </aside>
+          )}
+          {teachingSpaceMode === 'independent' && visionCoverageStats.frameCount > 0 && (
+            <aside
+              className="vision-coverage-readout"
+              role="status"
+              aria-label="独立示教相机视觉覆盖范围"
+              data-coverage-pose-count={visionCoverageStats.poseCount}
+              data-coverage-frame-count={visionCoverageStats.frameCount}
+              data-coverage-cell-count={visionCoverageStats.cellCount}
+              data-surface-tint-state={teachingSurfaceTintStats.status}
+              data-surface-tint-point-count={teachingSurfaceTintStats.coveredPointCount}
+            >
+              <span className="vision-coverage-readout__icon"><Camera size={14} /></span>
+              <div>
+                <small>OPTICAL COVERAGE · SURFACE UNION</small>
+                <strong>
+                  {visionCoverageStats.poseCount} 组姿态 · {visionCoverageStats.frameCount} 个视域
+                  {' · '}{teachingSurfaceTintStats.coveredPointCount} 个染色点
+                </strong>
+                <em>表面染色取并集 · 重叠不加深</em>
+                <em>命中表面即停止 · 无回波止于最大量程</em>
+              </div>
+              <span className="vision-coverage-readout__sides" aria-hidden="true">
+                <i className="is-left" />
+                <i className="is-right" />
+                <i className="is-surface" />
+              </span>
             </aside>
           )}
           <EndEffectorControlPanel

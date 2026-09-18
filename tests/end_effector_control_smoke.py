@@ -43,7 +43,7 @@ def run():
         page.set_default_timeout(180_000)
         page.on("pageerror", lambda error: errors.append(str(error)))
 
-        page.goto(BASE_URL, wait_until="networkidle")
+        page.goto(f"{BASE_URL.rstrip('/')}/workbench", wait_until="networkidle")
         page.locator('[data-session-state="ready"]').wait_for()
         page.locator('input[type="file"][accept=".ply"]').set_input_files(
             str(ROOT / "tests/fixtures/rotation-map.ply")

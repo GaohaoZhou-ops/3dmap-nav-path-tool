@@ -12,3 +12,14 @@ export const normalizeRobotJointLocks = (value) => {
     return normalized ? [normalized] : [];
   }))];
 };
+
+export const isRobotBodyJoint = (value) => {
+  const name = typeof value === 'string' ? value : value?.name;
+  return /(ankle|knee|waist)/i.test(String(name || ''));
+};
+
+export const defaultRobotJointLocks = (movableJoints) => normalizeRobotJointLocks(
+  (Array.isArray(movableJoints) ? movableJoints : [])
+    .filter(isRobotBodyJoint)
+    .map((joint) => joint?.name),
+);

@@ -4,6 +4,18 @@ const STORE_NAME = 'workspace-session';
 const VIEW_STATE_KEY = 'atlas-route-studio:view-state-v1';
 const CURRENT_KEYS = ['meta', 'map', 'config'];
 const RECOVERY_KEYS = ['recovery-meta', 'recovery-map', 'recovery-config'];
+const WORKSPACE_INDEX_KEY = 'workspace-slots';
+const WORKSPACE_MODES = ['map', 'independent'];
+
+const normalizeWorkspaceMode = (value) => value === 'independent' ? 'independent' : 'map';
+const workspaceMapKey = (mode) => `workspace-map:${normalizeWorkspaceMode(mode)}`;
+const workspaceConfigKey = (mode) => `workspace-config:${normalizeWorkspaceMode(mode)}`;
+const workspaceViewKey = (mode) => `${VIEW_STATE_KEY}:${normalizeWorkspaceMode(mode)}`;
+const ALL_WORKSPACE_KEYS = [
+  ...CURRENT_KEYS,
+  WORKSPACE_INDEX_KEY,
+  ...WORKSPACE_MODES.flatMap((mode) => [workspaceMapKey(mode), workspaceConfigKey(mode)]),
+];
 
 let databasePromise = null;
 
@@ -15,37 +27,42 @@ const browserStorage = () => {
   }
 };
 
-export function saveWorkspaceViews(sessionId, mapId, views) {
+export function saveWorkspaceViews(sessionId, mapId, views, mode = 'map') {
   const storage = browserStorage();
   if (!storage || !sessionId || !mapId) return false;
   try {
-    storage.setItem(
-      VIEW_STATE_KEY,
-      JSON.stringify({
-        version: 1,
-        sessionId,
-        mapId,
-        view2d: views?.view2d || null,
-        view3d: views?.view3d || null,
-        savedAt: Date.now(),
-      }),
-    );
+    const payload = JSON.stringify({
+      version: 2,
+      sessionId,
+      mapId,
+      teachingSpaceMode: normalizeWorkspaceMode(mode),
+      view2d: views?.view2d || null,
+      view3d: views?.view3d || null,
+      savedAt: Date.now(),
+    });
+    storage.setItem(workspaceViewKey(mode), payload);
+    storage.setItem(VIEW_STATE_KEY, payload);
     return true;
   } catch {
     return false;
   }
 }
 
-export function loadWorkspaceViews(sessionId, mapId) {
+export function loadWorkspaceViews(sessionId, mapId, mode = 'map') {
   const storage = browserStorage();
   if (!storage || !sessionId) return null;
   try {
-    const payload = JSON.parse(storage.getItem(VIEW_STATE_KEY) || 'null');
+    const modeKey = workspaceViewKey(mode);
+    const payload = JSON.parse(
+      storage.getItem(modeKey)
+      || storage.getItem(VIEW_STATE_KEY)
+      || 'null',
+    );
     if (payload?.sessionId === sessionId && mapId && payload?.mapId === mapId) return payload;
-    storage.removeItem(VIEW_STATE_KEY);
+    storage.removeItem(modeKey);
   } catch {
     try {
-      storage.removeItem(VIEW_STATE_KEY);
+      storage.removeItem(workspaceViewKey(mode));
     } catch {
       // A blocked storage backend should not prevent the IndexedDB fallback.
     }
@@ -100,30 +117,138 @@ const openDatabase = () => {
 const replaceSession = async (database, sessionId) => {
   const transaction = database.transaction(STORE_NAME, 'readwrite');
   const store = transaction.objectStore(STORE_NAME);
-  CURRENT_KEYS.forEach((key) => store.delete(key));
-  store.put({ key: 'meta', sessionId, startedAt: Date.now() });
+  ALL_WORKSPACE_KEYS.forEach((key) => store.delete(key));
+  store.put({ key: 'meta', sessionId, startedAt: Date.now(), activeMode: 'map' });
+  store.put({
+    key: WORKSPACE_INDEX_KEY,
+    sessionId,
+    activeMode: 'map',
+    modes: { map: null, independent: null },
+    updatedAt: Date.now(),
+  });
   await transactionComplete(transaction);
 };
 
 const readWorkspaceRecords = async (database) => {
-  const transaction = database.transaction(STORE_NAME, 'readonly');
-  const store = transaction.objectStore(STORE_NAME);
-  const completion = transactionComplete(transaction);
-  const [meta, map, config, recoveryMeta, recoveryMap, recoveryConfig] = await Promise.all([
-    requestResult(store.get('meta')),
-    requestResult(store.get('map')),
-    requestResult(store.get('config')),
-    requestResult(store.get('recovery-meta')),
-    requestResult(store.get('recovery-map')),
-    requestResult(store.get('recovery-config')),
+  const headerTransaction = database.transaction(STORE_NAME, 'readonly');
+  const headerStore = headerTransaction.objectStore(STORE_NAME);
+  const headerCompletion = transactionComplete(headerTransaction);
+  const [meta, workspaceIndex, recoveryMeta, recoveryMap, recoveryConfig] = await Promise.all([
+    requestResult(headerStore.get('meta')),
+    requestResult(headerStore.get(WORKSPACE_INDEX_KEY)),
+    requestResult(headerStore.get('recovery-meta')),
+    requestResult(headerStore.get('recovery-map')),
+    requestResult(headerStore.get('recovery-config')),
   ]);
-  await completion;
-  return { meta, map, config, recoveryMeta, recoveryMap, recoveryConfig };
+  await headerCompletion;
+
+  const indexedMode = workspaceIndex?.activeMode
+    ? normalizeWorkspaceMode(workspaceIndex.activeMode ?? meta?.activeMode)
+    : null;
+  const activeMode = indexedMode || normalizeWorkspaceMode(meta?.activeMode);
+  const workspaceTransaction = database.transaction(STORE_NAME, 'readonly');
+  const workspaceStore = workspaceTransaction.objectStore(STORE_NAME);
+  const workspaceCompletion = transactionComplete(workspaceTransaction);
+  const [map, config] = indexedMode
+    ? await Promise.all([
+        requestResult(workspaceStore.get(workspaceMapKey(activeMode))),
+        requestResult(workspaceStore.get(workspaceConfigKey(activeMode))),
+      ])
+    : await Promise.all([
+        requestResult(workspaceStore.get('map')),
+        requestResult(workspaceStore.get('config')),
+      ]);
+  await workspaceCompletion;
+  return {
+    meta,
+    map,
+    config,
+    workspaceIndex,
+    activeMode,
+    legacyWorkspace: !indexedMode,
+    recoveryMeta,
+    recoveryMap,
+    recoveryConfig,
+  };
 };
 
 const isRecoverableWorkspace = (map, config) => Boolean(
   map || config?.config?.project,
 );
+
+const inferWorkspaceMode = (map, config, fallback = 'map') => normalizeWorkspaceMode(
+  config?.config?.project?.workspace?.teachingSpaceMode
+  ?? config?.config?.ui?.teachingSpaceMode
+  ?? map?.teachingSpaceMode
+  ?? fallback,
+);
+
+const summarizeWorkspace = (mode, map, config, previous = null) => {
+  const snapshot = config?.config || null;
+  const project = snapshot?.project || null;
+  const teachingTasks = Array.isArray(project?.virtualTeaching?.tasks)
+    ? project.virtualTeaching.tasks
+    : Array.isArray(project?.teachingTasks)
+      ? project.teachingTasks
+      : [];
+  const hasWorkspace = Boolean(map || project || snapshot?.ui?.selectedRobot);
+  if (!hasWorkspace) return null;
+  return {
+    ...(previous || {}),
+    available: true,
+    mode: normalizeWorkspaceMode(mode),
+    mapId: map?.mapId || config?.mapId || project?.map?.mapId || null,
+    mapName: map?.name || project?.map?.fileName || previous?.mapName || '未命名工作现场',
+    pointCount: Number(map?.pointCount ?? project?.map?.pointCount ?? previous?.pointCount) || 0,
+    faceCount: Number(map?.faceCount ?? project?.map?.faceCount ?? previous?.faceCount) || 0,
+    waypointCount: Array.isArray(project?.waypoints)
+      ? project.waypoints.length
+      : Number(previous?.waypointCount) || 0,
+    edgeCount: Array.isArray(project?.paths)
+      ? project.paths.length
+      : Array.isArray(project?.edges)
+        ? project.edges.length
+        : Number(previous?.edgeCount) || 0,
+    taskCount: project ? teachingTasks.length : Number(previous?.taskCount) || 0,
+    robotName: project
+      ? project.robot?.name || snapshot?.ui?.selectedRobot?.name || ''
+      : previous?.robotName || '',
+    savedAt: Math.max(
+      Number(map?.savedAt) || 0,
+      Number(config?.savedAt) || 0,
+      Number(previous?.savedAt) || 0,
+      Date.now(),
+    ),
+  };
+};
+
+const normalizeWorkspaceIndex = (sessionId, activeMode, index, map, config) => {
+  const mode = normalizeWorkspaceMode(activeMode);
+  const modes = {
+    map: index?.modes?.map || null,
+    independent: index?.modes?.independent || null,
+  };
+  modes[mode] = summarizeWorkspace(mode, map, config, modes[mode]);
+  return {
+    key: WORKSPACE_INDEX_KEY,
+    sessionId,
+    activeMode: mode,
+    modes,
+    updatedAt: Date.now(),
+  };
+};
+
+const clearWorkspaceViewState = (mode = null) => {
+  const storage = browserStorage();
+  if (!storage) return;
+  try {
+    if (mode) storage.removeItem(workspaceViewKey(mode));
+    else WORKSPACE_MODES.forEach((workspaceMode) => storage.removeItem(workspaceViewKey(workspaceMode)));
+    storage.removeItem(VIEW_STATE_KEY);
+  } catch {
+    // IndexedDB remains the authoritative fallback.
+  }
+};
 
 const createRecoveryId = () => {
   if (globalThis.crypto?.randomUUID) return globalThis.crypto.randomUUID();
@@ -142,7 +267,7 @@ const readViewsForRecovery = (meta, map, config) => {
       config?.sessionId,
     ].filter(Boolean));
     if (
-      payload?.version === 1
+      (payload?.version === 1 || payload?.version === 2)
       && payload?.mapId === mapId
       && sourceSessionIds.has(payload?.sessionId)
     ) {
@@ -221,7 +346,7 @@ const summarizeRecovery = ({ recoveryId, sourceSessionId, archivedAt }, map, con
 const archiveWorkspaceAndReplaceSession = async (
   database,
   sessionId,
-  { meta, map, config, recoveryMeta },
+  { meta, map, config, recoveryMeta, activeMode },
 ) => {
   const shouldArchive = isRecoverableWorkspace(map, config);
   const archivedAt = Date.now();
@@ -238,7 +363,7 @@ const archiveWorkspaceAndReplaceSession = async (
       : null;
   const transaction = database.transaction(STORE_NAME, 'readwrite');
   const store = transaction.objectStore(STORE_NAME);
-  CURRENT_KEYS.forEach((key) => store.delete(key));
+  ALL_WORKSPACE_KEYS.forEach((key) => store.delete(key));
 
   if (shouldArchive) {
     RECOVERY_KEYS.forEach((key) => store.delete(key));
@@ -263,8 +388,17 @@ const archiveWorkspaceAndReplaceSession = async (
     }
   }
 
-  store.put({ key: 'meta', sessionId, startedAt: archivedAt });
+  const nextMode = normalizeWorkspaceMode(activeMode);
+  store.put({ key: 'meta', sessionId, startedAt: archivedAt, activeMode: nextMode });
+  store.put({
+    key: WORKSPACE_INDEX_KEY,
+    sessionId,
+    activeMode: nextMode,
+    modes: { map: null, independent: null },
+    updatedAt: archivedAt,
+  });
   await transactionComplete(transaction);
+  clearWorkspaceViewState();
   return summary;
 };
 
@@ -282,7 +416,7 @@ export async function fetchServiceSession() {
 export async function prepareWorkspaceSession(sessionId) {
   const database = await openDatabase();
   const records = await readWorkspaceRecords(database);
-  const { meta, map, config, recoveryMeta } = records;
+  const { meta, recoveryMeta } = records;
 
   if (meta?.sessionId !== sessionId) {
     const recovery = await archiveWorkspaceAndReplaceSession(database, sessionId, records);
@@ -290,15 +424,55 @@ export async function prepareWorkspaceSession(sessionId) {
       restarted: Boolean(meta?.sessionId),
       map: null,
       config: null,
+      activeMode: 'map',
+      workspaceSlots: { map: null, independent: null },
       recovery,
       activatedRecoveryId: null,
     };
   }
 
+  const map = records.map?.sessionId === sessionId ? records.map : null;
+  const config = records.config?.sessionId === sessionId ? records.config : null;
+  const activeMode = inferWorkspaceMode(
+    map,
+    config,
+    records.workspaceIndex?.activeMode ?? records.activeMode ?? meta?.activeMode,
+  );
+  const workspaceIndex = normalizeWorkspaceIndex(
+    sessionId,
+    activeMode,
+    records.workspaceIndex,
+    map,
+    config,
+  );
+
+  if (records.legacyWorkspace || !records.workspaceIndex) {
+    const transaction = database.transaction(STORE_NAME, 'readwrite');
+    const store = transaction.objectStore(STORE_NAME);
+    store.delete('map');
+    store.delete('config');
+    if (map) store.put({ ...map, key: workspaceMapKey(activeMode) });
+    if (config) store.put({ ...config, key: workspaceConfigKey(activeMode) });
+    store.put(workspaceIndex);
+    store.put({ ...meta, key: 'meta', sessionId, activeMode });
+    await transactionComplete(transaction);
+  } else if (
+    records.workspaceIndex.activeMode !== activeMode
+    || meta?.activeMode !== activeMode
+  ) {
+    const transaction = database.transaction(STORE_NAME, 'readwrite');
+    const store = transaction.objectStore(STORE_NAME);
+    store.put(workspaceIndex);
+    store.put({ ...meta, key: 'meta', sessionId, activeMode });
+    await transactionComplete(transaction);
+  }
+
   return {
     restarted: false,
-    map: map?.sessionId === sessionId ? map : null,
-    config: config?.sessionId === sessionId ? config : null,
+    map,
+    config,
+    activeMode,
+    workspaceSlots: workspaceIndex.modes,
     recovery: recoveryMeta?.available ? recoveryMeta : null,
     activatedRecoveryId: meta?.activatedRecoveryId || null,
   };
@@ -323,30 +497,37 @@ export async function activateWorkspaceRecovery(sessionId) {
     throw new Error('上一次工程的恢复清单不完整');
   }
 
+  const activeMode = inferWorkspaceMode(recoveryMap, recoveryConfig, 'map');
+  const restoredMap = recoveryMap
+    ? restoreRecoveryRecord(recoveryMap, workspaceMapKey(activeMode), sessionId)
+    : null;
+  const restoredConfig = recoveryConfig
+    ? restoreRecoveryRecord(recoveryConfig, workspaceConfigKey(activeMode), sessionId)
+    : null;
+  const workspaceIndex = normalizeWorkspaceIndex(
+    sessionId,
+    activeMode,
+    null,
+    restoredMap,
+    restoredConfig,
+  );
+
   const transaction = database.transaction(STORE_NAME, 'readwrite');
   const store = transaction.objectStore(STORE_NAME);
-  CURRENT_KEYS.forEach((key) => store.delete(key));
+  ALL_WORKSPACE_KEYS.forEach((key) => store.delete(key));
   store.put({
     key: 'meta',
     sessionId,
     startedAt: Date.now(),
+    activeMode,
     activatedRecoveryId: recoveryMeta.recoveryId,
   });
-  if (recoveryMap) {
-    store.put(restoreRecoveryRecord(recoveryMap, 'map', sessionId));
-  }
-  if (recoveryConfig) {
-    store.put(restoreRecoveryRecord(recoveryConfig, 'config', sessionId));
-  }
+  store.put(workspaceIndex);
+  if (restoredMap) store.put(restoredMap);
+  if (restoredConfig) store.put(restoredConfig);
   RECOVERY_KEYS.forEach((key) => store.delete(key));
   await transactionComplete(transaction);
-
-  const storage = browserStorage();
-  try {
-    storage?.removeItem(VIEW_STATE_KEY);
-  } catch {
-    // The project snapshot still contains both viewport states.
-  }
+  clearWorkspaceViewState();
   return recoveryMeta;
 }
 
@@ -366,47 +547,160 @@ export async function finalizeWorkspaceRecovery(recoveryId) {
   return true;
 }
 
-export async function saveWorkspaceMap(sessionId, mapId, name, mapCache) {
+export async function saveWorkspaceMap(sessionId, mapId, name, mapCache, mode = null) {
   const database = await openDatabase();
+  const workspaceMode = normalizeWorkspaceMode(mode ?? mapCache?.teachingSpaceMode);
+  const savedAt = Date.now();
   const transaction = database.transaction(STORE_NAME, 'readwrite');
+  const store = transaction.objectStore(STORE_NAME);
+  const completion = transactionComplete(transaction);
+  const [workspaceIndex, meta] = await Promise.all([
+    requestResult(store.get(WORKSPACE_INDEX_KEY)),
+    requestResult(store.get('meta')),
+  ]);
   const legacyBuffer = mapCache instanceof ArrayBuffer ? mapCache : null;
-  transaction.objectStore(STORE_NAME).put(
-    legacyBuffer
-      ? {
-          key: 'map',
-          sessionId,
-          mapId,
-          name,
-          byteLength: legacyBuffer.byteLength,
-          blob: new Blob([legacyBuffer], { type: 'application/octet-stream' }),
-          savedAt: Date.now(),
-        }
-      : {
-          ...mapCache,
-          key: 'map',
-          sessionId,
-          mapId,
-          name,
-          savedAt: Date.now(),
-        },
+  const mapRecord = legacyBuffer
+    ? {
+        key: workspaceMapKey(workspaceMode),
+        sessionId,
+        mapId,
+        name,
+        teachingSpaceMode: workspaceMode,
+        byteLength: legacyBuffer.byteLength,
+        blob: new Blob([legacyBuffer], { type: 'application/octet-stream' }),
+        savedAt,
+      }
+    : {
+        ...mapCache,
+        key: workspaceMapKey(workspaceMode),
+        sessionId,
+        mapId,
+        name,
+        teachingSpaceMode: workspaceMode,
+        savedAt,
+      };
+  const previousSummary = workspaceIndex?.modes?.[workspaceMode] || null;
+  const replacesMap = previousSummary?.mapId !== mapId;
+  const modes = {
+    map: workspaceIndex?.modes?.map || null,
+    independent: workspaceIndex?.modes?.independent || null,
+  };
+  modes[workspaceMode] = summarizeWorkspace(
+    workspaceMode,
+    mapRecord,
+    null,
+    replacesMap ? null : previousSummary,
   );
-  await transactionComplete(transaction);
+  store.put(mapRecord);
+  if (replacesMap) store.delete(workspaceConfigKey(workspaceMode));
+  store.delete('map');
+  store.delete('config');
+  store.put({
+    key: WORKSPACE_INDEX_KEY,
+    sessionId,
+    activeMode: workspaceMode,
+    modes,
+    updatedAt: savedAt,
+  });
+  store.put({
+    ...(meta || {}),
+    key: 'meta',
+    sessionId,
+    activeMode: workspaceMode,
+    startedAt: Number(meta?.startedAt) || savedAt,
+  });
+  await completion;
+  return modes[workspaceMode];
 }
 
-export async function saveWorkspaceConfig(sessionId, mapId, config) {
+export async function saveWorkspaceConfig(sessionId, mapId, config, mode = null) {
   const database = await openDatabase();
+  const workspaceMode = normalizeWorkspaceMode(
+    mode
+    ?? config?.project?.workspace?.teachingSpaceMode
+    ?? config?.ui?.teachingSpaceMode,
+  );
+  const savedAt = Date.now();
   const transaction = database.transaction(STORE_NAME, 'readwrite');
-  transaction.objectStore(STORE_NAME).put({
-    key: 'config',
+  const store = transaction.objectStore(STORE_NAME);
+  const completion = transactionComplete(transaction);
+  const [workspaceIndex, meta] = await Promise.all([
+    requestResult(store.get(WORKSPACE_INDEX_KEY)),
+    requestResult(store.get('meta')),
+  ]);
+  const configRecord = {
+    key: workspaceConfigKey(workspaceMode),
     sessionId,
     mapId,
     config,
-    savedAt: Date.now(),
+    teachingSpaceMode: workspaceMode,
+    savedAt,
+  };
+  const modes = {
+    map: workspaceIndex?.modes?.map || null,
+    independent: workspaceIndex?.modes?.independent || null,
+  };
+  modes[workspaceMode] = summarizeWorkspace(
+    workspaceMode,
+    null,
+    configRecord,
+    modes[workspaceMode],
+  );
+  store.put(configRecord);
+  store.delete('map');
+  store.delete('config');
+  store.put({
+    key: WORKSPACE_INDEX_KEY,
+    sessionId,
+    activeMode: workspaceMode,
+    modes,
+    updatedAt: savedAt,
   });
-  await transactionComplete(transaction);
+  store.put({
+    ...(meta || {}),
+    key: 'meta',
+    sessionId,
+    activeMode: workspaceMode,
+    startedAt: Number(meta?.startedAt) || savedAt,
+  });
+  await completion;
+  return modes[workspaceMode];
+}
+
+export async function activateWorkspaceMode(sessionId, mode) {
+  if (!sessionId) throw new Error('当前服务会话尚未就绪');
+  const workspaceMode = normalizeWorkspaceMode(mode);
+  const database = await openDatabase();
+  const transaction = database.transaction(STORE_NAME, 'readwrite');
+  const store = transaction.objectStore(STORE_NAME);
+  const completion = transactionComplete(transaction);
+  const [workspaceIndex, meta] = await Promise.all([
+    requestResult(store.get(WORKSPACE_INDEX_KEY)),
+    requestResult(store.get('meta')),
+  ]);
+  if (meta?.sessionId !== sessionId || workspaceIndex?.sessionId !== sessionId) {
+    transaction.abort();
+    await completion.catch(() => undefined);
+    throw new Error('工作会话已变化，请刷新页面后重试');
+  }
+  const summary = workspaceIndex?.modes?.[workspaceMode] || null;
+  if (!summary?.available) {
+    transaction.abort();
+    await completion.catch(() => undefined);
+    throw new Error(workspaceMode === 'independent' ? '没有可继续的独立示教缓存' : '没有可继续的地图示教缓存');
+  }
+  store.put({
+    ...workspaceIndex,
+    activeMode: workspaceMode,
+    updatedAt: Date.now(),
+  });
+  store.put({ ...meta, activeMode: workspaceMode });
+  await completion;
+  return summary;
 }
 
 export async function resetWorkspaceSession(sessionId) {
   const database = await openDatabase();
   await replaceSession(database, sessionId);
+  clearWorkspaceViewState();
 }

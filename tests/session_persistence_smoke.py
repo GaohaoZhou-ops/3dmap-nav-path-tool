@@ -99,7 +99,7 @@ def run():
         page.set_default_timeout(30_000)
         page.on("pageerror", lambda exc: errors.append(str(exc)))
 
-        page.goto(BASE_URL)
+        page.goto(f"{BASE_URL.rstrip('/')}/workbench")
         page.wait_for_load_state("networkidle")
         wait_for_session(page)
         session_identity = page.evaluate(
@@ -252,15 +252,22 @@ def run():
 
         records = read_workspace_records(page)
         record_by_key = {record["key"]: record for record in records}
-        assert set(record_by_key) == {"meta", "map", "config"}
+        assert set(record_by_key) == {
+            "meta",
+            "workspace-slots",
+            "workspace-map:map",
+            "workspace-config:map",
+        }
+        map_record = record_by_key["workspace-map:map"]
+        config_record = record_by_key["workspace-config:map"]
         assert record_by_key["meta"]["sessionId"] == session_identity["sessionId"]
-        assert record_by_key["map"]["name"] == FIXTURE.name
-        assert record_by_key["map"]["byteLength"] == FIXTURE.stat().st_size
-        assert record_by_key["map"]["geometryCacheVersion"] == 1
-        assert not record_by_key["map"]["hasBlob"]
-        assert record_by_key["map"]["positionByteLength"] == 24 * 3 * 4
-        assert record_by_key["map"]["colorByteLength"] == 24 * 3
-        assert record_by_key["map"]["mapId"] == record_by_key["config"]["mapId"]
+        assert map_record["name"] == FIXTURE.name
+        assert map_record["byteLength"] == FIXTURE.stat().st_size
+        assert map_record["geometryCacheVersion"] == 1
+        assert not map_record["hasBlob"]
+        assert map_record["positionByteLength"] == 24 * 3 * 4
+        assert map_record["colorByteLength"] == 24 * 3
+        assert map_record["mapId"] == config_record["mapId"]
 
         page.reload()
         page.wait_for_load_state("networkidle")
@@ -407,10 +414,7 @@ def run():
         assert page.evaluate("localStorage.getItem('atlas-route-studio:view-state-v1')") is None
         load_project_button = page.get_by_role("button", name="加载工程")
         assert load_project_button.is_enabled()
-        assert load_project_button.get_attribute("data-project-file-browser") == "true"
-        with page.expect_file_chooser() as chooser_info:
-            load_project_button.click()
-        chooser_info.value.set_files([])
+        assert load_project_button.get_attribute("data-project-directory-picker") == "true"
         assert page.locator(".session-guard").get_attribute(
             "data-recovery-available"
         ) == "true"
@@ -421,7 +425,7 @@ def run():
         assert recovery_button.is_visible()
         remaining_records = read_workspace_records(page)
         remaining_by_key = {record["key"]: record for record in remaining_records}
-        assert "map" not in remaining_by_key
+        assert "workspace-map:map" not in remaining_by_key
         assert {"recovery-meta", "recovery-map", "recovery-config"}.issubset(
             remaining_by_key
         )
@@ -459,9 +463,16 @@ def run():
             assert abs(actual - expected) <= max(1e-7, abs(expected) * 1e-8)
         restored_records = read_workspace_records(page)
         restored_by_key = {record["key"]: record for record in restored_records}
-        assert set(restored_by_key) == {"meta", "map", "config"}
-        assert restored_by_key["map"]["positionByteLength"] == 24 * 3 * 4
-        assert restored_by_key["map"]["mapId"] == restored_by_key["config"]["mapId"]
+        assert set(restored_by_key) == {
+            "meta",
+            "workspace-slots",
+            "workspace-map:map",
+            "workspace-config:map",
+        }
+        assert restored_by_key["workspace-map:map"]["positionByteLength"] == 24 * 3 * 4
+        assert restored_by_key["workspace-map:map"]["mapId"] == restored_by_key[
+            "workspace-config:map"
+        ]["mapId"]
 
         print("session_id=", session_identity["sessionId"])
         print("restored_map=", FIXTURE.name)

@@ -81,7 +81,7 @@ def run():
             else None,
         )
 
-        page.goto(BASE_URL)
+        page.goto(f"{BASE_URL.rstrip('/')}/workbench")
         page.wait_for_load_state("networkidle")
         page.locator('[data-session-state="ready"]').wait_for()
         page.locator(".loading-curtain").wait_for(state="hidden")

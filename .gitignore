@@ -6,11 +6,19 @@ node_modules/
 .yarn/cache/
 .yarn/unplugged/
 .yarn/install-state.gz
+.cache/
+.parcel-cache/
+.turbo/
+.eslintcache
+.stylelintcache
 
 # Build output and frontend tool caches
 dist/
+build/
+out/
 .vite/
 *.tsbuildinfo
+vite.config.*.timestamp-*
 
 # Test and coverage output
 coverage/
@@ -28,6 +36,12 @@ __pycache__/
 .mypy_cache/
 .ruff_cache/
 .pyre/
+.tox/
+.nox/
+.hypothesis/
+.ipynb_checkpoints/
+.eggs/
+*.egg-info/
 .coverage
 .coverage.*
 htmlcov/
@@ -42,10 +56,23 @@ env/
 *.log
 *.pid
 *.pid.lock
+*.sqlite
+*.sqlite3
+*.db
+*.db-journal
+*.db-shm
+*.db-wal
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
+
+# Temporary, patch, and local backup files
+*.tmp
+*.temp
+*.bak
+*.orig
+*.rej
 
 # Local environment overrides (keep documented examples trackable)
 .env
@@ -54,6 +81,7 @@ pnpm-debug.log*
 
 # Editor and operating-system metadata
 .DS_Store
+._*
 .AppleDouble
 .LSOverride
 Thumbs.db

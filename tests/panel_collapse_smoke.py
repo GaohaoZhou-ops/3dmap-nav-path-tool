@@ -25,7 +25,7 @@ def run():
         page.set_default_timeout(30_000)
         page.on("pageerror", lambda exc: errors.append(str(exc)))
 
-        page.goto(BASE_URL)
+        page.goto(f"{BASE_URL.rstrip('/')}/workbench")
         page.wait_for_load_state("networkidle")
         wait_for_session(page)
         page.locator('input[type="file"][accept=".ply"]').set_input_files(str(FIXTURE))

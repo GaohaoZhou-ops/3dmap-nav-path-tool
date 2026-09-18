@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
-  ArrowLeft,
+  ArrowRight,
   CircleDot,
   History,
+  House,
   Route,
   ShieldCheck,
 } from 'lucide-react';
@@ -19,6 +20,7 @@ const formatBytes = (value) => {
 
 export default function TeachingDataPage({
   tasks = [],
+  teachingSpaceMode = 'map',
   activeTaskId,
   activeParkingPointId,
   mapData,
@@ -33,6 +35,7 @@ export default function TeachingDataPage({
   sessionState,
   recovery,
   onBack,
+  onHome,
   onOpenLastProject,
   onSelectTask,
   onRenameTask,
@@ -50,6 +53,9 @@ export default function TeachingDataPage({
   onExportProject,
 }) {
   const [archiveSelection, setArchiveSelection] = useState(null);
+  const coordinateFrameLabel = teachingSpaceMode === 'independent'
+    ? 'VIRTUAL_ORIGIN'
+    : 'MAP';
   const activeTask = tasks.find((task) => task.id === activeTaskId) || tasks[0] || null;
   const parkingPointCount = tasks.reduce(
     (total, task) => total + (task.parkingPoints?.length || 0),
@@ -135,6 +141,7 @@ export default function TeachingDataPage({
       className="teaching-data-page"
       aria-label="示教数据子网页"
       data-page="teaching-data"
+      data-teaching-space-mode={teachingSpaceMode}
       data-teaching-task-count={tasks.length}
       data-parking-point-count={parkingPointCount}
       data-teaching-point-count={pointCount}
@@ -143,10 +150,12 @@ export default function TeachingDataPage({
       <header className="teaching-data-page__topbar">
         <div className="teaching-data-page__brand">
           <span><Route size={17} /></span>
-          <div><small>ATLAS / ROUTE</small><strong>路径图谱工坊</strong></div>
+          <div><small>ATLAS / TEACHING</small><strong>虚拟示教平台</strong></div>
         </div>
         <nav aria-label="应用页面">
-          <button type="button" onClick={onBack}>主工作台</button>
+          <button type="button" onClick={onHome}><House size={11} />主页面</button>
+          <i>/</i>
+          <button type="button" onClick={onBack}>继续工作</button>
           <i>/</i>
           <strong aria-current="page">示教数据</strong>
         </nav>
@@ -172,11 +181,11 @@ export default function TeachingDataPage({
         <button
           type="button"
           className="teaching-data-page__back"
-          aria-label="返回主工作台继续示教"
+          aria-label="继续工作 · 返回主工作台继续示教"
           onClick={onBack}
         >
-          <ArrowLeft size={14} />
-          <span><strong>返回工作台</strong><small>继续姿态采集</small></span>
+          <span><strong>继续工作</strong><small>返回当前示教工作台</small></span>
+          <ArrowRight size={14} />
         </button>
       </header>
 
@@ -240,7 +249,7 @@ export default function TeachingDataPage({
       <footer className="teaching-data-page__statusbar">
         <span><CircleDot size={9} /> TEACHING ARCHIVE</span>
         <span>{tasks.length} TASKS / {parkingPointCount} STOPS / {pointCount} POSES / {cameraFrameCount} CAMERA FRAMES</span>
-        <strong>MAP FRAME · ABSOLUTE POSE</strong>
+        <strong>{coordinateFrameLabel} FRAME · ABSOLUTE POSE</strong>
       </footer>
     </div>
   );

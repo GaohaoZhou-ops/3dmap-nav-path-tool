@@ -29,7 +29,7 @@ def run():
             else None,
         )
 
-        page.goto(BASE_URL, wait_until="networkidle")
+        page.goto(f"{BASE_URL.rstrip('/')}/workbench", wait_until="networkidle")
         page.locator('[data-session-state="ready"]').wait_for()
         page.locator(".loading-curtain").wait_for(state="hidden")
         page.locator('input[type="file"][accept*=".json"]').set_input_files(str(FIXTURE))

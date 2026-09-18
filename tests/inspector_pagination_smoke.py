@@ -22,7 +22,7 @@ def open_teaching_data(page):
 def return_to_workbench(page):
     page.get_by_role("button", name="返回主工作台继续示教").click()
     page.locator('[data-app-page="teaching-data"]').wait_for(state="detached")
-    assert page.url.rstrip("/") == BASE_URL.rstrip("/")
+    assert page.url.rstrip("/") == f"{BASE_URL.rstrip('/')}/workbench"
 
 
 def run():
@@ -37,7 +37,7 @@ def run():
         page.set_default_timeout(30_000)
         page.on("pageerror", lambda error: errors.append(str(error)))
 
-        page.goto(BASE_URL, wait_until="networkidle")
+        page.goto(f"{BASE_URL.rstrip('/')}/workbench", wait_until="networkidle")
         page.locator('[data-session-state="ready"]').wait_for()
         page.locator(".loading-curtain").wait_for(state="hidden")
 
@@ -199,7 +199,7 @@ def run():
         page.goto(f"{BASE_URL}/teaching-data", wait_until="domcontentloaded")
         page.locator(".teaching-data-page__session.is-ready").wait_for()
         assert page.get_by_role("heading", name="示教数据中心").is_visible()
-        assert page.title() == "示教数据 · Atlas Route Studio"
+        assert page.title() == "示教数据 · 虚拟示教平台"
         return_to_workbench(page)
         assert page.locator('[data-app-page="workbench"]').is_visible()
 

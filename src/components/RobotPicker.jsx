@@ -1,4 +1,5 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import {
   Bot,
   Check,
@@ -20,7 +21,9 @@ const statusLabel = {
 
 export default function RobotPicker({ selectedRobot, loadState, onSelect }) {
   const rootRef = useRef(null);
+  const menuRef = useRef(null);
   const [open, setOpen] = useState(false);
+  const [menuPosition, setMenuPosition] = useState({ left: 8, top: 8 });
   const [catalog, setCatalog] = useState([]);
   const [catalogState, setCatalogState] = useState('idle');
   const [catalogError, setCatalogError] = useState('');
@@ -53,7 +56,10 @@ export default function RobotPicker({ selectedRobot, loadState, onSelect }) {
   useEffect(() => {
     if (!open) return undefined;
     const onPointerDown = (event) => {
-      if (!rootRef.current?.contains(event.target)) setOpen(false);
+      if (
+        !rootRef.current?.contains(event.target)
+        && !menuRef.current?.contains(event.target)
+      ) setOpen(false);
     };
     const onKeyDown = (event) => {
       if (event.key === 'Escape') setOpen(false);
@@ -63,6 +69,33 @@ export default function RobotPicker({ selectedRobot, loadState, onSelect }) {
     return () => {
       document.removeEventListener('pointerdown', onPointerDown);
       window.removeEventListener('keydown', onKeyDown);
+    };
+  }, [open]);
+
+  useLayoutEffect(() => {
+    if (!open) return undefined;
+
+    const updateMenuPosition = () => {
+      const trigger = rootRef.current?.getBoundingClientRect();
+      if (!trigger) return;
+      const menuWidth = menuRef.current?.offsetWidth || 342;
+      const viewportPadding = 8;
+      const left = Math.min(
+        Math.max(viewportPadding, trigger.right - menuWidth),
+        window.innerWidth - menuWidth - viewportPadding,
+      );
+      setMenuPosition({
+        left: Math.max(viewportPadding, left),
+        top: trigger.bottom + 8,
+      });
+    };
+
+    updateMenuPosition();
+    window.addEventListener('resize', updateMenuPosition);
+    window.addEventListener('scroll', updateMenuPosition, true);
+    return () => {
+      window.removeEventListener('resize', updateMenuPosition);
+      window.removeEventListener('scroll', updateMenuPosition, true);
     };
   }, [open]);
 
@@ -95,8 +128,14 @@ export default function RobotPicker({ selectedRobot, loadState, onSelect }) {
         <ChevronDown size={12} />
       </button>
 
-      {open && (
-        <div className="robot-picker__menu" role="dialog" aria-label="robots 目录模型">
+      {open && createPortal(
+        <div
+          className="robot-picker__menu"
+          ref={menuRef}
+          role="dialog"
+          aria-label="robots 目录模型"
+          style={menuPosition}
+        >
           <div className="robot-picker__heading">
             <div>
               <small>ROBOT LIBRARY</small>
@@ -157,7 +196,8 @@ export default function RobotPicker({ selectedRobot, loadState, onSelect }) {
             <span>初始位姿</span>
             <strong>XYZ 0 / 0 / 0 · RPY 0 / 0 / 0</strong>
           </div>
-        </div>
+        </div>,
+        document.body,
       )}
     </div>
   );

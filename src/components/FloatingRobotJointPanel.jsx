@@ -8,10 +8,10 @@ import {
 } from 'lucide-react';
 import RobotJointPanel from './RobotJointPanel.jsx';
 
-const WINDOW_WIDTH = 404;
+const WINDOW_WIDTH = 520;
 const WINDOW_EDGE = 10;
 const WINDOW_TOP = 82;
-const WINDOW_TITLE_HEIGHT = 43;
+const WINDOW_TITLE_HEIGHT = 52;
 
 const defaultWindowPosition = () => {
   if (typeof window === 'undefined') return { x: 24, y: WINDOW_TOP };

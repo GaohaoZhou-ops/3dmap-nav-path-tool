@@ -46,7 +46,7 @@ def run():
                 "{ value: undefined, configurable: true });"
             )
             page.on("pageerror", lambda error: page_errors.append(str(error)))
-            page.goto(BASE_URL, wait_until="networkidle")
+            page.goto(f"{BASE_URL.rstrip('/')}/workbench", wait_until="networkidle")
             page.locator('[data-session-state="ready"]').wait_for()
 
             load_button = page.get_by_role("button", name="加载工程", exact=True)
@@ -84,7 +84,7 @@ def run():
                 "};"
             )
             picker_page.on("pageerror", lambda error: page_errors.append(str(error)))
-            picker_page.goto(BASE_URL, wait_until="networkidle")
+            picker_page.goto(f"{BASE_URL.rstrip('/')}/workbench", wait_until="networkidle")
             picker_page.locator('[data-session-state="ready"]').wait_for()
             picker_page.get_by_role("button", name="加载工程", exact=True).click()
             picker_page.wait_for_function("window.__atlasPickerCalls.length === 1")
@@ -162,7 +162,7 @@ def run():
                 """
             )
             writable_page.on("pageerror", lambda error: page_errors.append(str(error)))
-            writable_page.goto(BASE_URL, wait_until="networkidle")
+            writable_page.goto(f"{BASE_URL.rstrip('/')}/workbench", wait_until="networkidle")
             writable_page.locator('[data-session-state="ready"]').wait_for()
             writable_button = writable_page.get_by_role("button", name="加载工程", exact=True)
             writable_button.click()

@@ -454,9 +454,10 @@ export async function collectProjectRobotResources(robot, onProgress, existingPa
   }
 
   const packagePath = String(robot.packagePath || '').replace(/^\/+|\/+$/g, '');
+  const optionalNames = ['package.xml', 'RESOURCE_MANIFEST.sha256'];
+  if (robot.manifestUrl) optionalNames.splice(1, 0, 'web-model.json');
   const optionalPaths = packagePath
-    ? ['package.xml', 'web-model.json', 'RESOURCE_MANIFEST.sha256']
-      .map((name) => resolveRelativePath(packagePath, name))
+    ? optionalNames.map((name) => resolveRelativePath(packagePath, name))
     : [];
   let loaded = 0;
   const initialPaths = [...requiredPaths].filter((path) => path !== relativePath);
@@ -572,7 +573,10 @@ const addEnvironmentResource = (entries, mapResource, projectMap) => {
   const metadata = {
     schemaVersion: 1,
     storage: 'atlas-geometry-cache',
-    coordinateFrame: 'map',
+    coordinateFrame: String(projectMap?.coordinateFrame || mapResource.coordinateFrame || 'map'),
+    teachingSpaceMode: String(
+      projectMap?.teachingSpaceMode || mapResource.teachingSpaceMode || 'map',
+    ),
     coordinateSystem: 'right-handed-z-up',
     name: String(projectMap?.fileName || mapResource.name || 'map.ply'),
     original: {
@@ -1038,6 +1042,12 @@ const hydrateEnvironmentResource = (project, files, manifest) => {
     mimeType: metadata.original?.mimeType || project.map?.mimeType || 'application/octet-stream',
     loadedAt: new Date().toISOString(),
     sourceKind: 'project-archive',
+    teachingSpaceMode: String(
+      metadata.teachingSpaceMode || project.map?.teachingSpaceMode || 'map',
+    ),
+    coordinateFrame: String(
+      metadata.coordinateFrame || project.map?.coordinateFrame || 'map',
+    ),
     geometryDigest: manifest.identities?.map?.geometryDigest || null,
   };
 };

@@ -2170,6 +2170,8 @@ export default function ZividCameraPanel({
     renderer.domElement.tabIndex = 0;
     renderer.domElement.setAttribute('aria-label', 'Zivid 2 M70 仿真相机画面');
     renderer.domElement.dataset.cameraReady = 'true';
+    renderer.domElement.dataset.teachingSurfaceTint = 'disabled';
+    renderer.domElement.dataset.surfaceAppearanceSource = 'original-map-geometry';
     renderer.domElement.dataset.sourcePointCount = String(pointCount);
     renderer.domElement.dataset.renderPointCount = String(renderCount);
     renderer.domElement.dataset.downsampled = renderCount < pointCount ? 'true' : 'false';

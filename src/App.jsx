@@ -11,6 +11,7 @@ import {
   FileSearch,
   FolderOpen,
   GitBranch,
+  House,
   Layers2,
   Map as MapIcon,
   MousePointer2,
@@ -31,6 +32,7 @@ import MapDetailsDialog from './components/MapDetailsDialog.jsx';
 import PointCloudViewer from './components/PointCloudViewer.jsx';
 import RobotPicker from './components/RobotPicker.jsx';
 import SpaceMouseControl from './components/SpaceMouseControl.jsx';
+import StartPage from './components/StartPage.jsx';
 import TeachingDataPage from './components/TeachingDataPage.jsx';
 import TeachingPlaybackDock from './components/TeachingPlaybackDock.jsx';
 import { inspectConnectivity } from './lib/graph.js';
@@ -40,7 +42,9 @@ import {
   createId,
   fetchBufferWithProgress,
   normalizeProject,
+  normalizeTeachingSpaceMode,
   readFileWithProgress,
+  teachingCoordinateFrame,
 } from './lib/io.js';
 import {
   normalizeRobotDescriptor,
@@ -49,7 +53,10 @@ import {
   registerPortableRobotPackage,
   releasePortableRobotPackage,
 } from './lib/robotLoader.js';
-import { normalizeRobotJointLocks } from './lib/robotJointLocks.js';
+import {
+  defaultRobotJointLocks,
+  normalizeRobotJointLocks,
+} from './lib/robotJointLocks.js';
 import { sha256ArrayBuffer } from './lib/hash.js';
 import {
   normalizeMeshRenderQuality,
@@ -61,6 +68,7 @@ import {
   sampleTeachingTrajectorySegment,
 } from './lib/teachingPlayback.js';
 import {
+  activateWorkspaceMode,
   activateWorkspaceRecovery,
   fetchServiceSession,
   finalizeWorkspaceRecovery,
@@ -79,6 +87,7 @@ import {
 
 const initialValidation = { status: 'idle', unreachableCount: 0, checkedAt: null };
 const pointColorModes = new Set(['height', 'source', 'white']);
+const APP_PAGE_HOME = 'home';
 const APP_PAGE_WORKBENCH = 'workbench';
 const APP_PAGE_TEACHING_DATA = 'teaching-data';
 
@@ -134,9 +143,11 @@ const teachingPlaybackStateFromRuntime = (runtime, status = runtime?.status || '
 };
 
 const appPageFromLocation = () => {
-  if (typeof window === 'undefined') return APP_PAGE_WORKBENCH;
+  if (typeof window === 'undefined') return APP_PAGE_HOME;
   const path = window.location.pathname.replace(/\/+$/, '') || '/';
-  return path.endsWith('/teaching-data') ? APP_PAGE_TEACHING_DATA : APP_PAGE_WORKBENCH;
+  if (path.endsWith('/teaching-data')) return APP_PAGE_TEACHING_DATA;
+  if (path.endsWith('/workbench')) return APP_PAGE_WORKBENCH;
+  return APP_PAGE_HOME;
 };
 
 const formatRecoveryTimestamp = (value) => {
@@ -285,6 +296,8 @@ function createGeometryCache(
     mimeType: String(sourceDetails.mimeType || 'application/octet-stream'),
     loadedAt: normalizeTimestamp(sourceDetails.loadedAt),
     sourceKind: String(sourceDetails.sourceKind || 'unknown'),
+    teachingSpaceMode: normalizeTeachingSpaceMode(sourceDetails.teachingSpaceMode),
+    coordinateFrame: teachingCoordinateFrame(sourceDetails.teachingSpaceMode),
   };
 }
 
@@ -362,6 +375,7 @@ function suggestedSlice(positions, bounds) {
 
 export default function App() {
   const mapInputRef = useRef(null);
+  const independentCloudInputRef = useRef(null);
   const pathInputRef = useRef(null);
   const projectDirectoryInputRef = useRef(null);
   const mapDetailsButtonRef = useRef(null);
@@ -372,11 +386,13 @@ export default function App() {
   const sessionReadyRef = useRef(false);
   const sessionSaveTimerRef = useRef(null);
   const sessionWriteChainRef = useRef(Promise.resolve());
+  const workspaceSwitchingRef = useRef(false);
   const sessionFailureNotifiedRef = useRef(false);
   const hydrationRevisionRef = useRef(0);
   const latestWorkspaceRef = useRef(null);
   const focusRevisionRef = useRef(0);
   const robotNotificationRef = useRef('');
+  const defaultRobotJointLocksPendingRef = useRef(false);
   const cameraTeachingRevisionRef = useRef(0);
   const zividCaptureProviderRef = useRef(null);
   const parkingMergePlannerRef = useRef(null);
@@ -392,6 +408,7 @@ export default function App() {
   const main3DCanvasRef = useRef(null);
   const [appPage, setAppPage] = useState(appPageFromLocation);
   const [mapData, setMapData] = useState(null);
+  const [teachingSpaceMode, setTeachingSpaceMode] = useState('map');
   const [heightRange, setHeightRange] = useState([0, 1]);
   const [waypoints, setWaypoints] = useState([]);
   const [edges, setEdges] = useState([]);
@@ -446,6 +463,10 @@ export default function App() {
   });
   const [teachingPlayback, setTeachingPlayback] = useState(createIdleTeachingPlayback);
   const [sessionState, setSessionState] = useState({ status: 'checking', restored: false });
+  const [cachedWorkspaces, setCachedWorkspaces] = useState({
+    map: null,
+    independent: null,
+  });
   const [lastProjectRecovery, setLastProjectRecovery] = useState(null);
   const [loadState, setLoadState] = useState({
     loading: true,
@@ -455,9 +476,14 @@ export default function App() {
   });
   const [toast, setToast] = useState(null);
   const closeMapDetails = useCallback(() => setMapDetailsOpen(false), []);
+  const coordinateFrame = teachingCoordinateFrame(teachingSpaceMode);
+  const isIndependentTeachingSpace = teachingSpaceMode === 'independent';
+  const activeCollapsedPanel = isIndependentTeachingSpace ? null : collapsedPanel;
+  const coordinateFrameLabel = isIndependentTeachingSpace ? 'VIRTUAL_ORIGIN' : 'MAP';
 
   latestWorkspaceRef.current = {
     mapData,
+    teachingSpaceMode,
     heightRange,
     waypoints,
     edges,
@@ -549,9 +575,26 @@ export default function App() {
 
   useEffect(() => {
     document.title = appPage === APP_PAGE_TEACHING_DATA
-      ? '示教数据 · Atlas Route Studio'
-      : 'Atlas Route Studio';
+      ? '示教数据 · 虚拟示教平台'
+      : appPage === APP_PAGE_WORKBENCH
+        ? '工作台 · 虚拟示教平台'
+        : '虚拟示教平台';
   }, [appPage]);
+
+  const navigateAppPage = useCallback((nextPage, options = {}) => {
+    const normalized = [APP_PAGE_HOME, APP_PAGE_WORKBENCH, APP_PAGE_TEACHING_DATA]
+      .includes(nextPage)
+      ? nextPage
+      : APP_PAGE_HOME;
+    const targetPath = normalized === APP_PAGE_HOME
+      ? '/'
+      : normalized === APP_PAGE_WORKBENCH ? '/workbench' : '/teaching-data';
+    if (window.location.pathname !== targetPath) {
+      const method = options.replace ? 'replaceState' : 'pushState';
+      window.history[method]({ atlasPage: normalized }, '', targetPath);
+    }
+    setAppPage(normalized);
+  }, []);
 
   const notify = useCallback((message, kind = 'success') => {
     if (toastTimerRef.current) window.clearTimeout(toastTimerRef.current);
@@ -592,19 +635,26 @@ export default function App() {
   );
 
   const persistWorkspaceNow = useCallback(() => {
+    if (workspaceSwitchingRef.current) return Promise.resolve();
     const sessionId = sessionIdRef.current;
     const current = latestWorkspaceRef.current;
     if (!sessionReadyRef.current || !sessionId || !current) return Promise.resolve();
 
     const mapId = current.mapData?.mapId || null;
-    saveWorkspaceViews(sessionId, mapId, {
-      view2d: view2dRef.current,
-      view3d: view3dRef.current,
-    });
+    saveWorkspaceViews(
+      sessionId,
+      mapId,
+      {
+        view2d: view2dRef.current,
+        view3d: view3dRef.current,
+      },
+      current.teachingSpaceMode,
+    );
 
     const project = current.mapData
       ? buildExport({
           mapData: current.mapData,
+          teachingSpaceMode: current.teachingSpaceMode,
           heightRange: current.heightRange,
           waypoints: current.waypoints,
           edges: current.edges,
@@ -630,6 +680,7 @@ export default function App() {
       schemaVersion: 1,
       project,
       ui: {
+        teachingSpaceMode: current.teachingSpaceMode,
         mode: current.mode,
         connectionSourceId: current.connectionSourceId,
         selectedWaypointId: current.selectedWaypointId,
@@ -656,7 +707,12 @@ export default function App() {
     };
     sessionWriteChainRef.current = sessionWriteChainRef.current
       .catch(() => undefined)
-      .then(() => saveWorkspaceConfig(sessionId, mapId, snapshot))
+      .then(() => saveWorkspaceConfig(
+        sessionId,
+        mapId,
+        snapshot,
+        current.teachingSpaceMode,
+      ))
       .catch(reportSessionFailure);
 
     const directoryBinding = projectDirectoryRef.current;
@@ -735,6 +791,7 @@ export default function App() {
         sourceMimeType = 'application/octet-stream',
         sourceKind = 'unknown',
         loadedAt = null,
+        teachingSpaceMode: requestedTeachingSpaceMode = 'map',
       } = options;
       if (!geometry.boundingBox) geometry.computeBoundingBox();
       if (!geometry.boundingSphere) geometry.computeBoundingSphere();
@@ -754,6 +811,8 @@ export default function App() {
       const nextSlice = clampSlice(preferredSlice || suggestedSlice(positions, bounds), bounds);
       const normalizedByteLength = Math.max(0, Number(sourceByteLength) || 0);
       const normalizedLoadedAt = normalizeTimestamp(loadedAt) || new Date().toISOString();
+      const normalizedTeachingSpaceMode = normalizeTeachingSpaceMode(requestedTeachingSpaceMode);
+      const mapCoordinateFrame = teachingCoordinateFrame(normalizedTeachingSpaceMode);
       const nextMap = {
         mapId,
         name,
@@ -772,9 +831,13 @@ export default function App() {
         mimeType: String(sourceMimeType || 'application/octet-stream'),
         loadedAt: normalizedLoadedAt,
         sourceKind: String(sourceKind || 'unknown'),
+        teachingSpaceMode: normalizedTeachingSpaceMode,
+        coordinateFrame: mapCoordinateFrame,
+        virtualOrigin: { x: 0, y: 0, z: 0 },
         metadataOnly: false,
       };
       setMapData(nextMap);
+      setTeachingSpaceMode(normalizedTeachingSpaceMode);
       setHeightRange(nextSlice);
       setRestoredView2d(preferredView);
       view2dRef.current = preferredView;
@@ -830,6 +893,7 @@ export default function App() {
                   mimeType: nextMap.mimeType,
                   loadedAt: nextMap.loadedAt,
                   sourceKind: nextMap.sourceKind,
+                  teachingSpaceMode: nextMap.teachingSpaceMode,
                 },
               ),
               portableRobotPackage: portableRobotPackageRef.current
@@ -839,6 +903,7 @@ export default function App() {
                   }
                 : null,
             },
+            nextMap.teachingSpaceMode,
           );
         } catch (error) {
           reportSessionFailure(error);
@@ -917,6 +982,7 @@ export default function App() {
           sourceMimeType: record.mimeType || 'application/octet-stream',
           sourceKind: record.sourceKind || 'session-cache',
           loadedAt: record.loadedAt || record.savedAt || null,
+          teachingSpaceMode: options.teachingSpaceMode ?? record.teachingSpaceMode ?? 'map',
         });
       } catch (error) {
         geometry?.dispose?.();
@@ -940,14 +1006,26 @@ export default function App() {
         const stored = await prepareWorkspaceSession(identity.sessionId);
         if (!isCurrent()) return;
         setLastProjectRecovery(stored.recovery || null);
+        setCachedWorkspaces({
+          map: stored.workspaceSlots?.map || null,
+          independent: stored.workspaceSlots?.independent || null,
+        });
 
         let restored = false;
         let repaired = false;
+        let restoredTeachingSpaceMode = normalizeTeachingSpaceMode(stored.activeMode);
         try {
           const configMatchesMap =
             !stored.map || (stored.config && stored.config.mapId === stored.map.mapId);
           const snapshot = configMatchesMap ? stored.config?.config : null;
           const project = snapshot?.project ? normalizeProject(snapshot.project) : null;
+          restoredTeachingSpaceMode = normalizeTeachingSpaceMode(
+            project?.workspace?.teachingSpaceMode
+            ?? snapshot?.ui?.teachingSpaceMode
+            ?? stored.map?.teachingSpaceMode
+            ?? stored.activeMode,
+          );
+          setTeachingSpaceMode(restoredTeachingSpaceMode);
           const storedRobotPackage = stored.map?.portableRobotPackage || null;
           const portableResourceId = storedRobotPackage
             ? registerPortableRobotPackage(storedRobotPackage)
@@ -967,7 +1045,11 @@ export default function App() {
               : project?.robot || snapshot?.ui?.selectedRobot,
           );
           const restoredMapId = stored.map?.mapId || stored.config?.mapId || null;
-          const instantViews = loadWorkspaceViews(identity.sessionId, restoredMapId);
+          const instantViews = loadWorkspaceViews(
+            identity.sessionId,
+            restoredMapId,
+            restoredTeachingSpaceMode,
+          );
           const recoveryViews = stored.config?.workspaceViews || stored.map?.workspaceViews || null;
           const preferredView2d = instantViews?.view2d
             ?? recoveryViews?.view2d
@@ -987,6 +1069,7 @@ export default function App() {
             snapshot?.ui?.meshRenderQuality ?? project?.rendering?.meshQuality,
           ));
           setShowWaypoints3D(snapshot?.ui?.showWaypoints3D !== false);
+          defaultRobotJointLocksPendingRef.current = false;
           setSelectedRobot(restoredRobot);
           setRobotPose(
             restoredRobot
@@ -1025,6 +1108,7 @@ export default function App() {
               preferredSlice: project?.slice,
               preferredView: preferredView2d,
               preferredView3d,
+              teachingSpaceMode: restoredTeachingSpaceMode,
               announce: false,
               keepLoading: true,
             });
@@ -1044,6 +1128,7 @@ export default function App() {
               preferredSlice: project?.slice,
               preferredView: preferredView2d,
               preferredView3d,
+              teachingSpaceMode: restoredTeachingSpaceMode,
               persistSnapshot: false,
               announce: false,
               keepLoading: true,
@@ -1072,8 +1157,10 @@ export default function App() {
                   mimeType: restoredMap.mimeType,
                   loadedAt: restoredMap.loadedAt,
                   sourceKind: restoredMap.sourceKind,
+                  teachingSpaceMode: restoredMap.teachingSpaceMode,
                 },
               ),
+              restoredTeachingSpaceMode,
             );
             if (!isCurrent()) return;
             restored = true;
@@ -1097,6 +1184,9 @@ export default function App() {
               mimeType: String(project.map.mimeType || 'application/octet-stream'),
               loadedAt: normalizeTimestamp(project.map.loadedAt),
               sourceKind: String(project.map.sourceKind || 'project-metadata'),
+              teachingSpaceMode: restoredTeachingSpaceMode,
+              coordinateFrame: teachingCoordinateFrame(restoredTeachingSpaceMode),
+              virtualOrigin: { x: 0, y: 0, z: 0 },
               geometrySource: 'project-metadata',
               metadataOnly: true,
             });
@@ -1195,6 +1285,9 @@ export default function App() {
           await resetWorkspaceSession(identity.sessionId);
           if (!isCurrent()) return;
           setMapData(null);
+          setTeachingSpaceMode('map');
+          restoredTeachingSpaceMode = 'map';
+          setCachedWorkspaces({ map: null, independent: null });
           setWaypoints([]);
           setEdges([]);
           setHeightRange([0, 1]);
@@ -1203,6 +1296,7 @@ export default function App() {
           setShowWaypoints3D(true);
           setCollapsedPanel(null);
           setInspectorCollapsed(false);
+          defaultRobotJointLocksPendingRef.current = false;
           setSelectedRobot(null);
           setRobotPose(normalizeRobotPose(null));
           setRobotJointValues({});
@@ -1232,7 +1326,7 @@ export default function App() {
         }
 
         try {
-          const savedDirectory = await loadProjectDirectoryBinding();
+          const savedDirectory = await loadProjectDirectoryBinding(restoredTeachingSpaceMode);
           if (savedDirectory?.sessionId === identity.sessionId && savedDirectory.handle) {
             const {
               queryProjectDirectoryPermission,
@@ -1327,6 +1421,7 @@ export default function App() {
     lockedRobotJointNames,
     robotHeightLocked,
     teachingTasks,
+    teachingSpaceMode,
     activeTeachingTaskId,
     activeTeachingParkingPointId,
     jointPoses,
@@ -1371,81 +1466,201 @@ export default function App() {
       savedAt: null,
       writable: false,
     });
-    clearProjectDirectoryBinding().catch(() => undefined);
+    clearProjectDirectoryBinding(teachingSpaceMode).catch(() => undefined);
     if (message) notify(message, 'info');
-  }, [notify, projectDirectoryState.status]);
+  }, [notify, projectDirectoryState.status, teachingSpaceMode]);
 
   const loadExample = useCallback(
     async (options = {}) => {
+      const targetMode = normalizeTeachingSpaceMode(options.teachingSpaceMode);
+      const replacesActiveWorkspace = targetMode === teachingSpaceMode && Boolean(
+        mapData
+        || selectedRobot
+        || waypoints.length
+        || edges.length
+        || teachingTasks.length
+        || jointPoses.length,
+      );
+      const replacesCachedWorkspace = targetMode !== teachingSpaceMode
+        && Boolean(cachedWorkspaces[targetMode]?.available);
       if (
         !options.preserveGraph
-        && (waypoints.length || teachingTasks.length || jointPoses.length)
-        && !window.confirm('加载新地图会清空当前导航图、虚拟示教任务与已记录关节姿态，继续吗？')
+        && (replacesActiveWorkspace || replacesCachedWorkspace)
+        && !window.confirm('加载示例地图会替换地图示教缓存，独立示教缓存不会受影响。继续吗？')
       ) return;
-      if (!options.preserveGraph && projectDirectoryRef.current) {
-        detachProjectDirectory('地图已更换；原工程目录已解除关联，避免覆盖其固定资源');
-      }
+      const previousMode = teachingSpaceMode;
+      const previousDirectoryBinding = projectDirectoryRef.current;
+      const previousDirectoryState = projectDirectoryState;
       setLoadState({ loading: true, progress: 0, phase: '读取示例地图' });
       try {
+        if (!options.preserveGraph) {
+          if (sessionSaveTimerRef.current) {
+            window.clearTimeout(sessionSaveTimerRef.current);
+            sessionSaveTimerRef.current = null;
+          }
+          await persistWorkspaceNow();
+        }
         let responseMetadata = null;
         const buffer = await fetchBufferWithProgress(
           '/xian_map.ply',
           (progress) => setLoadState({ loading: true, progress, phase: '读取示例地图' }),
           (metadata) => { responseMetadata = metadata; },
         );
+        if (!options.preserveGraph) {
+          if (targetMode === previousMode) {
+            if (projectDirectoryRef.current) {
+              detachProjectDirectory('地图已更换；原地图示教工程目录已解除关联');
+            }
+          } else {
+            projectDirectoryRef.current = null;
+            projectDirectoryFailureNotifiedRef.current = false;
+            setProjectDirectoryState({
+              status: 'detached',
+              name: '',
+              savedAt: null,
+              writable: false,
+            });
+            await clearProjectDirectoryBinding(targetMode).catch(() => undefined);
+          }
+        }
         await processMapBuffer(buffer, 'xian_map.ply', {
           ...options,
+          teachingSpaceMode: targetMode,
           sourceModifiedAt: options.sourceModifiedAt ?? responseMetadata?.modifiedAt,
           sourceMimeType: options.sourceMimeType ?? responseMetadata?.mimeType,
           sourceKind: options.sourceKind || 'example-map',
         });
       } catch (error) {
+        if (!options.preserveGraph && targetMode !== previousMode) {
+          projectDirectoryRef.current = previousDirectoryBinding;
+          setProjectDirectoryState(previousDirectoryState);
+        }
         setLoadState({ loading: false, progress: 0, phase: '' });
         notify(error.message || '示例地图加载失败', 'error');
       }
     },
     [
+      cachedWorkspaces,
       detachProjectDirectory,
+      edges.length,
       jointPoses.length,
+      mapData,
       notify,
+      persistWorkspaceNow,
       processMapBuffer,
+      projectDirectoryState,
+      selectedRobot,
+      teachingSpaceMode,
       teachingTasks.length,
       waypoints.length,
     ],
   );
 
-  const handleMapFile = async (event) => {
+  const handlePointCloudFile = async (event, requestedMode = 'map') => {
+    const sourcePage = appPage;
     const file = event.target.files?.[0];
     event.target.value = '';
     if (!file) return;
-    if (
-      (waypoints.length || teachingTasks.length || jointPoses.length)
-      && !window.confirm('加载新地图会清空当前导航图、虚拟示教任务与已记录关节姿态，继续吗？')
-    ) return;
+    const nextTeachingSpaceMode = normalizeTeachingSpaceMode(requestedMode);
+    const independent = nextTeachingSpaceMode === 'independent';
     if (!file.name.toLowerCase().endsWith('.ply')) {
-      notify('请选择 .ply 点云地图文件', 'error');
+      notify('请选择 .ply 点云文件', 'error');
       return;
     }
-    if (projectDirectoryRef.current) {
-      detachProjectDirectory('地图已更换；原工程目录已解除关联，避免覆盖其固定资源');
-    }
-    setLoadState({ loading: true, progress: 0, phase: '读取本地地图' });
+    const replacesActiveWorkspace = nextTeachingSpaceMode === teachingSpaceMode && Boolean(
+      mapData
+      || selectedRobot
+      || waypoints.length
+      || edges.length
+      || teachingTasks.length
+      || jointPoses.length,
+    );
+    const replacesCachedWorkspace = nextTeachingSpaceMode !== teachingSpaceMode
+      && Boolean(cachedWorkspaces[nextTeachingSpaceMode]?.available);
+    if (
+      (replacesActiveWorkspace || replacesCachedWorkspace)
+      && !window.confirm(
+        independent
+          ? '创建新的独立示教工程会替换已有的独立示教缓存，地图示教缓存不会受影响。继续吗？'
+          : '创建新的地图示教工程会替换已有的地图示教缓存，独立示教缓存不会受影响。继续吗？',
+      )
+    ) return;
+    const previousMode = teachingSpaceMode;
+    const previousDirectoryBinding = projectDirectoryRef.current;
+    const previousDirectoryState = projectDirectoryState;
+    navigateAppPage(APP_PAGE_WORKBENCH);
+    const loadingPhase = independent ? '创建独立示教空间' : '读取本地地图';
+    setLoadState({
+      loading: true,
+      progress: 0,
+      phase: loadingPhase,
+      detail: independent ? `${file.name} · 原点将设为点云 (0, 0, 0)` : file.name,
+    });
     try {
+      if (sessionSaveTimerRef.current) {
+        window.clearTimeout(sessionSaveTimerRef.current);
+        sessionSaveTimerRef.current = null;
+      }
+      await persistWorkspaceNow();
       const buffer = await readFileWithProgress(file, (progress) =>
-        setLoadState({ loading: true, progress, phase: '读取本地地图' }),
+        setLoadState({
+          loading: true,
+          progress,
+          phase: loadingPhase,
+          detail: independent ? '正在载入点云并建立 virtual_origin 坐标系' : file.name,
+        }),
       );
+      if (nextTeachingSpaceMode === previousMode) {
+        if (projectDirectoryRef.current) {
+          detachProjectDirectory(
+            independent
+              ? '独立示教空间已更换；原独立示教工程目录已解除关联'
+              : '地图已更换；原地图示教工程目录已解除关联',
+          );
+        }
+      } else {
+        projectDirectoryRef.current = null;
+        projectDirectoryFailureNotifiedRef.current = false;
+        setProjectDirectoryState({
+          status: 'detached',
+          name: '',
+          savedAt: null,
+          writable: false,
+        });
+        await clearProjectDirectoryBinding(nextTeachingSpaceMode).catch(() => undefined);
+      }
       await processMapBuffer(buffer, file.name, {
+        teachingSpaceMode: nextTeachingSpaceMode,
+        announce: !independent,
         sourceModifiedAt: file.lastModified || null,
         sourceMimeType: file.type || 'application/octet-stream',
-        sourceKind: 'local-file',
+        sourceKind: independent ? 'independent-teaching-file' : 'local-file',
       });
+      if (independent) {
+        notify(`${file.name} 已建立独立示教空间 · 原点 VIRTUAL_ORIGIN (0, 0, 0)`, 'success');
+      }
     } catch (error) {
+      if (nextTeachingSpaceMode !== previousMode && teachingSpaceMode === previousMode) {
+        projectDirectoryRef.current = previousDirectoryBinding;
+        setProjectDirectoryState(previousDirectoryState);
+      }
       setLoadState({ loading: false, progress: 0, phase: '' });
-      notify(error.message || '地图加载失败', 'error');
+      notify(error.message || (independent ? '独立示教空间创建失败' : '地图加载失败'), 'error');
+      if (sourcePage === APP_PAGE_HOME) navigateAppPage(APP_PAGE_HOME, { replace: true });
     }
   };
 
+  const handleMapFile = (event) => handlePointCloudFile(event, 'map');
+  const handleIndependentCloudFile = (event) => handlePointCloudFile(event, 'independent');
+
   const applyImportedProject = async (importProject, sourceName) => {
+    const sourcePage = appPage;
+    navigateAppPage(APP_PAGE_WORKBENCH);
+    if (sessionSaveTimerRef.current) {
+      window.clearTimeout(sessionSaveTimerRef.current);
+      sessionSaveTimerRef.current = null;
+    }
+    await persistWorkspaceNow();
     const previousDirectoryBinding = projectDirectoryRef.current;
     projectDirectoryRef.current = null;
     const previousPortableResourceId = portableRobotPackageRef.current?.resourceId || null;
@@ -1466,6 +1681,9 @@ export default function App() {
         }));
       const payload = importedFile.payload;
       const project = normalizeProject(payload);
+      const importedTeachingSpaceMode = normalizeTeachingSpaceMode(
+        project.workspace?.teachingSpaceMode,
+      );
       const portableRobotPackage = importedFile.resources?.robot || null;
       if (portableRobotPackage) {
         nextPortableResourceId = registerPortableRobotPackage(portableRobotPackage);
@@ -1497,13 +1715,14 @@ export default function App() {
       setRobotControlEnabled(false);
       setRobotCollisionProtectionEnabled(false);
       setSynchronizedFocus(null);
+      defaultRobotJointLocksPendingRef.current = false;
       setSelectedRobot(importedRobot);
       setRobotPose(importedRobotPose);
       setRobotJointValues(importedRobotJoints);
       setLockedRobotJointNames(importedLockedJoints);
       setRobotHeightLocked(importedRobotHeightLocked);
       setRobotLoadState({ status: importedRobot ? 'pending' : 'idle' });
-      let effectiveMap = mapData;
+      let effectiveMap = importedTeachingSpaceMode === teachingSpaceMode ? mapData : null;
       if (importedFile.resources?.map) {
         const portableMapRecord = {
           ...importedFile.resources.map,
@@ -1519,6 +1738,7 @@ export default function App() {
         });
         effectiveMap = await processMapCache(portableMapRecord, {
           preserveGraph: true,
+          teachingSpaceMode: importedTeachingSpaceMode,
           preferredSlice: project.slice,
           preferredView: project.view2d,
           preferredView3d: project.view3d,
@@ -1537,9 +1757,20 @@ export default function App() {
             portableMapRecord.mapId,
             portableMapRecord.name,
             portableMapRecord,
+            importedTeachingSpaceMode,
           );
         }
       }
+      if (!importedFile.resources?.map && effectiveMap) {
+        effectiveMap = {
+          ...effectiveMap,
+          teachingSpaceMode: importedTeachingSpaceMode,
+          coordinateFrame: teachingCoordinateFrame(importedTeachingSpaceMode),
+          virtualOrigin: { x: 0, y: 0, z: 0 },
+        };
+        setMapData(effectiveMap);
+      }
+      setTeachingSpaceMode(importedTeachingSpaceMode);
       const importedTaskIds = new Set(project.teachingTasks.map((task) => task.id));
       const importedTaskId = importedTaskIds.has(project.workspace?.activeTeachingTaskId)
         ? project.workspace.activeTeachingTaskId
@@ -1600,7 +1831,7 @@ export default function App() {
 
       if (project.slice || importedFile.resources?.map) setHeightRange(importedSlice);
       if (!effectiveMap && project.map?.bounds) {
-        setMapData({
+        effectiveMap = {
           mapId: createId('map-meta'),
           name: project.map.fileName || '未绑定地图',
           pointCount: Number(project.map.pointCount) || 0,
@@ -1618,9 +1849,13 @@ export default function App() {
           mimeType: String(project.map.mimeType || 'application/octet-stream'),
           loadedAt: normalizeTimestamp(project.map.loadedAt),
           sourceKind: String(project.map.sourceKind || 'project-metadata'),
+          teachingSpaceMode: importedTeachingSpaceMode,
+          coordinateFrame: teachingCoordinateFrame(importedTeachingSpaceMode),
+          virtualOrigin: { x: 0, y: 0, z: 0 },
           geometrySource: 'project-metadata',
           metadataOnly: true,
-        });
+        };
+        setMapData(effectiveMap);
       }
       if (previousPortableResourceId && previousPortableResourceId !== nextPortableResourceId) {
         releasePortableRobotPackage(previousPortableResourceId);
@@ -1634,6 +1869,7 @@ export default function App() {
           schemaVersion: 1,
           project: buildExport({
             mapData: effectiveMap,
+            teachingSpaceMode: importedTeachingSpaceMode,
             heightRange: importedSlice,
             waypoints: project.waypoints,
             edges: project.edges,
@@ -1655,6 +1891,7 @@ export default function App() {
             inspectorCollapsed: importedInspectorCollapsed,
           }),
           ui: {
+            teachingSpaceMode: importedTeachingSpaceMode,
             mode: 'select',
             connectionSourceId: null,
             selectedWaypointId: null,
@@ -1685,6 +1922,7 @@ export default function App() {
             sessionIdRef.current,
             effectiveMap.mapId,
             importedSnapshot,
+            importedTeachingSpaceMode,
           ));
         await sessionWriteChainRef.current;
       }
@@ -1709,6 +1947,7 @@ export default function App() {
             name: directoryBinding.name,
             projectFile: directoryBinding.projectFile,
             sessionId: sessionIdRef.current,
+            teachingSpaceMode: importedTeachingSpaceMode,
           });
         } catch (error) {
           console.warn('工程目录可用，但刷新后可能需要重新授权', error);
@@ -1716,7 +1955,7 @@ export default function App() {
         }
       } else {
         projectDirectoryRef.current = null;
-        await clearProjectDirectoryBinding().catch(() => undefined);
+        await clearProjectDirectoryBinding(importedTeachingSpaceMode).catch(() => undefined);
         setProjectDirectoryState({
           status: importedFile.directory ? 'readonly' : 'detached',
           name: importedFile.directory?.name || '',
@@ -1740,6 +1979,8 @@ export default function App() {
       if (!importedFile.resources?.map && (!effectiveMap || effectiveMap.metadataOnly) && referencedMap === 'xian_map.ply') {
         await loadExample({
           preserveGraph: true,
+          teachingSpaceMode: importedTeachingSpaceMode,
+          mapId: effectiveMap?.mapId,
           preferredSlice: project.slice,
           preferredView: project.view2d,
           preferredView3d: project.view3d,
@@ -1754,6 +1995,7 @@ export default function App() {
       }
       setLoadState({ loading: false, progress: 0, phase: '' });
       notify(`工程文件无效：${error.message}`, 'error');
+      if (sourcePage === APP_PAGE_HOME) navigateAppPage(APP_PAGE_HOME, { replace: true });
     }
   };
 
@@ -1841,7 +2083,7 @@ export default function App() {
     try {
       await sessionWriteChainRef.current.catch(() => undefined);
       await activateWorkspaceRecovery(sessionId);
-      window.location.reload();
+      window.location.assign('/workbench');
     } catch (error) {
       sessionReadyRef.current = wasSessionReady;
       setLoadState({ loading: false, progress: 0, phase: '' });
@@ -1888,12 +2130,12 @@ export default function App() {
       notify(
         options.message
           || (source === 'robot-current-pose'
-            ? `${point.name} 已记录机器人当前 MAP 位姿`
+            ? `${point.name} 已记录机器人当前 ${coordinateFrameLabel} 位姿`
             : `${point.name} 已绑定原始三维坐标`),
         'success',
       );
     },
-    [invalidateConnectivity, notify, waypoints.length],
+    [coordinateFrameLabel, invalidateConnectivity, notify, waypoints.length],
   );
 
   const addWaypointFromToolbar = useCallback(() => {
@@ -2128,9 +2370,11 @@ export default function App() {
       const sameMap = task.map?.sourceHash && mapData.sourceHash
         ? task.map.sourceHash === mapData.sourceHash
         : task.map?.fileName === mapData.name;
-      return sameRobot && sameMap;
+      const sameCoordinateFrame = !task.coordinateFrame
+        || task.coordinateFrame === coordinateFrame;
+      return sameRobot && sameMap && sameCoordinateFrame;
     },
-    [mapData, selectedRobot],
+    [coordinateFrame, mapData, selectedRobot],
   );
 
   const createTeachingTask = useCallback((options = {}) => {
@@ -2154,7 +2398,7 @@ export default function App() {
           createdAt: timestamp,
           updatedAt: timestamp,
           mapPose: {
-            frameId: 'map',
+            frameId: coordinateFrame,
             position: { ...pose.position },
             rpy: { ...pose.rpy },
           },
@@ -2166,7 +2410,7 @@ export default function App() {
       name: requestedName || `示教任务 ${String(teachingTasks.length + 1).padStart(2, '0')}`,
       createdAt: timestamp,
       updatedAt: timestamp,
-      coordinateFrame: 'map',
+      coordinateFrame,
       robot: {
         id: selectedRobot.id || selectedRobot.relativePath,
         name: selectedRobot.name,
@@ -2176,6 +2420,8 @@ export default function App() {
         id: mapData.mapId || '',
         fileName: mapData.name || '',
         sourceHash: mapData.sourceHash || null,
+        teachingSpaceMode,
+        coordinateFrame,
       },
       parkingPoints: initialParkingPoint ? [initialParkingPoint] : [],
     };
@@ -2190,7 +2436,16 @@ export default function App() {
         : `${task.name} 已创建 · 可随时添加停车点`,
       'success',
     );
-  }, [mapData, notify, robotLoadState.status, robotPose, selectedRobot, teachingTasks.length]);
+  }, [
+    coordinateFrame,
+    mapData,
+    notify,
+    robotLoadState.status,
+    robotPose,
+    selectedRobot,
+    teachingSpaceMode,
+    teachingTasks.length,
+  ]);
 
   const selectTeachingTask = useCallback((id) => {
     const task = teachingTasks.find((item) => item.id === id);
@@ -2243,7 +2498,7 @@ export default function App() {
       createdAt: timestamp,
       updatedAt: timestamp,
       mapPose: {
-        frameId: 'map',
+        frameId: coordinateFrame,
         position: { ...pose.position },
         rpy: { ...pose.rpy },
       },
@@ -2261,9 +2516,11 @@ export default function App() {
     )));
     setActiveTeachingParkingPointId(parkingPoint.id);
     setTeachingCaptureState({ status: 'idle', message: '' });
-    notify(`${parkingPoint.name} 已记录 · MAP XYZ/RPY`, 'success');
+    notify(`${parkingPoint.name} 已记录 · ${coordinateFrameLabel} XYZ/RPY`, 'success');
   }, [
     activeTeachingTaskId,
+    coordinateFrame,
+    coordinateFrameLabel,
     notify,
     robotLoadState.status,
     robotPose,
@@ -2442,7 +2699,7 @@ export default function App() {
           createdAt: timestamp,
           updatedAt: timestamp,
           mapPose: {
-            frameId: 'map',
+            frameId: coordinateFrame,
             position: { ...pose.position },
             rpy: { ...pose.rpy },
           },
@@ -2483,7 +2740,7 @@ export default function App() {
       sequence: parkingPoint.poses.length + 1,
       capturedAt: timestamp,
       mapPose: {
-        frameId: 'map',
+        frameId: coordinateFrame,
         position: { ...pose.position },
         rpy: { ...pose.rpy },
       },
@@ -2535,6 +2792,7 @@ export default function App() {
   }, [
     activeTeachingParkingPointId,
     activeTeachingTaskId,
+    coordinateFrame,
     notify,
     robotJointValues,
     robotLoadState.status,
@@ -2681,7 +2939,7 @@ export default function App() {
         const normalizeMapPose = (value) => {
           const pose = normalizeRobotPose(value);
           return {
-            frameId: 'map',
+            frameId: task.coordinateFrame || coordinateFrame,
             position: { ...pose.position },
             rpy: { ...pose.rpy },
           };
@@ -2805,7 +3063,7 @@ export default function App() {
         retainedParkingPointId: firstRetainedParkingPointId,
       };
     },
-    [notify, teachingTasks],
+    [coordinateFrame, notify, teachingTasks],
   );
 
   const updateRobotJointValue = useCallback(
@@ -2837,7 +3095,7 @@ export default function App() {
 
   const zeroRobotJoints = useCallback(() => {
     if (robotLoadState.status !== 'loaded') {
-      notify('机器人尚未完成装配，无法归零关节', 'warning');
+      notify('机器人尚未完成装配，无法复位姿态', 'warning');
       return;
     }
     const definitions = robotLoadState.movableJoints || [];
@@ -2849,7 +3107,7 @@ export default function App() {
     setRobotJointValues(Object.fromEntries(
       jointNames.map((name) => [name, clampJointValue(0, definitionByName.get(name))]),
     ));
-    notify(`${jointNames.length} 个可动关节已全部归零`, 'info');
+    notify(`${jointNames.length} 个可动关节已恢复初始姿态`, 'info');
   }, [notify, robotJointValues, robotLoadState.movableJoints, robotLoadState.status]);
 
   const captureJointPose = useCallback(
@@ -2966,6 +3224,7 @@ export default function App() {
     try {
       const payload = buildExport({
         mapData,
+        teachingSpaceMode,
         heightRange,
         waypoints,
         edges,
@@ -2999,6 +3258,7 @@ export default function App() {
           mimeType: mapData.mimeType,
           loadedAt: mapData.loadedAt,
           sourceKind: mapData.sourceKind,
+          teachingSpaceMode,
         },
       );
       const reusableRobotPackage = portableRobotPackageRef.current?.relativePath
@@ -3056,6 +3316,7 @@ export default function App() {
       releasePortableRobotPackage(portableRobotPackageRef.current?.resourceId);
       portableRobotPackageRef.current = null;
       robotNotificationRef.current = '';
+      defaultRobotJointLocksPendingRef.current = true;
       setSelectedRobot(robot);
       setRobotPose(normalizeRobotPose(null));
       setRobotJointValues({});
@@ -3094,10 +3355,18 @@ export default function App() {
       const availableJointNames = new Set(
         (nextState.movableJoints || []).flatMap((joint) => joint?.name ? [joint.name] : []),
       );
+      const applyDefaultLocks = defaultRobotJointLocksPendingRef.current;
+      defaultRobotJointLocksPendingRef.current = false;
       setLockedRobotJointNames((current) => {
-        const next = normalizeRobotJointLocks(current).filter(
+        const retained = normalizeRobotJointLocks(current).filter(
           (name) => availableJointNames.has(name),
         );
+        const next = applyDefaultLocks
+          ? normalizeRobotJointLocks([
+              ...retained,
+              ...defaultRobotJointLocks(nextState.movableJoints),
+            ])
+          : retained;
         return next.length === current.length
           && next.every((name, index) => name === current[index])
           ? current
@@ -3261,28 +3530,6 @@ export default function App() {
     },
     [queueWorkspaceSave],
   );
-
-  const navigateAppPage = useCallback((nextPage) => {
-    const normalized = nextPage === APP_PAGE_TEACHING_DATA
-      ? APP_PAGE_TEACHING_DATA
-      : APP_PAGE_WORKBENCH;
-    if (normalized === APP_PAGE_TEACHING_DATA) {
-      if (appPageFromLocation() !== APP_PAGE_TEACHING_DATA) {
-        window.history.pushState(
-          { atlasPage: APP_PAGE_TEACHING_DATA },
-          '',
-          '/teaching-data',
-        );
-      }
-      setAppPage(APP_PAGE_TEACHING_DATA);
-      return;
-    }
-
-    if (window.location.pathname !== '/') {
-      window.history.replaceState({ atlasPage: APP_PAGE_WORKBENCH }, '', '/');
-    }
-    setAppPage(APP_PAGE_WORKBENCH);
-  }, []);
 
   const advanceTeachingPlayback = useCallback(function advancePlayback(timestamp) {
     const runtime = teachingPlaybackRuntimeRef.current;
@@ -3469,7 +3716,7 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    if (appPage === APP_PAGE_TEACHING_DATA) pauseTeachingTaskPlayback();
+    if (appPage !== APP_PAGE_WORKBENCH) pauseTeachingTaskPlayback();
   }, [appPage, pauseTeachingTaskPlayback]);
 
   useEffect(() => {
@@ -3508,27 +3755,140 @@ export default function App() {
     { id: 'connect', label: '连接路径', icon: GitBranch },
   ];
 
+  const hasWorkspace = Boolean(
+    mapData
+    || selectedRobot
+    || waypoints.length
+    || edges.length
+    || teachingTasks.length
+    || jointPoses.length,
+  );
+  const liveWorkspaceSummary = hasWorkspace
+    ? {
+        available: true,
+        mode: teachingSpaceMode,
+        mapId: mapData?.mapId || null,
+        mapName: projectDirectoryState.name || mapData?.name || selectedRobot?.name || '未命名工作现场',
+        pointCount: Number(mapData?.pointCount) || 0,
+        faceCount: Number(mapData?.faceCount) || 0,
+        waypointCount: waypoints.length,
+        edgeCount: edges.length,
+        taskCount: teachingTasks.length,
+        robotName: selectedRobot?.name || '',
+        savedAt: Date.now(),
+      }
+    : null;
+  const workspaceCatalog = {
+    map: cachedWorkspaces.map,
+    independent: cachedWorkspaces.independent,
+    [teachingSpaceMode]: liveWorkspaceSummary,
+  };
+
+  useEffect(() => {
+    if (sessionState.status !== 'ready' || !liveWorkspaceSummary) return;
+    setCachedWorkspaces((current) => {
+      const previous = current[teachingSpaceMode];
+      if (
+        previous?.mapId === liveWorkspaceSummary.mapId
+        && previous?.mapName === liveWorkspaceSummary.mapName
+        && previous?.pointCount === liveWorkspaceSummary.pointCount
+        && previous?.waypointCount === liveWorkspaceSummary.waypointCount
+        && previous?.edgeCount === liveWorkspaceSummary.edgeCount
+        && previous?.taskCount === liveWorkspaceSummary.taskCount
+        && previous?.robotName === liveWorkspaceSummary.robotName
+      ) return current;
+      return { ...current, [teachingSpaceMode]: liveWorkspaceSummary };
+    });
+  }, [
+    liveWorkspaceSummary?.edgeCount,
+    liveWorkspaceSummary?.mapId,
+    liveWorkspaceSummary?.mapName,
+    liveWorkspaceSummary?.pointCount,
+    liveWorkspaceSummary?.robotName,
+    liveWorkspaceSummary?.taskCount,
+    liveWorkspaceSummary?.waypointCount,
+    sessionState.status,
+    teachingSpaceMode,
+  ]);
+
+  const continueWorkspace = async (requestedMode, destination = APP_PAGE_WORKBENCH) => {
+    const targetMode = normalizeTeachingSpaceMode(requestedMode);
+    const targetWorkspace = workspaceCatalog[targetMode];
+    if (!targetWorkspace?.available) {
+      notify(targetMode === 'independent' ? '没有可继续的独立示教缓存' : '没有可继续的地图示教缓存', 'info');
+      return;
+    }
+    if (targetMode === teachingSpaceMode && hasWorkspace) {
+      navigateAppPage(destination);
+      return;
+    }
+    if (!sessionReadyRef.current || !sessionIdRef.current) {
+      notify('工作会话尚未就绪，请稍候', 'warning');
+      return;
+    }
+    if (sessionSaveTimerRef.current) {
+      window.clearTimeout(sessionSaveTimerRef.current);
+      sessionSaveTimerRef.current = null;
+    }
+    setLoadState({
+      loading: true,
+      progress: 0.65,
+      phase: targetMode === 'independent' ? '切换独立示教缓存' : '切换地图示教缓存',
+      detail: targetWorkspace.mapName || '正在恢复工作现场',
+    });
+    try {
+      await persistWorkspaceNow();
+      workspaceSwitchingRef.current = true;
+      await activateWorkspaceMode(sessionIdRef.current, targetMode);
+      const targetPath = destination === APP_PAGE_TEACHING_DATA
+        ? '/teaching-data'
+        : '/workbench';
+      window.location.assign(targetPath);
+    } catch (error) {
+      workspaceSwitchingRef.current = false;
+      setLoadState({ loading: false, progress: 0, phase: '' });
+      notify(error?.message || '工作缓存切换失败', 'error');
+    }
+  };
+  const beginNewProject = (requestedMode) => {
+    if (loadState.loading || sessionState.status !== 'ready') return;
+    if (normalizeTeachingSpaceMode(requestedMode) === 'independent') {
+      independentCloudInputRef.current?.click();
+    } else {
+      mapInputRef.current?.click();
+    }
+  };
+
   const progressLabel = loadState.progress < 1
     ? `${Math.round(loadState.progress * 100)}%`
     : 'PROCESS';
   return (
     <>
+    <input ref={mapInputRef} className="visually-hidden" type="file" accept=".ply" onChange={handleMapFile} />
+    <input
+      ref={independentCloudInputRef}
+      className="visually-hidden"
+      type="file"
+      accept=".ply,application/octet-stream"
+      data-independent-teaching-input="true"
+      onChange={handleIndependentCloudFile}
+    />
+    <input ref={pathInputRef} className="visually-hidden" type="file" accept=".zip,.json,application/zip,application/x-zip-compressed,application/json" onChange={handlePathFile} />
+    <input
+      ref={projectDirectoryInputRef}
+      className="visually-hidden"
+      type="file"
+      webkitdirectory=""
+      multiple
+      onChange={handleProjectDirectoryFiles}
+    />
     <div
-      className={`app-shell ${appPage === APP_PAGE_TEACHING_DATA ? 'is-route-background' : ''}`}
+      className={`app-shell ${appPage === APP_PAGE_HOME ? 'is-home-background' : appPage === APP_PAGE_TEACHING_DATA ? 'is-route-background' : ''} ${isIndependentTeachingSpace ? 'is-independent-teaching-space' : ''}`}
       data-app-page="workbench"
-      aria-hidden={appPage === APP_PAGE_TEACHING_DATA}
+      data-teaching-space-mode={teachingSpaceMode}
+      data-coordinate-frame={coordinateFrame}
+      aria-hidden={appPage !== APP_PAGE_WORKBENCH}
     >
-      <input ref={mapInputRef} className="visually-hidden" type="file" accept=".ply" onChange={handleMapFile} />
-      <input ref={pathInputRef} className="visually-hidden" type="file" accept=".zip,.json,application/zip,application/x-zip-compressed,application/json" onChange={handlePathFile} />
-      <input
-        ref={projectDirectoryInputRef}
-        className="visually-hidden"
-        type="file"
-        webkitdirectory=""
-        multiple
-        onChange={handleProjectDirectoryFiles}
-      />
-
       <header className="topbar">
         <div className="brand-block">
           <div className="brand-mark"><Route size={20} strokeWidth={1.8} /></div>
@@ -3538,11 +3898,11 @@ export default function App() {
           </div>
         </div>
 
-        <div className="map-identity">
+        <div className="map-identity" data-space-mode={teachingSpaceMode}>
           <span className={`map-state-dot ${mapData?.geometry ? 'online' : ''}`} />
           <div>
-            <small>ACTIVE MAP</small>
-            <strong>{mapData?.name || 'NO MAP LOADED'}</strong>
+            <small>{isIndependentTeachingSpace ? 'VIRTUAL SPACE / ORIGIN 0' : 'ACTIVE MAP'}</small>
+            <strong>{mapData?.name || (isIndependentTeachingSpace ? 'NO SPACE LOADED' : 'NO MAP LOADED')}</strong>
           </div>
           {mapData?.pointCount > 0 && (
             <em>
@@ -3553,11 +3913,33 @@ export default function App() {
         </div>
 
         <div className="topbar-actions">
+          <button
+            type="button"
+            className="action-button subtle home-page-action"
+            aria-label="返回主页面"
+            title="返回模式与工程入口；当前工作现场不会被清空"
+            onClick={() => navigateAppPage(APP_PAGE_HOME)}
+            disabled={loadState.loading}
+          >
+            <House size={15} /> <span>主页面</span>
+          </button>
           <button type="button" className="action-button subtle topbar-file-action" aria-label="示例地图" title="加载内置示例地图" onClick={() => loadExample()}>
             <Box size={15} /> <span>示例地图</span>
           </button>
           <button type="button" className="action-button topbar-file-action" aria-label="加载地图" title="选择本地 PLY 地图" onClick={() => mapInputRef.current?.click()}>
             <Upload size={15} /> <span>加载地图</span>
+          </button>
+          <button
+            type="button"
+            className={`action-button topbar-file-action independent-teaching-action ${isIndependentTeachingSpace ? 'is-active' : ''}`}
+            aria-label="创建独立示教空间"
+            aria-pressed={isIndependentTeachingSpace}
+            data-independent-teaching-action="true"
+            title="选择 PLY 点云，以点云 (0, 0, 0) 创建独立的 virtual_origin 示教空间"
+            onClick={() => independentCloudInputRef.current?.click()}
+          >
+            <ScanLine size={15} />
+            <span>{isIndependentTeachingSpace ? '独立空间' : '独立示教'}</span>
           </button>
           <button
             type="button"
@@ -3617,19 +3999,24 @@ export default function App() {
         data-inspector-collapsed={inspectorCollapsed ? 'true' : 'false'}
       >
         <div
-          className={`visual-workspace ${collapsedPanel ? `is-${collapsedPanel}-collapsed` : ''}`}
-          data-collapsed-panel={collapsedPanel || 'none'}
+          className={`visual-workspace ${isIndependentTeachingSpace ? 'is-spatial-only' : ''} ${activeCollapsedPanel ? `is-${activeCollapsedPanel}-collapsed` : ''}`}
+          data-workspace-layout={isIndependentTeachingSpace ? 'spatial-only' : 'spatial-and-map'}
+          data-collapsed-panel={activeCollapsedPanel || 'none'}
         >
           <section
-            className={`viewport-panel panel-3d ${collapsedPanel === '3d' ? 'is-collapsed' : ''}`}
-            data-collapsed={collapsedPanel === '3d' ? 'true' : 'false'}
+            className={`viewport-panel panel-3d ${activeCollapsedPanel === '3d' ? 'is-collapsed' : ''}`}
+            data-collapsed={activeCollapsedPanel === '3d' ? 'true' : 'false'}
           >
             <div className="panel-heading">
               <div className="panel-heading__title">
                 <span className="panel-index">01</span>
                 <div>
-                  <small>SPATIAL SOURCE</small>
-                  <strong>{mapData?.faceCount > 0 ? '三维点云 / 网格' : '三维点云'}</strong>
+                  <small>{isIndependentTeachingSpace ? 'VIRTUAL_ORIGIN / LOCAL SPACE' : 'SPATIAL SOURCE'}</small>
+                  <strong>
+                    {isIndependentTeachingSpace
+                      ? mapData?.faceCount > 0 ? '独立示教空间 / 网格' : '独立示教空间'
+                      : mapData?.faceCount > 0 ? '三维点云 / 网格' : '三维点云'}
+                  </strong>
                 </div>
               </div>
               <div className="panel-stats">
@@ -3649,22 +4036,24 @@ export default function App() {
                 <FileSearch size={13} />
                 <span>地图详情</span>
               </button>
-              <button
-                type="button"
-                className="panel-collapse-button"
-                aria-label={collapsedPanel === '3d' ? '展开3D窗口' : '折叠3D窗口'}
-                aria-expanded={collapsedPanel !== '3d'}
-                aria-controls="panel-body-3d"
-                onClick={() => toggleCollapsedPanel('3d')}
-              >
-                {collapsedPanel === '3d' ? <ChevronDown size={13} /> : <ChevronUp size={13} />}
-                <span>{collapsedPanel === '3d' ? '展开' : '折叠'}</span>
-              </button>
+              {!isIndependentTeachingSpace && (
+                <button
+                  type="button"
+                  className="panel-collapse-button"
+                  aria-label={activeCollapsedPanel === '3d' ? '展开3D窗口' : '折叠3D窗口'}
+                  aria-expanded={activeCollapsedPanel !== '3d'}
+                  aria-controls="panel-body-3d"
+                  onClick={() => toggleCollapsedPanel('3d')}
+                >
+                  {activeCollapsedPanel === '3d' ? <ChevronDown size={13} /> : <ChevronUp size={13} />}
+                  <span>{activeCollapsedPanel === '3d' ? '展开' : '折叠'}</span>
+                </button>
+              )}
             </div>
             <div
               id="panel-body-3d"
               className="panel-body"
-              aria-hidden={collapsedPanel === '3d'}
+              aria-hidden={activeCollapsedPanel === '3d'}
             >
               <PointCloudViewer
                 mapData={mapData}
@@ -3694,6 +4083,8 @@ export default function App() {
                 robotHeightLocked={robotHeightLocked}
                 robotTrajectoryActive={['playing', 'paused'].includes(teachingPlayback.status)}
                 robotParkingGhost={robotParkingGhost}
+                teachingSpaceMode={teachingSpaceMode}
+                teachingTasks={teachingTasks}
                 spaceMouseInputRef={spaceMouseInputRef}
                 viewportCanvasRef={main3DCanvasRef}
                 cameraTeachingCommand={cameraTeachingCommand}
@@ -3701,6 +4092,7 @@ export default function App() {
                 onRobotLoadState={handleRobotLoadState}
                 onRobotPoseChange={handleRobotPoseChange}
                 onRobotJointValuesChange={handleRobotJointValuesChange}
+                onResetRobotJointPose={zeroRobotJoints}
                 onRobotControlChange={handleRobotControlChange}
                 onRobotHeightLockChange={handleRobotHeightLockChange}
                 onZividCameraPoseChange={handleZividCameraPoseChange}
@@ -3732,94 +4124,100 @@ export default function App() {
             </div>
           </section>
 
-          <section
-            className={`viewport-panel panel-2d ${collapsedPanel === '2d' ? 'is-collapsed' : ''}`}
-            data-collapsed={collapsedPanel === '2d' ? 'true' : 'false'}
-          >
-            <div className="panel-heading map-heading">
-              <div className="panel-heading__title">
-                <span className="panel-index">02</span>
-                <div><small>LIVE VECTOR SLICE</small><strong>二维路径图</strong></div>
-              </div>
-              <div className="mode-switcher" role="toolbar" aria-label="二维地图工具">
-                {modeOptions.map((option) => {
-                  const Icon = option.icon;
-                  const robotWaypointReady = option.id === 'add'
-                    && Boolean(selectedRobot)
-                    && robotLoadState.status === 'loaded';
-                  return (
-                    <button
-                      type="button"
-                      key={option.id}
-                      className={mode === option.id ? 'is-active' : ''}
-                      aria-label={option.label}
-                      aria-pressed={mode === option.id}
-                      data-robot-waypoint-ready={robotWaypointReady ? 'true' : undefined}
-                      title={option.id === 'add'
-                        ? robotWaypointReady
-                          ? '记录机器人当前 MAP 位姿，并保持二维地图点选添加模式'
-                          : '进入二维地图点选添加模式；加载机器人后可直接记录当前位置'
-                        : undefined}
-                      onClick={() => {
-                        if (option.id === 'add') addWaypointFromToolbar();
-                        else setActiveMode(option.id);
-                      }}
-                      disabled={!mapData?.bounds}
-                    >
-                      <Icon size={14} /> {option.label}
-                    </button>
-                  );
-                })}
-              </div>
-              <div className="slice-badge">
-                <Layers2 size={13} />
-                <span>Z {heightRange[0].toFixed(2)} — {heightRange[1].toFixed(2)} m</span>
-                <strong>{projectionStats.selectedCount.toLocaleString('zh-CN')}</strong>
-              </div>
-              <button
-                type="button"
-                className="panel-collapse-button"
-                aria-label={collapsedPanel === '2d' ? '展开2D窗口' : '折叠2D窗口'}
-                aria-expanded={collapsedPanel !== '2d'}
-                aria-controls="panel-body-2d"
-                onClick={() => toggleCollapsedPanel('2d')}
-              >
-                {collapsedPanel === '2d' ? <ChevronUp size={13} /> : <ChevronDown size={13} />}
-                <span>{collapsedPanel === '2d' ? '展开' : '折叠'}</span>
-              </button>
-            </div>
-            <div
-              id="panel-body-2d"
-              className="panel-body"
-              aria-hidden={collapsedPanel === '2d'}
+          {!isIndependentTeachingSpace && (
+            <section
+              className={`viewport-panel panel-2d ${collapsedPanel === '2d' ? 'is-collapsed' : ''}`}
+              data-collapsed={collapsedPanel === '2d' ? 'true' : 'false'}
             >
-              <Map2DView
-                mapData={mapData}
-                initialView={restoredView2d}
-                heightRange={heightRange}
-                waypoints={waypoints}
-                edges={edges}
-                mode={mode}
-                connectionSourceId={connectionSourceId}
-                selectedWaypointId={selectedWaypointId}
-                selectedEdgeId={selectedEdgeId}
-                colorMode={pointColorMode}
-                onAddWaypoint={addWaypoint}
-                onSelectWaypoint={selectWaypoint}
-                onSelectEdge={selectEdge}
-                onConnectTarget={connectTarget}
-                onClearSelection={clearSelection}
-                onDeleteSelection={deleteMapSelection}
-                onProjectionStats={handleProjectionStats}
-                onViewChange={handleViewChange}
-                focusRequest={synchronizedFocus}
-              />
-            </div>
-          </section>
+              <div className="panel-heading map-heading">
+                <div className="panel-heading__title">
+                  <span className="panel-index">02</span>
+                  <div>
+                    <small>LIVE VECTOR SLICE</small>
+                    <strong>二维路径图</strong>
+                  </div>
+                </div>
+                <div className="mode-switcher" role="toolbar" aria-label="二维地图工具">
+                  {modeOptions.map((option) => {
+                    const Icon = option.icon;
+                    const robotWaypointReady = option.id === 'add'
+                      && Boolean(selectedRobot)
+                      && robotLoadState.status === 'loaded';
+                    return (
+                      <button
+                        type="button"
+                        key={option.id}
+                        className={mode === option.id ? 'is-active' : ''}
+                        aria-label={option.label}
+                        aria-pressed={mode === option.id}
+                        data-robot-waypoint-ready={robotWaypointReady ? 'true' : undefined}
+                        title={option.id === 'add'
+                          ? robotWaypointReady
+                            ? `记录机器人当前 ${coordinateFrameLabel} 位姿，并保持二维地图点选添加模式`
+                            : '进入二维地图点选添加模式；加载机器人后可直接记录当前位置'
+                          : undefined}
+                        onClick={() => {
+                          if (option.id === 'add') addWaypointFromToolbar();
+                          else setActiveMode(option.id);
+                        }}
+                        disabled={!mapData?.bounds}
+                      >
+                        <Icon size={14} /> {option.label}
+                      </button>
+                    );
+                  })}
+                </div>
+                <div className="slice-badge">
+                  <Layers2 size={13} />
+                  <span>Z {heightRange[0].toFixed(2)} — {heightRange[1].toFixed(2)} m</span>
+                  <strong>{projectionStats.selectedCount.toLocaleString('zh-CN')}</strong>
+                </div>
+                <button
+                  type="button"
+                  className="panel-collapse-button"
+                  aria-label={collapsedPanel === '2d' ? '展开2D窗口' : '折叠2D窗口'}
+                  aria-expanded={collapsedPanel !== '2d'}
+                  aria-controls="panel-body-2d"
+                  onClick={() => toggleCollapsedPanel('2d')}
+                >
+                  {collapsedPanel === '2d' ? <ChevronUp size={13} /> : <ChevronDown size={13} />}
+                  <span>{collapsedPanel === '2d' ? '展开' : '折叠'}</span>
+                </button>
+              </div>
+              <div
+                id="panel-body-2d"
+                className="panel-body"
+                aria-hidden={collapsedPanel === '2d'}
+              >
+                <Map2DView
+                  mapData={mapData}
+                  initialView={restoredView2d}
+                  heightRange={heightRange}
+                  waypoints={waypoints}
+                  edges={edges}
+                  mode={mode}
+                  connectionSourceId={connectionSourceId}
+                  selectedWaypointId={selectedWaypointId}
+                  selectedEdgeId={selectedEdgeId}
+                  colorMode={pointColorMode}
+                  onAddWaypoint={addWaypoint}
+                  onSelectWaypoint={selectWaypoint}
+                  onSelectEdge={selectEdge}
+                  onConnectTarget={connectTarget}
+                  onClearSelection={clearSelection}
+                  onDeleteSelection={deleteMapSelection}
+                  onProjectionStats={handleProjectionStats}
+                  onViewChange={handleViewChange}
+                  focusRequest={synchronizedFocus}
+                />
+              </div>
+            </section>
+          )}
         </div>
 
         <Inspector
           mapData={mapData}
+          teachingSpaceMode={teachingSpaceMode}
           heightRange={heightRange}
           waypoints={waypoints}
           edges={edges}
@@ -3876,7 +4274,7 @@ export default function App() {
       </main>
 
       <footer className="statusbar">
-        <span><CircleDot size={10} /> FRAME / XY + Z-UP</span>
+        <span><CircleDot size={10} /> FRAME / {coordinateFrame.toUpperCase()} · XY + Z-UP</span>
         <span><Zap size={10} /> GPU POINT RENDER</span>
         <span
           className={`session-guard is-${sessionState.status}`}
@@ -3957,10 +4355,32 @@ export default function App() {
         />
       )}
     </div>
+    {appPage === APP_PAGE_HOME && (
+      <>
+        <StartPage
+          initialMode={teachingSpaceMode}
+          workspaces={workspaceCatalog}
+          sessionState={sessionState}
+          projectDirectoryState={projectDirectoryState}
+          busy={loadState.loading}
+          onNewProject={beginNewProject}
+          onLoadProject={openProjectDirectory}
+          onContinue={(modeId) => continueWorkspace(modeId, APP_PAGE_WORKBENCH)}
+          onOpenTeachingData={(modeId) => continueWorkspace(modeId, APP_PAGE_TEACHING_DATA)}
+        />
+        {toast && (
+          <div className={`toast-message ${toast.kind}`} role="status">
+            <span>{toast.kind === 'error' ? <X size={14} /> : <Check size={14} />}</span>
+            {toast.message}
+          </div>
+        )}
+      </>
+    )}
     {appPage === APP_PAGE_TEACHING_DATA && (
       <div className="app-shell is-teaching-data-page" data-app-page="teaching-data">
         <TeachingDataPage
           tasks={teachingTasks}
+          teachingSpaceMode={teachingSpaceMode}
           activeTaskId={activeTeachingTaskId}
           activeParkingPointId={activeTeachingParkingPointId}
           mapData={mapData}
@@ -3975,6 +4395,7 @@ export default function App() {
           sessionState={sessionState}
           recovery={lastProjectRecovery}
           onBack={() => navigateAppPage(APP_PAGE_WORKBENCH)}
+          onHome={() => navigateAppPage(APP_PAGE_HOME)}
           onOpenLastProject={openLastProject}
           onSelectTask={selectTeachingTask}
           onRenameTask={renameTeachingTask}

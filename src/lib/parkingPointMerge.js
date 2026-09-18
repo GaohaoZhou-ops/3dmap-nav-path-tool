@@ -35,7 +35,7 @@ const circularMeanDegrees = (values, fallback = 0) => {
 };
 
 const cloneMapPose = (value) => ({
-  frameId: 'map',
+  frameId: String(value?.frameId || 'map'),
   position: {
     x: finiteNumber(value?.position?.x),
     y: finiteNumber(value?.position?.y),
@@ -59,7 +59,7 @@ export const averageParkingPointPose = (parkingPoints) => {
   }), { x: 0, y: 0, z: 0 });
   const fallback = members[0].mapPose?.rpy || {};
   return {
-    frameId: 'map',
+    frameId: String(members[0]?.mapPose?.frameId || 'map'),
     position: {
       x: positions.x / divisor,
       y: positions.y / divisor,
@@ -232,4 +232,3 @@ export const clusterNearbyParkingPoints = (
     isolatedParkingPointIds,
   };
 };
-

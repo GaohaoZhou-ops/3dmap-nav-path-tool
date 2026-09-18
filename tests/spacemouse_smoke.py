@@ -208,7 +208,7 @@ def run():
       page.set_default_timeout(30_000)
       page.on("pageerror", lambda error: errors.append(str(error)))
 
-      page.goto(BASE_URL, wait_until="networkidle")
+      page.goto(f"{BASE_URL.rstrip('/')}/workbench", wait_until="networkidle")
       page.locator('[data-session-state="ready"]').wait_for()
       control = page.locator(".spacemouse-control")
       trigger = page.get_by_role("button", name="检测3D鼠标")
@@ -1038,7 +1038,7 @@ def run():
       """)
       migration_page = migration_context.new_page()
       migration_page.on("pageerror", lambda error: migration_errors.append(str(error)))
-      migration_page.goto(BASE_URL, wait_until="networkidle")
+      migration_page.goto(f"{BASE_URL.rstrip('/')}/workbench", wait_until="networkidle")
       migration_page.locator('[data-session-state="ready"]').wait_for()
       migrated_profile = json.loads(migration_page.evaluate(
           "localStorage.getItem('atlas-route-studio:spacemouse-wireless-bt-profile-v4')"

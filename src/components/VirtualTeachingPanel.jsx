@@ -105,6 +105,7 @@ export default function VirtualTeachingPanel({
   activeParkingPointId,
   previewParkingPointId = null,
   mapData,
+  teachingSpaceMode = 'map',
   robot,
   robotLoadState,
   robotPose,
@@ -128,6 +129,9 @@ export default function VirtualTeachingPanel({
   onOpenCapturePage,
 }) {
   const isDataView = view === 'data';
+  const isIndependentTeachingSpace = teachingSpaceMode === 'independent';
+  const coordinateFrameLabel = isIndependentTeachingSpace ? 'VIRTUAL_ORIGIN' : 'MAP';
+  const environmentLabel = isIndependentTeachingSpace ? '独立示教空间' : '地图';
   const HeaderIcon = isDataView ? Database : Crosshair;
   const activeTask = tasks.find((task) => task.id === activeTaskId) || tasks[0] || null;
   const parkingPoints = activeTask?.parkingPoints || [];
@@ -233,7 +237,9 @@ export default function VirtualTeachingPanel({
   const sameMap = activeTask?.map?.sourceHash && mapData?.sourceHash
     ? activeTask.map.sourceHash === mapData.sourceHash
     : Boolean(activeTask?.map?.fileName && activeTask.map.fileName === mapData?.name);
-  const contextMatches = Boolean(activeTask && sameRobot && sameMap);
+  const sameCoordinateFrame = !activeTask?.coordinateFrame
+    || activeTask.coordinateFrame === (isIndependentTeachingSpace ? 'virtual_origin' : 'map');
+  const contextMatches = Boolean(activeTask && sameRobot && sameMap && sameCoordinateFrame);
   const robotReady = robotLoadState?.status === 'loaded' && Boolean(robot);
   const canCreate = Boolean(mapData?.bounds && robotReady);
   const canCapture = Boolean(activeTask && activeParkingPoint && robotReady && contextMatches);
@@ -388,7 +394,9 @@ export default function VirtualTeachingPanel({
             className="teaching-new-task"
             onClick={openTaskCreateDialog}
             disabled={!canCreate}
-            title={canCreate ? '以当前地图和机器人新建示教任务' : '请先加载地图与机器人'}
+            title={canCreate
+              ? `以当前${environmentLabel}和机器人新建示教任务`
+              : `请先加载${environmentLabel}与机器人`}
           >
             <CirclePlus size={12} /> 新建示教任务
           </button>
@@ -439,7 +447,7 @@ export default function VirtualTeachingPanel({
               onClick={onCreateParkingPoint}
               disabled={!canCreateParkingPoint || captureInProgress}
               aria-label="新增停车点"
-              title="以机器人当前地图位姿新增停车点"
+              title={`以机器人当前 ${coordinateFrameLabel} 位姿新增停车点`}
             >
               <CirclePlus size={11} /> 新增停车点
             </button>
@@ -592,7 +600,7 @@ export default function VirtualTeachingPanel({
           {isDataView && <div className={`teaching-context ${contextMatches ? 'is-matched' : 'is-mismatch'}`}>
             <div title={activeTask.map.fileName}>
               <MapPin size={11} />
-              <span>MAP</span>
+              <span>{coordinateFrameLabel}</span>
               <strong>{activeTask.map.fileName || '未绑定'}</strong>
             </div>
             <div title={activeTask.robot.name}>
@@ -654,7 +662,7 @@ export default function VirtualTeachingPanel({
                       }}
                     />
                   </label>
-                  <div className="teaching-parking-detail__pose" aria-label="停车点地图位姿">
+                  <div className="teaching-parking-detail__pose" aria-label={`停车点 ${coordinateFrameLabel} 位姿`}>
                     <span>X <b>{formatValue(activeParkingPoint.mapPose.position.x, 2)}</b> m</span>
                     <span>Y <b>{formatValue(activeParkingPoint.mapPose.position.y, 2)}</b> m</span>
                     <span>Z <b>{formatValue(activeParkingPoint.mapPose.position.z, 2)}</b> m</span>
@@ -697,8 +705,8 @@ export default function VirtualTeachingPanel({
             aria-busy={captureInProgress}
             aria-label="记录当前机械臂姿态"
             title={canCapture
-              ? `保存到 ${activeParkingPoint.name}：地图位姿、全部关节与左右 Zivid RGB/XYZ 快照`
-              : activeParkingPoint ? '当前地图或机器人与任务不匹配' : '请先新增或选择停车点'}
+              ? `保存到 ${activeParkingPoint.name}：${coordinateFrameLabel} 位姿、全部关节与左右 Zivid RGB/XYZ 快照`
+              : activeParkingPoint ? `当前${environmentLabel}、坐标系或机器人与任务不匹配` : '请先新增或选择停车点'}
           >
             <span><Save size={15} /></span>
             <div>
@@ -706,7 +714,7 @@ export default function VirtualTeachingPanel({
               <small>
                 {captureInProgress
                   ? 'CAM-L + CAM-R · RGB + XYZ CLOUD'
-                  : `MAP 6DOF + ${currentJointCount} JOINTS + DUAL VISION`}
+                  : `${coordinateFrameLabel} 6DOF + ${currentJointCount} JOINTS + DUAL VISION`}
               </small>
             </div>
             <kbd>A{String(activePoses.length + 1).padStart(2, '0')}</kbd>
@@ -998,7 +1006,7 @@ export default function VirtualTeachingPanel({
             </div>
 
             <p className="teaching-parking-drift-note">
-              为避免跨度过大的机械臂姿态归入同一停车点，建议以当前底盘 MAP 位姿新建停车点；本次姿态会直接保存为 A01。
+              为避免跨度过大的机械臂姿态归入同一停车点，建议以当前底盘 {coordinateFrameLabel} 位姿新建停车点；本次姿态会直接保存为 A01。
             </p>
           </div>
 
@@ -1046,7 +1054,7 @@ export default function VirtualTeachingPanel({
             <div>
               <small>NEW TEACHING TASK</small>
               <h2 id="teaching-task-create-title">新建示教任务</h2>
-              <p>任务将绑定当前地图与机器人，创建后可随时继续补充停车点。</p>
+              <p>任务将绑定当前{environmentLabel}、坐标系与机器人，创建后可随时继续补充停车点。</p>
             </div>
             <button
               type="button"
@@ -1083,7 +1091,7 @@ export default function VirtualTeachingPanel({
               </span>
               <span className="teaching-task-parking-option__copy">
                 <strong>添加当前位置为停车点</strong>
-                <small>记录机器人当前 MAP XYZ / RPY，建立停车点 P01</small>
+                <small>记录机器人当前 {coordinateFrameLabel} XYZ / RPY，建立停车点 P01</small>
               </span>
               <span className="teaching-task-parking-option__state" aria-hidden="true">
                 {includeCurrentParkingPoint ? '已选择' : '可选'}
@@ -1091,7 +1099,7 @@ export default function VirtualTeachingPanel({
             </button>
 
             <div className="teaching-task-current-pose" aria-label="机器人当前位置">
-              <span><Navigation size={11} /> CURRENT MAP POSE</span>
+              <span><Navigation size={11} /> CURRENT {coordinateFrameLabel} POSE</span>
               <dl>
                 <div><dt>X</dt><dd>{formatValue(robotPose?.position?.x, 2)} m</dd></div>
                 <div><dt>Y</dt><dd>{formatValue(robotPose?.position?.y, 2)} m</dd></div>

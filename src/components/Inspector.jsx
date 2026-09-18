@@ -66,6 +66,7 @@ const statusMeta = {
 
 export default function Inspector({
   mapData,
+  teachingSpaceMode = 'map',
   heightRange,
   waypoints,
   edges,
@@ -127,6 +128,8 @@ export default function Inspector({
   const selectedWaypoint = waypoints.find((point) => point.id === selectedWaypointId);
   const selectedEdge = edges.find((edge) => edge.id === selectedEdgeId);
   const meshQualityPlan = resolveMeshRenderQuality(meshRenderQuality, mapData?.faceCount);
+  const isIndependentTeachingSpace = teachingSpaceMode === 'independent';
+  const coordinateFrameLabel = isIndependentTeachingSpace ? 'VIRTUAL_ORIGIN' : 'MAP';
   const pointById = useMemo(() => new Map(waypoints.map((point) => [point.id, point])), [waypoints]);
   const activeTeachingTask = teachingTasks.find((task) => task.id === activeTeachingTaskId)
     || teachingTasks[0]
@@ -220,7 +223,9 @@ export default function Inspector({
       index: '02',
       label: '工程配置',
       compactLabel: '工程配置',
-      summary: mapData?.bounds ? 'MAP · ON' : 'NO MAP',
+      summary: mapData?.bounds
+        ? isIndependentTeachingSpace ? 'LOCAL · ON' : 'MAP · ON'
+        : 'NO SPACE',
       icon: Compass,
     },
     {
@@ -428,7 +433,7 @@ export default function Inspector({
             <div className="capture-note">
               <CrosshairMark />
               {selectedWaypoint.source === 'robot-current-pose' ? (
-                <span>XYZ 与 RPY 取自机器人当前 MAP 位姿；导出时同时写入 <code>pose</code>、<code>xzy</code> 与 <code>rpy</code>。</span>
+                <span>XYZ 与 RPY 取自机器人当前 {coordinateFrameLabel} 位姿；导出时同时写入 <code>pose</code>、<code>xzy</code> 与 <code>rpy</code>。</span>
               ) : (
                 <span>Z 值取自点击位置附近的原始点云；导出时同时写入 <code>pose</code>、<code>xzy</code> 与 <code>rpy</code>。</span>
               )}
@@ -659,7 +664,11 @@ export default function Inspector({
             <section className="project-overview">
               <div className="section-title"><Compass size={14} /><span>工程配置</span></div>
               <dl className="config-list">
-                <div><dt>地图文件</dt><dd title={mapData?.name}>{mapData?.name || '尚未加载'}</dd></div>
+                <div>
+                  <dt>示教环境</dt>
+                  <dd>{isIndependentTeachingSpace ? '独立示教空间' : '完整地图'}</dd>
+                </div>
+                <div><dt>{isIndependentTeachingSpace ? '空间点云' : '地图文件'}</dt><dd title={mapData?.name}>{mapData?.name || '尚未加载'}</dd></div>
                 <div><dt>点云数量</dt><dd>{mapData?.pointCount ? mapData.pointCount.toLocaleString('zh-CN') : '—'}</dd></div>
                 <div><dt>网格三角面</dt><dd>{mapData?.faceCount ? mapData.faceCount.toLocaleString('zh-CN') : '—'}</dd></div>
                 <div>
@@ -703,6 +712,7 @@ export default function Inspector({
                 {robotLoadState?.status === 'loaded' && robotLoadState.zividCount > 0 && (
                   <div><dt>末端相机</dt><dd>{robotLoadState.zividCount} × Zivid · {robotLoadState.opticalFrameCount || 0} optical frames</dd></div>
                 )}
+                <div><dt>坐标系</dt><dd>{coordinateFrameLabel}</dd></div>
                 <div><dt>投影平面</dt><dd>XY / Z 轴切片</dd></div>
                 <div><dt>截面下限</dt><dd>{heightRange[0].toFixed(2)} m</dd></div>
                 <div><dt>截面上限</dt><dd>{heightRange[1].toFixed(2)} m</dd></div>
@@ -720,6 +730,7 @@ export default function Inspector({
             aria-labelledby="inspector-tab-teaching"
           >
             <VirtualTeachingPanel
+              teachingSpaceMode={teachingSpaceMode}
               tasks={teachingTasks}
               activeTaskId={activeTeachingTaskId}
               activeParkingPointId={activeTeachingParkingPointId}

@@ -32,7 +32,7 @@ def run():
             else None,
         )
 
-        page.goto(BASE_URL, wait_until="networkidle")
+        page.goto(f"{BASE_URL.rstrip('/')}/workbench", wait_until="networkidle")
         page.locator('[data-session-state="ready"]').wait_for()
         details_button = page.get_by_role("button", name="查看地图详细信息")
         assert details_button.is_disabled()

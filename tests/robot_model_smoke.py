@@ -55,7 +55,7 @@ def run():
             else None,
         )
 
-        page.goto(BASE_URL, wait_until="networkidle")
+        page.goto(f"{BASE_URL.rstrip('/')}/workbench", wait_until="networkidle")
         page.locator('[data-session-state="ready"]').wait_for()
         page.locator('input[type="file"][accept=".ply"]').set_input_files(
             str(ROOT / "tests/fixtures/rotation-map.ply")
@@ -336,7 +336,7 @@ def run():
               });
               const transaction = database.transaction('workspace-session', 'readonly');
               const record = await new Promise((resolve, reject) => {
-                const request = transaction.objectStore('workspace-session').get('config');
+                const request = transaction.objectStore('workspace-session').get('workspace-config:map');
                 request.onsuccess = () => resolve(request.result);
                 request.onerror = () => reject(request.error);
               });

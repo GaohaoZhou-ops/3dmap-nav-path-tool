@@ -10,11 +10,14 @@ import {
   Trash2,
   Unlock,
 } from 'lucide-react';
-import { normalizeRobotJointLocks } from '../lib/robotJointLocks.js';
+import {
+  isRobotBodyJoint,
+  normalizeRobotJointLocks,
+} from '../lib/robotJointLocks.js';
 
 const GROUPS = [
   { id: 'chassis', label: '底盘轮组', test: (name) => /wheel/i.test(name) },
-  { id: 'body', label: '躯干与升降', test: (name) => /(ankle|knee|waist)/i.test(name) },
+  { id: 'body', label: '躯干与升降', test: isRobotBodyJoint },
   { id: 'head', label: '头部', test: (name) => /head/i.test(name) },
   { id: 'left', label: '左机械臂', test: (name) => /^left[_-]/i.test(name) },
   { id: 'right', label: '右机械臂', test: (name) => /^right[_-]/i.test(name) },

@@ -157,6 +157,11 @@ export default function TeachingArchiveTree({
     (pose) => pose.id === selection?.poseId,
   ) || null;
   const selectedEntity = selectedPoint || selectedParkingPoint || selectedTask;
+  const selectedCoordinateFrame = selectedTask?.coordinateFrame
+    || mapData?.coordinateFrame
+    || 'map';
+  const isIndependentTeachingSpace = selectedCoordinateFrame === 'virtual_origin';
+  const coordinateFrameLabel = isIndependentTeachingSpace ? 'VIRTUAL_ORIGIN' : 'MAP';
   const totalParkingPoints = tasks.reduce(
     (total, task) => total + (task.parkingPoints?.length || 0),
     0,
@@ -168,7 +173,9 @@ export default function TeachingArchiveTree({
   const sameMap = selectedTask?.map?.sourceHash && mapData?.sourceHash
     ? selectedTask.map.sourceHash === mapData.sourceHash
     : Boolean(selectedTask?.map?.fileName && selectedTask.map.fileName === mapData?.name);
-  const contextMatches = Boolean(selectedTask && sameRobot && sameMap);
+  const sameCoordinateFrame = !mapData?.coordinateFrame
+    || selectedCoordinateFrame === mapData.coordinateFrame;
+  const contextMatches = Boolean(selectedTask && sameRobot && sameMap && sameCoordinateFrame);
   const robotReady = robotLoadState?.status === 'loaded' && Boolean(robot);
   const mergePlannerAvailable = Boolean(
     parkingMergePlannerReady
@@ -697,10 +704,10 @@ export default function TeachingArchiveTree({
                       <dl>
                         <div><dt>停车点</dt><dd>{selectedTask.parkingPoints?.length || 0}</dd></div>
                         <div><dt>机械臂姿态</dt><dd>{poseCountForTask(selectedTask)}</dd></div>
-                        <div><dt>地图</dt><dd>{selectedTask.map?.fileName || '未绑定'}</dd></div>
+                        <div><dt>{isIndependentTeachingSpace ? '空间点云' : '地图'}</dt><dd>{selectedTask.map?.fileName || '未绑定'}</dd></div>
                         <div><dt>机器人</dt><dd>{selectedTask.robot?.name || '未绑定'}</dd></div>
                         <div><dt>创建时间</dt><dd>{formatCapturedAt(selectedTask.createdAt)}</dd></div>
-                        <div><dt>坐标系</dt><dd>{selectedTask.coordinateFrame || 'map'}</dd></div>
+                        <div><dt>坐标系</dt><dd>{selectedCoordinateFrame}</dd></div>
                       </dl>
                       <div className="teaching-tree-task-actions">
                         <button
@@ -779,7 +786,7 @@ export default function TeachingArchiveTree({
 
                   {selection?.type === 'parking' && selectedParkingPoint && (
                     <div className="teaching-tree-parking-detail">
-                      <div className="teaching-tree-pose-values" aria-label="停车点地图位姿">
+                      <div className="teaching-tree-pose-values" aria-label={`停车点 ${coordinateFrameLabel} 位姿`}>
                         {[
                           ['X', selectedParkingPoint.mapPose.position.x, 'm'],
                           ['Y', selectedParkingPoint.mapPose.position.y, 'm'],
@@ -792,7 +799,7 @@ export default function TeachingArchiveTree({
                         ))}
                       </div>
                       <div className="teaching-tree-parking-toolbar">
-                        <p>{selectedParkingPoint.poses?.length || 0} 组机械臂姿态 · MAP 绝对位姿</p>
+                        <p>{selectedParkingPoint.poses?.length || 0} 组机械臂姿态 · {coordinateFrameLabel} 绝对位姿</p>
                         <div className="teaching-tree-actions">
                           <button
                             type="button"

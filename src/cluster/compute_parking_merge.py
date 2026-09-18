@@ -696,7 +696,7 @@ def circular_mean(values: Iterable[float]) -> float:
 
 def average_pose(members: List[dict]) -> dict:
     return {
-        "frameId": "map",
+        "frameId": str(members[0].get("mapPose", {}).get("frameId") or "map"),
         "position": {axis: sum(finite(item["mapPose"]["position"].get(axis)) for item in members) / len(members) for axis in ("x", "y", "z")},
         "rpy": {axis: circular_mean(item["mapPose"]["rpy"].get(axis) for item in members) for axis in ("roll", "pitch", "yaw")},
     }

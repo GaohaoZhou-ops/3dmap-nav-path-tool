@@ -54,7 +54,7 @@ def run():
             else None,
         )
 
-        page.goto(BASE_URL, wait_until="networkidle")
+        page.goto(f"{BASE_URL.rstrip('/')}/workbench", wait_until="networkidle")
         page.locator('[data-session-state="ready"]').wait_for()
         page.get_by_role("tab", name="虚拟示教与相机").click()
         assert page.get_by_label("全关节控制浮动窗口", exact=True).count() == 0

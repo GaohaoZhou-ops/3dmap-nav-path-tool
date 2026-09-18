@@ -18,7 +18,7 @@ def read_map_cache(page):
           });
           return await new Promise((resolve, reject) => {
             const transaction = database.transaction('workspace-session', 'readonly');
-            const request = transaction.objectStore('workspace-session').get('map');
+            const request = transaction.objectStore('workspace-session').get('workspace-map:map');
             request.onsuccess = () => {
               const record = request.result;
               resolve({
@@ -76,7 +76,7 @@ def run():
             else None,
         )
 
-        page.goto(BASE_URL, wait_until="networkidle")
+        page.goto(f"{BASE_URL.rstrip('/')}/workbench", wait_until="networkidle")
         page.locator('[data-session-state="ready"]').wait_for()
         page.locator('input[type="file"][accept=".ply"]').set_input_files(
             str(ROOT / "tests/fixtures/hybrid-map.ply")

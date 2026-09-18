@@ -44,11 +44,20 @@ def assert_camera_capture(capture):
 def run():
     page_errors = []
     console_errors = []
+    failed_responses = []
     with sync_playwright() as playwright:
         browser = playwright.chromium.launch(headless=True)
         page = browser.new_page(viewport={"width": 1500, "height": 940})
         page.set_default_timeout(180_000)
         page.on("pageerror", lambda error: page_errors.append(str(error)))
+        page.on(
+            "response",
+            lambda response: failed_responses.append(
+                f"{response.status} {response.url}"
+            )
+            if response.status >= 400
+            else None,
+        )
         page.on(
             "console",
             lambda message: console_errors.append(message.text)
@@ -56,7 +65,7 @@ def run():
             else None,
         )
 
-        page.goto(BASE_URL, wait_until="networkidle")
+        page.goto(f"{BASE_URL.rstrip('/')}/workbench", wait_until="networkidle")
         page.locator('[data-session-state="ready"]').wait_for()
         page.locator('input[type="file"][accept=".ply"]').set_input_files(
             str(ROOT / "tests/fixtures/hybrid-camera-surface-map.ply")
@@ -170,6 +179,8 @@ def run():
             str(archive["path"])
         )
         page.get_by_text("ZIP 工程包已加载", exact=False).wait_for()
+        page.get_by_role("button", name="打开示教数据管理页").click()
+        page.locator('[data-app-page="teaching-data"]').wait_for()
         page.get_by_role("button", name="查看机械臂姿态 A01").click()
         imported_vision = page.get_by_label("机械臂姿态双目视觉快照", exact=True)
         imported_vision.wait_for()
@@ -190,7 +201,7 @@ def run():
               });
               const transaction = database.transaction('workspace-session', 'readonly');
               const record = await new Promise((resolve, reject) => {
-                const request = transaction.objectStore('workspace-session').get('config');
+                const request = transaction.objectStore('workspace-session').get('workspace-config:map');
                 request.onsuccess = () => resolve(request.result);
                 request.onerror = () => reject(request.error);
               });
@@ -220,6 +231,7 @@ def run():
         print("capture_bytes=", capture["storageByteLength"])
         print("page_errors=", page_errors)
         print("console_errors=", console_errors)
+        print("failed_responses=", failed_responses)
         assert not page_errors
         assert not console_errors
         browser.close()

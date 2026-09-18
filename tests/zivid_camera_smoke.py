@@ -20,7 +20,7 @@ def run():
         page.set_default_timeout(180_000)
         page.on("pageerror", lambda error: errors.append(str(error)))
 
-        page.goto(BASE_URL, wait_until="networkidle")
+        page.goto(f"{BASE_URL.rstrip('/')}/workbench", wait_until="networkidle")
         page.locator('[data-session-state="ready"]').wait_for()
         assert page.get_by_label("Zivid 2 M70 相机视图").count() == 0
 

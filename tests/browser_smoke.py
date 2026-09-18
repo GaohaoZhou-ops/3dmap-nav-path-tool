@@ -31,7 +31,7 @@ def run():
         page.on("console", lambda msg: messages.append(f"console:{msg.type}:{msg.text}"))
         page.on("pageerror", lambda exc: messages.append(f"pageerror:{exc}"))
 
-        page.goto(BASE_URL)
+        page.goto(f"{BASE_URL.rstrip('/')}/workbench")
         page.wait_for_load_state("networkidle")
         page.screenshot(path="/tmp/atlas-initial.png", full_page=True)
         assert page.locator(".viewport-panel").count() == 2

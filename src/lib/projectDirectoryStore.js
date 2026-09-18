@@ -2,6 +2,9 @@ const DB_NAME = 'atlas-project-directory-bindings';
 const DB_VERSION = 1;
 const STORE_NAME = 'bindings';
 const ACTIVE_KEY = 'active-project';
+const PROJECT_MODES = ['map', 'independent'];
+const normalizeMode = (value) => value === 'independent' ? 'independent' : 'map';
+const modeKey = (mode) => `project:${normalizeMode(mode)}`;
 
 const openDatabase = () => new Promise((resolve, reject) => {
   if (!globalThis.indexedDB) {
@@ -45,25 +48,47 @@ export const saveProjectDirectoryBinding = async ({
   name,
   projectFile,
   sessionId,
+  teachingSpaceMode = 'map',
 }) => {
   if (!handle || handle.kind !== 'directory') return false;
-  await runTransaction('readwrite', (store) => store.put({
-    key: ACTIVE_KEY,
+  const mode = normalizeMode(teachingSpaceMode);
+  const record = {
+    key: modeKey(mode),
     handle,
     name: String(name || handle.name || '工程目录'),
     projectFile: String(projectFile || 'config/project.json'),
     sessionId: String(sessionId || ''),
+    teachingSpaceMode: mode,
     savedAt: new Date().toISOString(),
-  }));
+  };
+  await runTransaction('readwrite', (store) => store.put(record));
+  await runTransaction('readwrite', (store) => store.put({ ...record, key: ACTIVE_KEY }));
   return true;
 };
 
-export const loadProjectDirectoryBinding = async () => {
-  const result = await runTransaction('readonly', (store) => store.get(ACTIVE_KEY));
+export const loadProjectDirectoryBinding = async (teachingSpaceMode = 'map') => {
+  const mode = normalizeMode(teachingSpaceMode);
+  let result = await runTransaction('readonly', (store) => store.get(modeKey(mode)));
+  if (!result) {
+    const legacy = await runTransaction('readonly', (store) => store.get(ACTIVE_KEY));
+    if (legacy && (!legacy.teachingSpaceMode || normalizeMode(legacy.teachingSpaceMode) === mode)) {
+      result = { ...legacy, key: modeKey(mode), teachingSpaceMode: mode };
+      await runTransaction('readwrite', (store) => store.put(result));
+    }
+  }
   return result?.handle?.kind === 'directory' ? result : null;
 };
 
-export const clearProjectDirectoryBinding = async () => {
-  await runTransaction('readwrite', (store) => store.delete(ACTIVE_KEY));
+export const clearProjectDirectoryBinding = async (teachingSpaceMode = null) => {
+  if (teachingSpaceMode === null) {
+    await Promise.all([
+      runTransaction('readwrite', (store) => store.delete(ACTIVE_KEY)),
+      ...PROJECT_MODES.map((mode) => runTransaction('readwrite', (store) => store.delete(modeKey(mode)))),
+    ]);
+    return;
+  }
+  await Promise.all([
+    runTransaction('readwrite', (store) => store.delete(ACTIVE_KEY)),
+    runTransaction('readwrite', (store) => store.delete(modeKey(teachingSpaceMode))),
+  ]);
 };
-

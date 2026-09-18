@@ -54,6 +54,7 @@ const formatTimestamp = (value) => {
 
 const sourceLabels = {
   'local-file': '本地文件选择器',
+  'independent-teaching-file': '独立示教点云',
   'example-map': 'maps 示例地图',
   'project-metadata': '路径工程元数据',
   'session-cache': '浏览器会话缓存',
@@ -86,6 +87,8 @@ export default function MapDetailsDialog({ mapData, onClose, returnFocusRef }) {
   const sourceKind = mapData?.sourceKind || (mapData?.metadataOnly ? 'project-metadata' : 'unknown');
   const geometryLabel = mapData?.faceCount > 0 ? '点云 + 三角网格' : '点云';
   const hash = mapData?.sourceHash || null;
+  const isIndependentTeachingSpace = mapData?.teachingSpaceMode === 'independent';
+  const coordinateFrame = isIndependentTeachingSpace ? 'VIRTUAL_ORIGIN' : 'MAP';
 
   useEffect(() => {
     const previouslyFocused = returnFocusRef?.current || document.activeElement;
@@ -113,6 +116,7 @@ export default function MapDetailsDialog({ mapData, onClose, returnFocusRef }) {
       data-map-face-count={finiteNumber(mapData.faceCount)}
       data-map-modified-at={mapData.fileModifiedAt || ''}
       data-map-source-kind={sourceKind}
+      data-teaching-space-mode={mapData.teachingSpaceMode || 'map'}
       onPointerDown={(event) => {
         if (event.target === event.currentTarget) onClose();
       }}
@@ -128,6 +132,7 @@ export default function MapDetailsDialog({ mapData, onClose, returnFocusRef }) {
           <div className="map-details-dialog__badges" aria-label="地图类型">
             <span>{extension}</span>
             <span>{geometryLabel}</span>
+            {isIndependentTeachingSpace && <span className="is-virtual">独立示教空间</span>}
             {mapData.metadataOnly && <span className="is-warning">仅元数据</span>}
           </div>
           <button
@@ -189,7 +194,7 @@ export default function MapDetailsDialog({ mapData, onClose, returnFocusRef }) {
           <section className="map-details-section map-details-bounds" aria-labelledby="map-details-bounds-title">
             <header>
               <Axis3D size={14} />
-              <div><small>MAP FRAME / METERS</small><strong id="map-details-bounds-title">XYZ 空间范围</strong></div>
+              <div><small>{coordinateFrame} FRAME / METERS</small><strong id="map-details-bounds-title">XYZ 空间范围</strong></div>
             </header>
             <div className="map-details-bounds__table" role="table" aria-label="XYZ坐标范围">
               <div className="map-details-bounds__row is-heading" role="row">
@@ -222,7 +227,7 @@ export default function MapDetailsDialog({ mapData, onClose, returnFocusRef }) {
         </div>
 
         <footer>
-          <span><Axis3D size={12} /> MAP FRAME · XY HORIZONTAL · Z-UP</span>
+          <span><Axis3D size={12} /> {coordinateFrame} FRAME · ORIGIN (0, 0, 0) · Z-UP</span>
           <span>READ ONLY / SOURCE MANIFEST</span>
           <button type="button" onClick={onClose}>关闭</button>
         </footer>

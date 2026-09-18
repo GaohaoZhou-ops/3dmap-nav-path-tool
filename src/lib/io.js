@@ -14,6 +14,17 @@ const booleanOr = (value, fallback) => {
   return fallback;
 };
 
+export const normalizeTeachingSpaceMode = (value) => {
+  const normalized = String(value || '').trim().toLowerCase();
+  return ['independent', 'standalone', 'virtual', 'virtual-space'].includes(normalized)
+    ? 'independent'
+    : 'map';
+};
+
+export const teachingCoordinateFrame = (mode) => (
+  normalizeTeachingSpaceMode(mode) === 'independent' ? 'virtual_origin' : 'map'
+);
+
 export const createId = (prefix) =>
   `${prefix}-${
     globalThis.crypto?.randomUUID?.() ||
@@ -446,6 +457,8 @@ export function normalizeTeachingTasks(payload) {
         id: String(map.id || map.mapId || ''),
         fileName: String(map.fileName || map.name || ''),
         sourceHash: map.sourceHash ? String(map.sourceHash) : null,
+        teachingSpaceMode: normalizeTeachingSpaceMode(map.teachingSpaceMode),
+        coordinateFrame: String(map.coordinateFrame || task?.coordinateFrame || 'map'),
       },
       parkingPoints,
     };
@@ -612,6 +625,38 @@ export function normalizeProject(payload) {
   const workspace = payload.workspace && typeof payload.workspace === 'object'
     ? payload.workspace
     : {};
+  const teachingSpaceMode = normalizeTeachingSpaceMode(
+    workspace.teachingSpaceMode
+    ?? payload.teachingSpace?.mode
+    ?? payload.map?.teachingSpaceMode
+    ?? (
+      payload.coordinateSystem?.frameId === 'virtual_origin'
+      || payload.map?.coordinateFrame === 'virtual_origin'
+      || payload.virtualTeaching?.coordinateFrame === 'virtual_origin'
+        ? 'independent'
+        : 'map'
+    ),
+  );
+  const coordinateFrame = teachingCoordinateFrame(teachingSpaceMode);
+  const framedTeachingTasks = teachingSpaceMode === 'independent'
+    ? teachingTasks.map((task) => ({
+        ...task,
+        coordinateFrame,
+        map: {
+          ...task.map,
+          teachingSpaceMode,
+          coordinateFrame,
+        },
+        parkingPoints: task.parkingPoints.map((parkingPoint) => ({
+          ...parkingPoint,
+          mapPose: { ...parkingPoint.mapPose, frameId: coordinateFrame },
+          poses: parkingPoint.poses.map((pose) => ({
+            ...pose,
+            mapPose: { ...pose.mapPose, frameId: coordinateFrame },
+          })),
+        })),
+      }))
+    : teachingTasks;
 
   return {
     waypoints,
@@ -625,6 +670,7 @@ export function normalizeProject(payload) {
     view3d: payload.view3d || null,
     rendering: payload.rendering || null,
     workspace: {
+      teachingSpaceMode,
       pointColorMode: String(workspace.pointColorMode || ''),
       showWaypoints3D: workspace.showWaypoints3D !== false,
       activeTeachingTaskId: workspace.activeTeachingTaskId
@@ -639,13 +685,14 @@ export function normalizeProject(payload) {
       inspectorCollapsed: workspace.inspectorCollapsed === true,
     },
     robot: robot?.relativePath ? robot : null,
-    teachingTasks,
+    teachingTasks: framedTeachingTasks,
     jointPoses,
   };
 }
 
 export function buildExport({
   mapData,
+  teachingSpaceMode = mapData?.teachingSpaceMode,
   heightRange,
   waypoints,
   edges,
@@ -668,19 +715,35 @@ export function buildExport({
 }) {
   const pointById = new Map(waypoints.map((point) => [point.id, point]));
   const exportedRobotPose = robotPose || robot?.origin || {};
+  const normalizedTeachingSpaceMode = normalizeTeachingSpaceMode(teachingSpaceMode);
+  const coordinateFrame = teachingCoordinateFrame(normalizedTeachingSpaceMode);
   return {
     schemaVersion: '1.3',
     exportedAt: new Date().toISOString(),
     coordinateSystem: {
+      frameId: coordinateFrame,
       horizontalPlane: 'XY',
       verticalAxis: 'Z',
       angleUnit: 'degree',
       distanceUnit: 'meter',
+      origin: { x: 0, y: 0, z: 0 },
+      originSource: normalizedTeachingSpaceMode === 'independent'
+        ? 'point-cloud-origin'
+        : 'map-origin',
+    },
+    teachingSpace: {
+      mode: normalizedTeachingSpaceMode,
+      frameId: coordinateFrame,
+      origin: { x: 0, y: 0, z: 0 },
+      originSource: normalizedTeachingSpaceMode === 'independent'
+        ? 'point-cloud-origin'
+        : 'map-origin',
     },
     rendering: {
       meshQuality: meshRenderQuality,
     },
     workspace: {
+      teachingSpaceMode: normalizedTeachingSpaceMode,
       pointColorMode: ['height', 'source', 'white'].includes(pointColorMode)
         ? pointColorMode
         : 'height',
@@ -691,6 +754,8 @@ export function buildExport({
       inspectorCollapsed: inspectorCollapsed === true,
     },
     map: {
+      teachingSpaceMode: normalizedTeachingSpaceMode,
+      coordinateFrame,
       fileName: mapData?.name || null,
       format: 'ply',
       byteLength: Math.max(0, Number(mapData?.byteLength) || 0),
@@ -748,7 +813,7 @@ export function buildExport({
         }
       : null,
     virtualTeaching: {
-      coordinateFrame: 'map',
+      coordinateFrame,
       angularUnit: 'degree',
       distanceUnit: 'meter',
       jointPoses: normalizeJointPoses(jointPoses).map((pose, index) => ({
@@ -762,11 +827,16 @@ export function buildExport({
       })),
       tasks: normalizeTeachingTasks(teachingTasks).map((task) => ({
         ...task,
+        coordinateFrame: normalizedTeachingSpaceMode === 'independent'
+          ? coordinateFrame
+          : task.coordinateFrame || coordinateFrame,
         parkingPoints: task.parkingPoints.map((parkingPoint, parkingIndex) => ({
           ...parkingPoint,
           sequence: parkingIndex + 1,
           mapPose: {
-            frameId: 'map',
+            frameId: normalizedTeachingSpaceMode === 'independent'
+              ? coordinateFrame
+              : parkingPoint.mapPose.frameId || task.coordinateFrame || coordinateFrame,
             position: { ...parkingPoint.mapPose.position },
             rpy: { ...parkingPoint.mapPose.rpy },
           },
@@ -774,7 +844,9 @@ export function buildExport({
             ...point,
             sequence: pointIndex + 1,
             mapPose: {
-              frameId: 'map',
+              frameId: normalizedTeachingSpaceMode === 'independent'
+                ? coordinateFrame
+                : point.mapPose.frameId || task.coordinateFrame || coordinateFrame,
               position: { ...point.mapPose.position },
               rpy: { ...point.mapPose.rpy },
             },

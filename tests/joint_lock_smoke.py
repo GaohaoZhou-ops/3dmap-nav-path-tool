@@ -38,7 +38,7 @@ def run():
         page.set_default_timeout(180_000)
         page.on("pageerror", lambda error: errors.append(str(error)))
 
-        page.goto(BASE_URL, wait_until="networkidle")
+        page.goto(f"{BASE_URL.rstrip('/')}/workbench", wait_until="networkidle")
         page.locator('[data-session-state="ready"]').wait_for()
         page.locator('input[type="file"][accept=".ply"]').set_input_files(
             str(ROOT / "tests/fixtures/rotation-map.ply")
@@ -51,13 +51,25 @@ def run():
             timeout=180_000,
         )
         page.get_by_role("tab", name="虚拟示教与相机").click()
+        page.get_by_role("button", name="打开全关节浮动窗口").click()
 
         panel = page.get_by_label("机器人全关节控制", exact=True)
         floating = page.get_by_label("全关节控制浮动窗口", exact=True)
         panel.wait_for()
         lock_buttons = panel.locator(".joint-value-row__lock")
         assert lock_buttons.count() == 24
-        assert panel.get_attribute("data-locked-joint-count") == "0"
+        default_body_locks = [
+            "ankle_pitch_J",
+            "knee_pitch_J",
+            "waist_pitch_J",
+            "waist_yaw_J",
+        ]
+        assert panel.get_attribute("data-locked-joint-count") == "4"
+        assert json.loads(panel.get_attribute("data-locked-joint-names")) == default_body_locks
+        for joint_name in default_body_locks:
+            assert panel.locator(
+                f'[data-joint-name="{joint_name}"]'
+            ).get_attribute("data-joint-locked") == "true"
         page.screenshot(path="/tmp/atlas-joint-lock-recon.png", full_page=True)
         print("stage=lock-ui-ready", flush=True)
 
@@ -69,17 +81,12 @@ def run():
             "Math.abs(JSON.parse(document.querySelector('.three-canvas')?.dataset.robotJointValues || '{}').waist_pitch_J - 24) < 1e-6"
         )
 
-        page.get_by_role("button", name="锁定 waist_pitch_J 关节", exact=True).click()
         assert waist_row.get_attribute("data-joint-locked") == "true"
-        assert panel.get_attribute("data-locked-joint-count") == "1"
-        assert json.loads(panel.get_attribute("data-locked-joint-names")) == [
-            "waist_pitch_J"
-        ]
+        assert panel.get_attribute("data-locked-joint-count") == "4"
+        assert json.loads(panel.get_attribute("data-locked-joint-names")) == default_body_locks
         canvas = page.locator(".three-canvas")
-        assert canvas.get_attribute("data-robot-joint-lock-count") == "1"
-        assert json.loads(canvas.get_attribute("data-robot-joint-locked-names")) == [
-            "waist_pitch_J"
-        ]
+        assert canvas.get_attribute("data-robot-joint-lock-count") == "4"
+        assert json.loads(canvas.get_attribute("data-robot-joint-locked-names")) == default_body_locks
 
         # An IK lock only removes this degree of freedom from inverse solving;
         # direct slider/numeric adjustment remains available for fine tuning.
@@ -124,7 +131,7 @@ def run():
         with page.expect_download() as download_info:
             page.get_by_role("button", name="导出示教工程 ZIP").click()
         exported = read_exported_project(download_info.value)
-        assert exported["robot"]["lockedJoints"] == ["waist_pitch_J"]
+        assert exported["robot"]["lockedJoints"] == default_body_locks
         print("stage=export-lock-recorded", flush=True)
         page.get_by_role("button", name="返回主工作台继续示教").click()
         page.locator('[data-app-page="teaching-data"]').wait_for(state="detached")
@@ -146,6 +153,7 @@ def run():
         page.locator(".loading-curtain").wait_for(state="hidden")
         print("stage=session-restored", flush=True)
         page.get_by_role("tab", name="虚拟示教与相机").click()
+        page.get_by_role("button", name="打开全关节浮动窗口").click()
         restored_panel = page.get_by_label("机器人全关节控制", exact=True)
         restored_panel.wait_for()
         assert restored_panel.get_attribute("data-locked-joint-count") == "1"

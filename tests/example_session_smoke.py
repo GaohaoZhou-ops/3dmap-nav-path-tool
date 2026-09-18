@@ -25,7 +25,7 @@ def stored_map_cache(page):
           });
           const transaction = database.transaction('workspace-session', 'readonly');
           const record = await new Promise((resolve, reject) => {
-            const request = transaction.objectStore('workspace-session').get('map');
+            const request = transaction.objectStore('workspace-session').get('workspace-map:map');
             request.onsuccess = () => resolve(request.result);
             request.onerror = () => reject(request.error);
           });
@@ -50,7 +50,7 @@ def run():
         page.on("pageerror", lambda exc: errors.append(str(exc)))
         page.set_default_timeout(120_000)
 
-        page.goto(BASE_URL)
+        page.goto(f"{BASE_URL.rstrip('/')}/workbench")
         page.wait_for_load_state("networkidle")
         wait_for_session(page)
         page.get_by_role("button", name="示例地图").click()

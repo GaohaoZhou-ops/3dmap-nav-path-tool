@@ -34,7 +34,7 @@ def run():
         page.set_default_timeout(180_000)
         page.on("pageerror", lambda error: errors.append(str(error)))
 
-        page.goto(BASE_URL, wait_until="networkidle")
+        page.goto(f"{BASE_URL.rstrip('/')}/workbench", wait_until="networkidle")
         page.locator('[data-session-state="ready"]').wait_for()
         page.locator('input[type="file"][accept=".ply"]').set_input_files(
             str(ROOT / "tests/fixtures/rotation-map.ply")
@@ -57,7 +57,7 @@ def run():
               });
               const read = () => new Promise((resolve, reject) => {
                 const transaction = database.transaction('workspace-session', 'readonly');
-                const request = transaction.objectStore('workspace-session').get('config');
+                const request = transaction.objectStore('workspace-session').get('workspace-config:map');
                 request.onsuccess = () => resolve(request.result);
                 request.onerror = () => reject(request.error);
               });
@@ -165,7 +165,7 @@ def run():
         play_task.click()
 
         page.locator('[data-app-page="teaching-data"]').wait_for(state="detached")
-        assert page.url.rstrip("/") == BASE_URL.rstrip("/")
+        assert page.url.rstrip("/") == f"{BASE_URL.rstrip('/')}/workbench"
         dock = page.get_by_label("示教任务轨迹播放控制", exact=True)
         dock.wait_for()
         assert dock.get_attribute("data-playback-status") == "playing"

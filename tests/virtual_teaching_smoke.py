@@ -31,7 +31,7 @@ def run():
         page.set_default_timeout(180_000)
         page.on("pageerror", lambda error: errors.append(str(error)))
 
-        page.goto(BASE_URL, wait_until="networkidle")
+        page.goto(f"{BASE_URL.rstrip('/')}/workbench", wait_until="networkidle")
         page.locator('[data-session-state="ready"]').wait_for()
         teaching_tab = page.get_by_role("tab", name="虚拟示教与相机")
         teaching_tab.click()
@@ -291,7 +291,7 @@ def run():
               });
               const transaction = database.transaction('workspace-session', 'readonly');
               const record = await new Promise((resolve, reject) => {
-                const request = transaction.objectStore('workspace-session').get('config');
+                const request = transaction.objectStore('workspace-session').get('workspace-config:map');
                 request.onsuccess = () => resolve(request.result);
                 request.onerror = () => reject(request.error);
               });

@@ -69,7 +69,7 @@ const finite = (value, fallback = 0) => {
 };
 
 const cleanPose = (value) => ({
-  frameId: 'map',
+  frameId: String(value?.frameId || 'map'),
   position: {
     x: finite(value?.position?.x),
     y: finite(value?.position?.y),
@@ -102,7 +102,7 @@ const cleanOpticalPose = (value, side) => {
 export const createParkingMergeComputationTask = (task) => ({
   id: String(task?.id || ''),
   name: String(task?.name || '未命名示教任务'),
-  coordinateFrame: 'map',
+  coordinateFrame: String(task?.coordinateFrame || 'map'),
   map: {
     fileName: String(task?.map?.fileName || ''),
     sourceHash: String(task?.map?.sourceHash || ''),
@@ -338,7 +338,7 @@ const mapGeometryFiles = async (mapData, onProgress) => {
   const geometryDigest = await sha256Json({ positionSha256, indexSha256 });
   const metadata = {
     schemaVersion: 1,
-    coordinateFrame: 'map',
+    coordinateFrame: String(mapData.coordinateFrame || 'map'),
     lengthUnit: 'meter',
     source: {
       fileName: mapData.name,

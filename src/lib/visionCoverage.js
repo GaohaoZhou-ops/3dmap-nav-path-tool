@@ -2,7 +2,8 @@ import * as THREE from 'three';
 
 export const VISION_COVERAGE_MODE = 'surface-truncated-optical-frusta';
 export const VISION_COVERAGE_SURFACE_STOP = 'first-point-depth-grid';
-export const TEACHING_SURFACE_PROJECTION_MODE = 'continuous-frustum-front-envelope';
+export const VISION_COVERAGE_EMPTY_CELL_MODE = 'omit-unhit-cells';
+export const TEACHING_SURFACE_PROJECTION_MODE = 'continuous-surface-hit-envelope';
 
 const DEFAULT_GRID_COLUMNS = 14;
 const DEFAULT_GRID_ROWS = 9;
@@ -160,9 +161,10 @@ export const buildVisionCoverageDepthGrid = (
 
   const measuredDepths = buckets.map(firstSurfaceDepth);
   const surfaceDepths = fillInteriorDepthHoles(measuredDepths, columns, rows);
-  const surfaceCellCount = surfaceDepths.filter((value) => Number.isFinite(value)).length;
+  const finiteSurfaceDepths = surfaceDepths.filter((value) => Number.isFinite(value));
+  const surfaceCellCount = finiteSurfaceDepths.length;
   const depths = surfaceDepths.map((value) => Number.isFinite(value) ? value : far);
-  const finiteDepths = depths.filter((value) => Number.isFinite(value));
+  const sampleCellCount = columns * rows;
   return {
     columns,
     rows,
@@ -174,11 +176,12 @@ export const buildVisionCoverageDepthGrid = (
     surfaceDepths,
     measuredCellCount: measuredDepths.filter((value) => value !== null).length,
     surfaceCellCount,
-    rangeLimitedCellCount: depths.length - surfaceCellCount,
-    renderCellCount: finiteDepths.length,
+    rangeLimitedCellCount: sampleCellCount - surfaceCellCount,
+    sampleCellCount,
+    renderCellCount: surfaceCellCount,
     pointCount: positions.length / 3,
-    minimumDepth: finiteDepths.length ? Math.min(...finiteDepths) : null,
-    maximumDepth: finiteDepths.length ? Math.max(...finiteDepths) : null,
+    minimumDepth: finiteSurfaceDepths.length ? Math.min(...finiteSurfaceDepths) : null,
+    maximumDepth: finiteSurfaceDepths.length ? Math.max(...finiteSurfaceDepths) : null,
   };
 };
 
@@ -199,8 +202,9 @@ const buildCoverageGeometry = (grid) => {
   const cellDepth = (column, row) => (
     column < 0 || column >= grid.columns || row < 0 || row >= grid.rows
       ? null
-      : grid.depths[row * grid.columns + column]
+      : grid.surfaceDepths[row * grid.columns + column]
   );
+  const hasSurfaceCell = (column, row) => Number.isFinite(cellDepth(column, row));
   const vertexDepth = (column, row) => {
     let depth = Number.POSITIVE_INFINITY;
     for (let rowOffset = -1; rowOffset <= 0; rowOffset += 1) {
@@ -209,7 +213,7 @@ const buildCoverageGeometry = (grid) => {
         if (Number.isFinite(candidate)) depth = Math.min(depth, candidate);
       }
     }
-    return Number.isFinite(depth) ? depth : grid.far;
+    return Number.isFinite(depth) ? depth : grid.near;
   };
 
   for (let row = 0; row < vertexRows; row += 1) {
@@ -227,36 +231,34 @@ const buildCoverageGeometry = (grid) => {
   }
 
   const indices = [];
+  const outlinePositions = [];
+  const componentIds = new Int32Array(grid.columns * grid.rows).fill(-1);
+  const componentBoundaryVertices = [];
+  let componentCount = 0;
+
   for (let row = 0; row < grid.rows; row += 1) {
     for (let column = 0; column < grid.columns; column += 1) {
-      const topLeft = row * vertexColumns + column;
-      const topRight = topLeft + 1;
-      const bottomLeft = (row + 1) * vertexColumns + column;
-      const bottomRight = bottomLeft + 1;
-      indices.push(topLeft, topRight, bottomRight, topLeft, bottomRight, bottomLeft);
+      const startCellIndex = row * grid.columns + column;
+      if (!hasSurfaceCell(column, row) || componentIds[startCellIndex] >= 0) continue;
+      const queue = [[column, row]];
+      componentIds[startCellIndex] = componentCount;
+      componentBoundaryVertices.push(new Set());
+      for (let cursor = 0; cursor < queue.length; cursor += 1) {
+        const [currentColumn, currentRow] = queue[cursor];
+        [[0, -1], [1, 0], [0, 1], [-1, 0]].forEach(([dx, dy]) => {
+          const nextColumn = currentColumn + dx;
+          const nextRow = currentRow + dy;
+          if (!hasSurfaceCell(nextColumn, nextRow)) return;
+          const nextCellIndex = nextRow * grid.columns + nextColumn;
+          if (componentIds[nextCellIndex] >= 0) return;
+          componentIds[nextCellIndex] = componentCount;
+          queue.push([nextColumn, nextRow]);
+        });
+      }
+      componentCount += 1;
     }
   }
-  for (let column = 0; column < grid.columns; column += 1) {
-    indices.push(originIndex, column + 1, column);
-    const bottomLeft = grid.rows * vertexColumns + column;
-    indices.push(originIndex, bottomLeft, bottomLeft + 1);
-  }
-  for (let row = 0; row < grid.rows; row += 1) {
-    const leftTop = row * vertexColumns;
-    const leftBottom = (row + 1) * vertexColumns;
-    indices.push(originIndex, leftTop, leftBottom);
-    const rightTop = row * vertexColumns + grid.columns;
-    const rightBottom = (row + 1) * vertexColumns + grid.columns;
-    indices.push(originIndex, rightBottom, rightTop);
-  }
 
-  const geometry = new THREE.BufferGeometry();
-  geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
-  geometry.setIndex(indices);
-  geometry.computeBoundingBox();
-  geometry.computeBoundingSphere();
-
-  const outlinePositions = [];
   const addOutlineSegment = (startIndex, endIndex) => {
     const startOffset = startIndex * 3;
     const endOffset = endIndex * 3;
@@ -269,24 +271,70 @@ const buildCoverageGeometry = (grid) => {
       positions[endOffset + 2],
     );
   };
-  const topLeft = 0;
-  const topRight = grid.columns;
-  const bottomLeft = grid.rows * vertexColumns;
-  const bottomRight = bottomLeft + grid.columns;
-  [topLeft, topRight, bottomRight, bottomLeft].forEach((cornerIndex) => {
-    addOutlineSegment(originIndex, cornerIndex);
-  });
-  for (let column = 0; column < grid.columns; column += 1) {
-    addOutlineSegment(column, column + 1);
-    addOutlineSegment(bottomLeft + column, bottomLeft + column + 1);
-  }
+  const addBoundary = (componentId, startIndex, endIndex) => {
+    indices.push(originIndex, startIndex, endIndex);
+    addOutlineSegment(startIndex, endIndex);
+    componentBoundaryVertices[componentId].add(startIndex);
+    componentBoundaryVertices[componentId].add(endIndex);
+  };
+
   for (let row = 0; row < grid.rows; row += 1) {
-    addOutlineSegment(row * vertexColumns, (row + 1) * vertexColumns);
-    addOutlineSegment(
-      row * vertexColumns + grid.columns,
-      (row + 1) * vertexColumns + grid.columns,
-    );
+    for (let column = 0; column < grid.columns; column += 1) {
+      if (!hasSurfaceCell(column, row)) continue;
+      const topLeft = row * vertexColumns + column;
+      const topRight = topLeft + 1;
+      const bottomLeft = (row + 1) * vertexColumns + column;
+      const bottomRight = bottomLeft + 1;
+      indices.push(topLeft, topRight, bottomRight, topLeft, bottomRight, bottomLeft);
+      const componentId = componentIds[row * grid.columns + column];
+      if (!hasSurfaceCell(column, row - 1)) {
+        addBoundary(componentId, topRight, topLeft);
+      }
+      if (!hasSurfaceCell(column + 1, row)) {
+        addBoundary(componentId, bottomRight, topRight);
+      }
+      if (!hasSurfaceCell(column, row + 1)) {
+        addBoundary(componentId, bottomLeft, bottomRight);
+      }
+      if (!hasSurfaceCell(column - 1, row)) {
+        addBoundary(componentId, topLeft, bottomLeft);
+      }
+    }
   }
+
+  const cornerDirections = [
+    [-1, -1],
+    [1, -1],
+    [1, 1],
+    [-1, 1],
+  ];
+  componentBoundaryVertices.forEach((boundaryVertices) => {
+    const rayAnchors = new Set();
+    cornerDirections.forEach(([directionX, directionY]) => {
+      let bestIndex = null;
+      let bestScore = Number.NEGATIVE_INFINITY;
+      boundaryVertices.forEach((vertexIndex) => {
+        const column = vertexIndex % vertexColumns;
+        const row = Math.floor(vertexIndex / vertexColumns);
+        const normalizedX = -1 + (column / grid.columns) * 2;
+        const normalizedY = -1 + (row / grid.rows) * 2;
+        const score = normalizedX * directionX + normalizedY * directionY;
+        if (score > bestScore) {
+          bestScore = score;
+          bestIndex = vertexIndex;
+        }
+      });
+      if (bestIndex !== null) rayAnchors.add(bestIndex);
+    });
+    rayAnchors.forEach((vertexIndex) => addOutlineSegment(originIndex, vertexIndex));
+  });
+
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+  geometry.setIndex(indices);
+  geometry.computeBoundingBox();
+  geometry.computeBoundingSphere();
+
   const outlineGeometry = new THREE.BufferGeometry();
   outlineGeometry.setAttribute(
     'position',
@@ -436,9 +484,8 @@ export const markTeachingSurfaceCoverageRange = (
       );
       const cellIndex = row * grid.columns + column;
       const measuredSurfaceDepth = grid.surfaceDepths[cellIndex];
-      const stopDepth = Number.isFinite(measuredSurfaceDepth)
-        ? measuredSurfaceDepth
-        : finiteNumber(grid.depths[cellIndex], grid.far);
+      if (!Number.isFinite(measuredSurfaceDepth)) continue;
+      const stopDepth = measuredSurfaceDepth;
 
       const cellWidth = (2 * frame.tangentX * stopDepth) / grid.columns;
       const cellHeight = (2 * frame.tangentY * stopDepth) / grid.rows;
@@ -448,10 +495,9 @@ export const markTeachingSurfaceCoverageRange = (
         Math.hypot(cellWidth, cellHeight) * cellTolerance,
       );
       const tolerance = Math.min(maximumTolerance, adaptiveTolerance);
-      // Treat the sampled depth as an occlusion envelope rather than a narrow
-      // vertex band. This colors the complete camera-facing surface, including
-      // mesh spans that cross an empty sampling cell, while still rejecting
-      // geometry hidden behind the first measured surface.
+      // Treat a confirmed surface depth as an occlusion envelope rather than a
+      // narrow vertex band. Empty optical cells are intentionally omitted: they
+      // provide no evidence that the camera covered an object surface.
       if (localZ <= stopDepth + tolerance) {
         targetMask[pointIndex] = 1;
         newlyCovered += 1;
@@ -501,6 +547,7 @@ export const createTeachingSurfaceProjectionOverlay = (
   const frames = preparedFrames.filter((frame) => (
     frame?.grid?.columns > 0
     && frame?.grid?.rows > 0
+    && frame?.grid?.surfaceCellCount > 0
     && frame?.worldToCamera?.length >= 16
   ));
   if (!frames.length) return null;
@@ -539,9 +586,9 @@ export const createTeachingSurfaceProjectionOverlay = (
     for (let row = 0; row < frame.grid.rows; row += 1) {
       for (let column = 0; column < frame.grid.columns; column += 1) {
         const cellIndex = row * frame.grid.columns + column;
-        depthData[(depthRowOffset + row) * depthTextureWidth + column] = finiteNumber(
-          frame.grid.depths[cellIndex],
-          frame.grid.far,
+        const surfaceDepth = frame.grid.surfaceDepths[cellIndex];
+        depthData[(depthRowOffset + row) * depthTextureWidth + column] = (
+          Number.isFinite(surfaceDepth) ? surfaceDepth : 0
         );
       }
     }
@@ -648,6 +695,7 @@ export const createTeachingSurfaceProjectionOverlay = (
               (grid.z + row + 0.5) / atlasCoverageDepthTextureSize.y
             )
           ).r;
+          if (stopDepth <= 0.0) continue;
           float cellWidth = (2.0 * projection.x * stopDepth) / grid.x;
           float cellHeight = (2.0 * projection.y * stopDepth) / grid.y;
           float tolerance = min(
@@ -684,6 +732,7 @@ export const createTeachingSurfaceProjectionOverlay = (
     rasterization: 'per-fragment-depth-atlas',
     frameCount: frames.length,
     binaryUnion: true,
+    emptyCellMode: VISION_COVERAGE_EMPTY_CELL_MODE,
   };
   return { mesh, material, textures: [frameTexture, depthTexture] };
 };
@@ -802,37 +851,9 @@ export const createTeachingVisionCoverageVolume = (record, options = {}) => {
     record.calibration,
     options,
   );
-  if (!grid.renderCellCount) return null;
 
   const color = CAMERA_SIDE_COLORS[record.side] || CAMERA_SIDE_COLORS.left;
-  const { geometry, outlineGeometry } = buildCoverageGeometry(grid);
-  const material = new THREE.MeshBasicMaterial({
-    color,
-    transparent: true,
-    opacity: record.side === 'right' ? 0.11 : 0.12,
-    depthTest: true,
-    depthWrite: false,
-    side: THREE.DoubleSide,
-    polygonOffset: true,
-    polygonOffsetFactor: -1,
-    polygonOffsetUnits: -1,
-    toneMapped: false,
-  });
-  const mesh = new THREE.Mesh(geometry, material);
-  mesh.name = 'surface-truncated-vision-volume';
-  mesh.renderOrder = 8;
-
-  const outlineMaterial = new THREE.LineBasicMaterial({
-    color,
-    transparent: true,
-    opacity: 0.58,
-    depthTest: true,
-    depthWrite: false,
-    toneMapped: false,
-  });
-  const outline = new THREE.LineSegments(outlineGeometry, outlineMaterial);
-  outline.name = 'vision-volume-outer-silhouette';
-  outline.renderOrder = 9;
+  const hasSurfaceContact = grid.renderCellCount > 0;
 
   const opticalMarker = new THREE.Mesh(
     new THREE.SphereGeometry(0.014, 12, 8),
@@ -869,6 +890,7 @@ export const createTeachingVisionCoverageVolume = (record, options = {}) => {
     side: record.side,
     mode: VISION_COVERAGE_MODE,
     surfaceStop: VISION_COVERAGE_SURFACE_STOP,
+    emptyCellMode: VISION_COVERAGE_EMPTY_CELL_MODE,
     visualMode: 'continuous-volume',
     outlineMode: 'outer-silhouette',
     internalRayCount: 0,
@@ -876,10 +898,44 @@ export const createTeachingVisionCoverageVolume = (record, options = {}) => {
     coordinateFrameCount: 1,
     coordinateAxisCount: RECORDED_OPTICAL_AXIS_META.length,
     retentionMode: 'captured-pose-static',
+    hasSurfaceContact,
+    volumeCount: hasSurfaceContact ? 1 : 0,
     ...grid,
     depths: undefined,
     surfaceDepths: undefined,
   };
-  group.add(mesh, outline, opticalMarker, opticalCoordinateFrame);
+  group.add(opticalMarker, opticalCoordinateFrame);
+
+  if (hasSurfaceContact) {
+    const { geometry, outlineGeometry } = buildCoverageGeometry(grid);
+    const material = new THREE.MeshBasicMaterial({
+      color,
+      transparent: true,
+      opacity: record.side === 'right' ? 0.11 : 0.12,
+      depthTest: true,
+      depthWrite: false,
+      side: THREE.DoubleSide,
+      polygonOffset: true,
+      polygonOffsetFactor: -1,
+      polygonOffsetUnits: -1,
+      toneMapped: false,
+    });
+    const mesh = new THREE.Mesh(geometry, material);
+    mesh.name = 'surface-truncated-vision-volume';
+    mesh.renderOrder = 8;
+
+    const outlineMaterial = new THREE.LineBasicMaterial({
+      color,
+      transparent: true,
+      opacity: 0.58,
+      depthTest: true,
+      depthWrite: false,
+      toneMapped: false,
+    });
+    const outline = new THREE.LineSegments(outlineGeometry, outlineMaterial);
+    outline.name = 'vision-volume-outer-silhouette';
+    outline.renderOrder = 9;
+    group.add(mesh, outline);
+  }
   return group;
 };

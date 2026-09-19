@@ -42,6 +42,9 @@ def coverage_metrics(canvas):
         ),
         "mode": canvas.get_attribute("data-vision-coverage-mode"),
         "surface_stop": canvas.get_attribute("data-vision-coverage-surface-stop"),
+        "empty_cell_mode": canvas.get_attribute(
+            "data-vision-coverage-empty-cell-mode"
+        ),
         "visual_mode": canvas.get_attribute("data-vision-coverage-visual-mode"),
         "outline_mode": canvas.get_attribute("data-vision-coverage-outline-mode"),
         "internal_rays": canvas.get_attribute("data-vision-coverage-internal-rays"),
@@ -66,6 +69,12 @@ def coverage_metrics(canvas):
         "cells": int(canvas.get_attribute("data-vision-coverage-cell-count") or 0),
         "hit_cells": int(
             canvas.get_attribute("data-vision-coverage-hit-cell-count") or 0
+        ),
+        "render_cells": int(
+            canvas.get_attribute("data-vision-coverage-render-cell-count") or 0
+        ),
+        "omitted_cells": int(
+            canvas.get_attribute("data-vision-coverage-omitted-cell-count") or 0
         ),
         "minimum_depth": float(
             canvas.get_attribute("data-vision-coverage-minimum-depth") or 0
@@ -163,6 +172,7 @@ def run():
         assert metrics["state"] == "visible"
         assert metrics["mode"] == "surface-truncated-optical-frusta"
         assert metrics["surface_stop"] == "first-point-depth-grid"
+        assert metrics["empty_cell_mode"] == "omit-unhit-cells"
         assert metrics["visual_mode"] == "continuous-volume"
         assert metrics["outline_mode"] == "outer-silhouette"
         assert metrics["internal_rays"] == "false"
@@ -176,6 +186,8 @@ def run():
         assert metrics["optical_pose_signature"]
         assert metrics["cells"] > 0
         assert 0 < metrics["hit_cells"] < metrics["cells"]
+        assert metrics["render_cells"] == metrics["hit_cells"]
+        assert metrics["omitted_cells"] == metrics["cells"] - metrics["hit_cells"]
         assert 0.3 <= metrics["minimum_depth"] <= metrics["maximum_depth"]
         assert metrics["maximum_depth"] <= 1.3 + 1e-3
         first_surface_tint_count = int(
@@ -187,7 +199,7 @@ def run():
         assert canvas.get_attribute("data-teaching-surface-tint-opacity") == "0.05"
         assert (
             canvas.get_attribute("data-teaching-surface-tint-projection-mode")
-            == "continuous-frustum-front-envelope"
+            == "continuous-surface-hit-envelope"
         )
         assert (
             canvas.get_attribute("data-teaching-surface-tint-rasterization")
@@ -237,7 +249,7 @@ def run():
         assert canvas.get_attribute("data-teaching-surface-tint-opacity") == "0.05"
         assert (
             canvas.get_attribute("data-teaching-surface-tint-projection-mode")
-            == "continuous-frustum-front-envelope"
+            == "continuous-surface-hit-envelope"
         )
         assert (
             canvas.get_attribute("data-teaching-surface-tint-rasterization")

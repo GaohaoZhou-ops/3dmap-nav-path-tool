@@ -58,6 +58,7 @@ import {
   markTeachingSurfaceCoverageRange,
   prepareTeachingVisionCoverageFrames,
   TEACHING_SURFACE_PROJECTION_MODE,
+  VISION_COVERAGE_EMPTY_CELL_MODE,
   VISION_COVERAGE_MODE,
   VISION_COVERAGE_SURFACE_STOP,
 } from '../lib/visionCoverage.js';
@@ -143,6 +144,8 @@ const EMPTY_VISION_COVERAGE_STATS = Object.freeze({
   coordinateAxisCount: 0,
   cellCount: 0,
   hitCellCount: 0,
+  renderCellCount: 0,
+  omittedCellCount: 0,
   minimumDepth: null,
   maximumDepth: null,
 });
@@ -5954,6 +5957,8 @@ export default function PointCloudViewer({
     let coordinateAxisCount = 0;
     let cellCount = 0;
     let hitCellCount = 0;
+    let renderCellCount = 0;
+    let omittedCellCount = 0;
     let minimumDepth = Number.POSITIVE_INFINITY;
     let maximumDepth = Number.NEGATIVE_INFINITY;
 
@@ -5967,8 +5972,11 @@ export default function PointCloudViewer({
       opticalPointCount += Number(coverage.opticalPointCount) || 0;
       coordinateFrameCount += Number(coverage.coordinateFrameCount) || 0;
       coordinateAxisCount += Number(coverage.coordinateAxisCount) || 0;
-      cellCount += Number(coverage.renderCellCount) || 0;
+      cellCount += Number(coverage.sampleCellCount)
+        || (Number(coverage.columns) || 0) * (Number(coverage.rows) || 0);
       hitCellCount += Number(coverage.surfaceCellCount) || 0;
+      renderCellCount += Number(coverage.renderCellCount) || 0;
+      omittedCellCount += Number(coverage.rangeLimitedCellCount) || 0;
       if (record.poseId) poseIds.add(record.poseId);
       if (Number.isFinite(coverage.minimumDepth)) {
         minimumDepth = Math.min(minimumDepth, coverage.minimumDepth);
@@ -5986,6 +5994,8 @@ export default function PointCloudViewer({
       coordinateAxisCount,
       cellCount,
       hitCellCount,
+      renderCellCount,
+      omittedCellCount,
       minimumDepth: Number.isFinite(minimumDepth) ? minimumDepth : null,
       maximumDepth: Number.isFinite(maximumDepth) ? maximumDepth : null,
     };
@@ -5997,6 +6007,8 @@ export default function PointCloudViewer({
       && current.coordinateAxisCount === nextStats.coordinateAxisCount
       && current.cellCount === nextStats.cellCount
       && current.hitCellCount === nextStats.hitCellCount
+      && current.renderCellCount === nextStats.renderCellCount
+      && current.omittedCellCount === nextStats.omittedCellCount
       && current.minimumDepth === nextStats.minimumDepth
       && current.maximumDepth === nextStats.maximumDepth
         ? current
@@ -6034,6 +6046,7 @@ export default function PointCloudViewer({
           : 'hidden';
       canvas.dataset.visionCoverageMode = VISION_COVERAGE_MODE;
       canvas.dataset.visionCoverageSurfaceStop = VISION_COVERAGE_SURFACE_STOP;
+      canvas.dataset.visionCoverageEmptyCellMode = VISION_COVERAGE_EMPTY_CELL_MODE;
       canvas.dataset.visionCoverageVisualMode = 'continuous-volume';
       canvas.dataset.visionCoverageOutlineMode = 'outer-silhouette';
       canvas.dataset.visionCoverageInternalRays = 'false';
@@ -6048,6 +6061,8 @@ export default function PointCloudViewer({
       canvas.dataset.visionCoverageOpticalPoseSignature = opticalPoseSignature;
       canvas.dataset.visionCoverageCellCount = String(cellCount);
       canvas.dataset.visionCoverageHitCellCount = String(hitCellCount);
+      canvas.dataset.visionCoverageRenderCellCount = String(renderCellCount);
+      canvas.dataset.visionCoverageOmittedCellCount = String(omittedCellCount);
       canvas.dataset.visionCoverageMinimumDepth = nextStats.minimumDepth?.toFixed(6) || '';
       canvas.dataset.visionCoverageMaximumDepth = nextStats.maximumDepth?.toFixed(6) || '';
       canvas.dataset.visionCoverageGenerationMode = visionCoveragePlaybackSelection.mode;

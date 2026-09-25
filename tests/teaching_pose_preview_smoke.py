@@ -74,6 +74,44 @@ def run():
         assert preview.get_attribute("data-environment-mesh") == "false"
         assert page.get_by_text("ROBOT ONLY", exact=True).is_visible()
         assert page.get_by_text("停车点 P01 / A01 检查姿态", exact=True).is_visible()
+        relative_poses = page.get_by_label("物体坐标系下双臂相对姿态", exact=True)
+        relative_poses.wait_for()
+        page.wait_for_function(
+            "document.querySelector('.teaching-pose-robot-preview')?.dataset.relativeArmPoseState === 'ready'"
+        )
+        assert relative_poses.get_attribute("data-coordinate-frame") == "virtual_origin"
+        assert (
+            relative_poses.get_attribute("data-calculation-source")
+            == "recorded-joints-forward-kinematics"
+        )
+        assert page.get_by_text("物体坐标系相对姿态", exact=True).is_visible()
+        assert page.get_by_text("VIRTUAL_ORIGIN · XYZ m / RPY °", exact=True).is_visible()
+        assert page.get_by_text(
+            "VIRTUAL_ORIGIN FRAME · BASE ABSOLUTE / ARMS RELATIVE",
+            exact=True,
+        ).is_visible()
+        assert preview.get_attribute("data-relative-arm-pose-count") == "2"
+        for side, label, frame_name in (
+            ("left", "左臂末端物体坐标系相对姿态", "tool_left"),
+            ("right", "右臂末端物体坐标系相对姿态", "tool_right"),
+        ):
+            arm_pose = page.get_by_label(label, exact=True)
+            assert arm_pose.get_attribute("data-arm-side") == side
+            assert arm_pose.get_attribute("data-frame-id") == "virtual_origin"
+            assert arm_pose.get_attribute("data-frame-name") == frame_name
+            values = [
+                float(arm_pose.get_attribute(f"data-{name}"))
+                for name in (
+                    "position-x",
+                    "position-y",
+                    "position-z",
+                    "roll",
+                    "pitch",
+                    "yaw",
+                )
+            ]
+            assert all(abs(value) < 1000 for value in values)
+            assert arm_pose.locator("dl > div").count() == 6
         assert float(page.locator(".teaching-data-page__hero h1").evaluate(
             "element => getComputedStyle(element).fontSize.replace('px', '')"
         )) >= 27
@@ -86,6 +124,9 @@ def run():
         assert float(preview.locator("header strong").first.evaluate(
             "element => getComputedStyle(element).fontSize.replace('px', '')"
         )) >= 12
+        assert float(relative_poses.locator("dd").first.evaluate(
+            "element => getComputedStyle(element).fontSize.replace('px', '')"
+        )) >= 10
 
         canvas = page.get_by_label("所选示教姿态机器人三维模型")
         assert float(canvas.get_attribute("data-map-x")) == 2.4
@@ -110,6 +151,9 @@ def run():
         reset_button.click()
         page.screenshot(path="/tmp/atlas-teaching-pose-robot-preview.png", full_page=True)
 
+        print("relative_arm_pose_count=", preview.get_attribute("data-relative-arm-pose-count"))
+        print("page_errors=", errors)
+        print("console_errors=", console_errors)
         assert not errors
         assert not console_errors
         browser.close()

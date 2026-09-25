@@ -30,6 +30,7 @@ import Inspector from './components/Inspector.jsx';
 import Map2DView from './components/Map2DView.jsx';
 import MapDetailsDialog from './components/MapDetailsDialog.jsx';
 import PointCloudViewer from './components/PointCloudViewer.jsx';
+import ProjectLoadDialog from './components/ProjectLoadDialog.jsx';
 import RobotPicker from './components/RobotPicker.jsx';
 import SpaceMouseControl from './components/SpaceMouseControl.jsx';
 import StartPage from './components/StartPage.jsx';
@@ -90,6 +91,16 @@ const pointColorModes = new Set(['height', 'source', 'white']);
 const APP_PAGE_HOME = 'home';
 const APP_PAGE_WORKBENCH = 'workbench';
 const APP_PAGE_TEACHING_DATA = 'teaching-data';
+
+const teachingModeLabel = (mode) => mode === 'independent' ? '独立示教' : '地图示教';
+const assertProjectMode = (actualMode, requestedMode) => {
+  if (normalizeTeachingSpaceMode(actualMode) === normalizeTeachingSpaceMode(requestedMode)) return;
+  const error = new Error(
+    `所选工程属于“${teachingModeLabel(actualMode)}”，当前入口为“${teachingModeLabel(requestedMode)}”。请返回主页面选择“${teachingModeLabel(actualMode)}”后再加载。`,
+  );
+  error.code = 'PROJECT_MODE_MISMATCH';
+  throw error;
+};
 
 const createIdleTeachingPlayback = () => ({
   status: 'idle',
@@ -416,6 +427,9 @@ export default function App() {
   const projectDirectoryRef = useRef(null);
   const projectDirectoryWriteChainRef = useRef(Promise.resolve());
   const projectDirectoryFailureNotifiedRef = useRef(false);
+  const projectLoadDialogRevisionRef = useRef(0);
+  const projectGuideModeRef = useRef(null);
+  const projectDirectoryModeRef = useRef(null);
   const portableRobotPackageRef = useRef(null);
   const teachingPlaybackFrameRef = useRef(null);
   const teachingPlaybackRuntimeRef = useRef(null);
@@ -475,6 +489,11 @@ export default function App() {
     name: '',
     savedAt: null,
     writable: false,
+  });
+  const [projectLoadDialog, setProjectLoadDialog] = useState({
+    open: false,
+    mode: 'map',
+    directory: { status: 'idle' },
   });
   const [teachingPlayback, setTeachingPlayback] = useState(createIdleTeachingPlayback);
   const [sessionState, setSessionState] = useState({ status: 'checking', restored: false });
@@ -1350,6 +1369,10 @@ export default function App() {
             const permission = await queryProjectDirectoryPermission(savedDirectory.handle, false);
             if (permission === 'granted') {
               const metadata = await readProjectDirectoryMetadata(savedDirectory.handle);
+              assertProjectMode(
+                normalizeProject(metadata.rawPayload).workspace.teachingSpaceMode,
+                restoredTeachingSpaceMode,
+              );
               projectDirectoryRef.current = {
                 handle: savedDirectory.handle,
                 name: savedDirectory.name || metadata.name,
@@ -1357,6 +1380,7 @@ export default function App() {
                 manifest: metadata.manifest,
                 rawPayload: metadata.rawPayload,
                 savedAt: metadata.manifest.updatedAt || savedDirectory.savedAt || null,
+                teachingSpaceMode: restoredTeachingSpaceMode,
               };
               setProjectDirectoryState({
                 status: 'synced',
@@ -1373,7 +1397,9 @@ export default function App() {
               });
             }
           } else if (savedDirectory) {
-            await clearProjectDirectoryBinding();
+            // Keep the remembered folder across service sessions. It remains detached
+            // until the user explicitly loads it from the project loader.
+            projectDirectoryRef.current = null;
           }
         } catch (error) {
           console.warn('工程目录关联恢复失败', error);
@@ -1668,7 +1694,7 @@ export default function App() {
   const handleMapFile = (event) => handlePointCloudFile(event, 'map');
   const handleIndependentCloudFile = (event) => handlePointCloudFile(event, 'independent');
 
-  const applyImportedProject = async (importProject, sourceName) => {
+  const applyImportedProject = async (importProject, sourceName, requestedMode = teachingSpaceMode) => {
     const sourcePage = appPage;
     navigateAppPage(APP_PAGE_WORKBENCH);
     if (sessionSaveTimerRef.current) {
@@ -1678,6 +1704,8 @@ export default function App() {
     await persistWorkspaceNow();
     const previousDirectoryBinding = projectDirectoryRef.current;
     projectDirectoryRef.current = null;
+    // Keep intermediate imports out of both mode caches until the project is ready.
+    workspaceSwitchingRef.current = true;
     const previousPortableResourceId = portableRobotPackageRef.current?.resourceId || null;
     let nextPortableResourceId = null;
     let portableResourceCommitted = false;
@@ -1699,6 +1727,7 @@ export default function App() {
       const importedTeachingSpaceMode = normalizeTeachingSpaceMode(
         project.workspace?.teachingSpaceMode,
       );
+      assertProjectMode(importedTeachingSpaceMode, requestedMode);
       const portableRobotPackage = importedFile.resources?.robot || null;
       if (portableRobotPackage) {
         nextPortableResourceId = registerPortableRobotPackage(portableRobotPackage);
@@ -1872,6 +1901,7 @@ export default function App() {
         };
         setMapData(effectiveMap);
       }
+      if (!effectiveMap) setMapData(null);
       if (previousPortableResourceId && previousPortableResourceId !== nextPortableResourceId) {
         releasePortableRobotPackage(previousPortableResourceId);
       }
@@ -1947,6 +1977,7 @@ export default function App() {
           manifest: importedFile.manifest,
           rawPayload: importedFile.rawPayload,
           savedAt: importedFile.manifest?.updatedAt || importedFile.manifest?.exportedAt || null,
+          teachingSpaceMode: importedTeachingSpaceMode,
         };
         projectDirectoryRef.current = directoryBinding;
         projectDirectoryFailureNotifiedRef.current = false;
@@ -2009,41 +2040,51 @@ export default function App() {
         releasePortableRobotPackage(nextPortableResourceId);
       }
       setLoadState({ loading: false, progress: 0, phase: '' });
-      notify(`工程文件无效：${error.message}`, 'error');
+      notify(error.code === 'PROJECT_MODE_MISMATCH' ? error.message : `工程文件无效：${error.message}`, 'error');
       if (sourcePage === APP_PAGE_HOME) navigateAppPage(APP_PAGE_HOME, { replace: true });
+    } finally {
+      workspaceSwitchingRef.current = false;
+      queueWorkspaceSave();
     }
   };
 
   const handlePathFile = async (event) => {
     const file = event.target.files?.[0];
+    const targetMode = projectGuideModeRef.current ?? teachingSpaceMode;
+    projectGuideModeRef.current = null;
     event.target.value = '';
     if (!file) return;
     await applyImportedProject(async (onProgress) => {
       const { readProjectFile } = await import('./lib/projectArchive.js');
       return readProjectFile(file, { onProgress });
-    }, file.name);
+    }, file.name, targetMode);
   };
 
   const handleProjectDirectoryFiles = async (event) => {
     const files = Array.from(event.target.files || []);
+    const targetMode = projectDirectoryModeRef.current ?? teachingSpaceMode;
+    projectDirectoryModeRef.current = null;
     event.target.value = '';
     if (!files.length) return;
     await applyImportedProject(async (onProgress) => {
       const { readProjectDirectoryFiles } = await import('./lib/projectArchive.js');
       return readProjectDirectoryFiles(files, { onProgress });
-    }, files[0]?.webkitRelativePath?.split('/')?.[0] || '工程目录');
+    }, files[0]?.webkitRelativePath?.split('/')?.[0] || '工程目录', targetMode);
   };
 
-  const openProjectDirectory = async () => {
+  const openProjectDirectory = async (requestedMode = teachingSpaceMode, startIn = null) => {
     if (loadState.loading) return;
+    const targetMode = normalizeTeachingSpaceMode(requestedMode);
     if (typeof window.showDirectoryPicker !== 'function') {
+      projectDirectoryModeRef.current = targetMode;
       projectDirectoryInputRef.current?.click();
       return;
     }
     try {
       const directoryHandle = await window.showDirectoryPicker({
-        id: 'atlas-virtual-teaching-project',
+        id: `atlas-project-${targetMode}`,
         mode: 'readwrite',
+        ...(startIn ? { startIn } : {}),
       });
       await applyImportedProject(async (onProgress) => {
         const { readProjectDirectoryHandle } = await import('./lib/projectArchive.js');
@@ -2051,7 +2092,7 @@ export default function App() {
           onProgress,
           requestPermission: true,
         });
-      }, directoryHandle.name || '工程目录');
+      }, directoryHandle.name || '工程目录', targetMode);
     } catch (error) {
       if (error?.name === 'AbortError') return;
       setLoadState({ loading: false, progress: 0, phase: '' });
@@ -2059,11 +2100,19 @@ export default function App() {
     }
   };
 
-  const openLastProject = useCallback(async () => {
+  const openLastProject = useCallback(async (requestedMode = null) => {
     const recovery = lastProjectRecovery;
     if (!recovery?.available) {
       notify('当前没有可恢复的上一次工程', 'info');
       return;
+    }
+    if (requestedMode !== null) {
+      try {
+        assertProjectMode(recovery.teachingSpaceMode, requestedMode);
+      } catch (error) {
+        notify(error.message, 'warning');
+        return;
+      }
     }
     const current = latestWorkspaceRef.current;
     const hasCurrentWork = Boolean(
@@ -2076,14 +2125,13 @@ export default function App() {
     );
     if (hasCurrentWork) {
       const confirmed = window.confirm(
-        `恢复上一次工程会替换当前工作现场。\n\n待恢复：${recovery.mapName || '未命名工程'}\n保存时间：${formatRecoveryTimestamp(recovery.savedAt)}\n\n是否继续？`,
+        `恢复上一次工程会替换“${teachingModeLabel(recovery.teachingSpaceMode)}”的工作缓存，另一种示教模式的缓存会保留。\n\n待恢复：${recovery.mapName || '未命名工程'}\n保存时间：${formatRecoveryTimestamp(recovery.savedAt)}\n\n是否继续？`,
       );
       if (!confirmed) return;
     }
 
     const sessionId = sessionIdRef.current;
     const wasSessionReady = sessionReadyRef.current;
-    sessionReadyRef.current = false;
     if (sessionSaveTimerRef.current) {
       window.clearTimeout(sessionSaveTimerRef.current);
       sessionSaveTimerRef.current = null;
@@ -2096,15 +2144,17 @@ export default function App() {
     });
 
     try {
+      await persistWorkspaceNow();
+      sessionReadyRef.current = false;
       await sessionWriteChainRef.current.catch(() => undefined);
-      await activateWorkspaceRecovery(sessionId);
+      await activateWorkspaceRecovery(sessionId, requestedMode);
       window.location.assign('/workbench');
     } catch (error) {
       sessionReadyRef.current = wasSessionReady;
       setLoadState({ loading: false, progress: 0, phase: '' });
       notify(`上一次工程恢复失败：${error.message}`, 'error');
     }
-  }, [lastProjectRecovery, notify]);
+  }, [lastProjectRecovery, notify, persistWorkspaceNow]);
 
   const setActiveMode = (nextMode) => {
     setMode(nextMode);
@@ -3868,6 +3918,138 @@ export default function App() {
       notify(error?.message || '工作缓存切换失败', 'error');
     }
   };
+
+  const closeProjectLoadDialog = useCallback(() => {
+    projectLoadDialogRevisionRef.current += 1;
+    setProjectLoadDialog((current) => ({ ...current, open: false }));
+  }, []);
+
+  const showProjectLoadDialog = useCallback(async (requestedMode = teachingSpaceMode) => {
+    if (loadState.loading) return;
+    const targetMode = normalizeTeachingSpaceMode(requestedMode);
+    const revision = projectLoadDialogRevisionRef.current + 1;
+    projectLoadDialogRevisionRef.current = revision;
+    setProjectLoadDialog({
+      open: true,
+      mode: targetMode,
+      directory: { status: 'checking' },
+    });
+
+    try {
+      const activeBinding = projectDirectoryRef.current;
+      const activeBindingMode = normalizeTeachingSpaceMode(
+        activeBinding?.teachingSpaceMode || teachingSpaceMode,
+      );
+      const binding = activeBinding?.handle && activeBindingMode === targetMode
+        ? activeBinding
+        : await loadProjectDirectoryBinding(targetMode);
+      if (projectLoadDialogRevisionRef.current !== revision) return;
+      if (!binding?.handle) {
+        setProjectLoadDialog({
+          open: true,
+          mode: targetMode,
+          directory: { status: 'missing' },
+        });
+        return;
+      }
+
+      let permission = 'prompt';
+      let permissionError = '';
+      try {
+        const { queryProjectDirectoryPermission } = await import('./lib/projectArchive.js');
+        permission = await queryProjectDirectoryPermission(binding.handle, false);
+      } catch (error) {
+        permissionError = error?.message || '目录权限状态暂时不可用';
+      }
+      if (projectLoadDialogRevisionRef.current !== revision) return;
+      setProjectLoadDialog({
+        open: true,
+        mode: targetMode,
+        directory: {
+          status: 'available',
+          handle: binding.handle,
+          name: binding.name || binding.handle.name || '工程目录',
+          savedAt: binding.savedAt || binding.manifest?.updatedAt || null,
+          permission,
+          error: permissionError,
+        },
+      });
+    } catch (error) {
+      if (projectLoadDialogRevisionRef.current !== revision) return;
+      setProjectLoadDialog({
+        open: true,
+        mode: targetMode,
+        directory: {
+          status: 'error',
+          error: error?.message || '无法检查默认保存路径',
+        },
+      });
+    }
+  }, [loadState.loading, teachingSpaceMode]);
+
+  const loadDefaultProjectDirectory = async () => {
+    const targetMode = projectLoadDialog.mode;
+    const candidate = projectLoadDialog.directory;
+    if (candidate?.status !== 'available' || !candidate.handle) {
+      notify('默认保存路径当前不可用，请选择其他工程目录', 'warning');
+      return;
+    }
+
+    let permission = candidate.permission;
+    if (permission !== 'granted') {
+      try {
+        const permissionRequest = typeof candidate.handle.requestPermission === 'function'
+          ? candidate.handle.requestPermission({ mode: 'readwrite' })
+          : Promise.resolve('granted');
+        permission = await permissionRequest;
+      } catch (error) {
+        permission = 'denied';
+        console.warn('默认工程目录授权失败', error);
+      }
+    }
+    if (permission !== 'granted') {
+      setProjectLoadDialog((current) => ({
+        ...current,
+        directory: { ...current.directory, permission },
+      }));
+      notify('未获得默认工程目录的读写权限', 'warning');
+      return;
+    }
+
+    closeProjectLoadDialog();
+    await applyImportedProject(async (onProgress) => {
+      const { readProjectDirectoryHandle } = await import('./lib/projectArchive.js');
+      return readProjectDirectoryHandle(candidate.handle, {
+        onProgress,
+        requestPermission: false,
+      });
+    }, candidate.name || '默认工程目录', targetMode);
+  };
+
+  const loadAutoSavedProject = () => {
+    const targetMode = projectLoadDialog.mode;
+    closeProjectLoadDialog();
+    continueWorkspace(targetMode, APP_PAGE_WORKBENCH);
+  };
+
+  const loadRecoveryProject = () => {
+    const targetMode = projectLoadDialog.mode;
+    closeProjectLoadDialog();
+    openLastProject(targetMode);
+  };
+
+  const chooseProjectDirectory = () => {
+    const { mode: targetMode, directory } = projectLoadDialog;
+    closeProjectLoadDialog();
+    openProjectDirectory(targetMode, directory?.handle);
+  };
+
+  const chooseProjectGuideFile = () => {
+    projectGuideModeRef.current = projectLoadDialog.mode;
+    closeProjectLoadDialog();
+    pathInputRef.current?.click();
+  };
+
   const beginNewProject = (requestedMode) => {
     if (loadState.loading || sessionState.status !== 'ready') return;
     if (normalizeTeachingSpaceMode(requestedMode) === 'independent') {
@@ -3891,7 +4073,14 @@ export default function App() {
       data-independent-teaching-input="true"
       onChange={handleIndependentCloudFile}
     />
-    <input ref={pathInputRef} className="visually-hidden" type="file" accept=".zip,.json,application/zip,application/x-zip-compressed,application/json" onChange={handlePathFile} />
+    <input
+      ref={pathInputRef}
+      className="visually-hidden"
+      type="file"
+      accept=".zip,.json,application/zip,application/x-zip-compressed,application/json"
+      data-project-guide-input="true"
+      onChange={handlePathFile}
+    />
     <input
       ref={projectDirectoryInputRef}
       className="visually-hidden"
@@ -3964,11 +4153,9 @@ export default function App() {
             className={`action-button topbar-file-action project-load-action is-${projectDirectoryState.status}`}
             aria-label="加载工程"
             data-project-directory-picker="true"
+            data-project-load-dialog="true"
             data-project-directory-state={projectDirectoryState.status}
-            onClick={(event) => {
-              if (event.altKey) pathInputRef.current?.click();
-              else openProjectDirectory();
-            }}
+            onClick={() => showProjectLoadDialog(teachingSpaceMode)}
             disabled={loadState.loading}
             title={projectDirectoryState.status === 'synced'
               ? `${projectDirectoryState.name} · 修改会直接增量保存到工程目录`
@@ -3978,7 +4165,7 @@ export default function App() {
                   ? `${projectDirectoryState.name} · 请重新选择目录以恢复写入权限`
                   : projectDirectoryState.status === 'readonly'
                     ? `${projectDirectoryState.name} · 当前浏览器仅能读取目录，工作仍由本地会话保护`
-                    : '选择包含 atlas.project.json（新工程）或 manifest.json（兼容工程）的解压目录；按住 Alt 点击可导入旧 ZIP/JSON'}
+                    : '打开工程加载窗口；优先使用默认保存路径，也可选择工程引导文件或其他目录'}
           >
             <FolderOpen size={15} />
             <span>加载工程</span>
@@ -4383,7 +4570,7 @@ export default function App() {
           projectDirectoryState={projectDirectoryState}
           busy={loadState.loading}
           onNewProject={beginNewProject}
-          onLoadProject={openProjectDirectory}
+          onLoadProject={showProjectLoadDialog}
           onContinue={(modeId) => continueWorkspace(modeId, APP_PAGE_WORKBENCH)}
           onOpenTeachingData={(modeId) => continueWorkspace(modeId, APP_PAGE_TEACHING_DATA)}
         />
@@ -4415,7 +4602,7 @@ export default function App() {
           recovery={lastProjectRecovery}
           onBack={() => navigateAppPage(APP_PAGE_WORKBENCH)}
           onHome={() => navigateAppPage(APP_PAGE_HOME)}
-          onOpenLastProject={openLastProject}
+          onOpenLastProject={() => openLastProject()}
           onSelectTask={selectTeachingTask}
           onRenameTask={renameTeachingTask}
           onDeleteTask={deleteTeachingTask}
@@ -4450,6 +4637,20 @@ export default function App() {
         )}
       </div>
     )}
+    <ProjectLoadDialog
+      open={projectLoadDialog.open}
+      teachingSpaceMode={projectLoadDialog.mode}
+      directory={projectLoadDialog.directory}
+      workspace={workspaceCatalog[projectLoadDialog.mode]}
+      recovery={lastProjectRecovery}
+      busy={loadState.loading}
+      onClose={closeProjectLoadDialog}
+      onLoadDefaultDirectory={loadDefaultProjectDirectory}
+      onLoadWorkspace={loadAutoSavedProject}
+      onLoadRecovery={loadRecoveryProject}
+      onChooseDirectory={chooseProjectDirectory}
+      onChooseGuideFile={chooseProjectGuideFile}
+    />
     </>
   );
 }

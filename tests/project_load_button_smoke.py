@@ -53,12 +53,26 @@ def run():
             assert load_button.is_visible()
             assert load_button.is_enabled()
             assert load_button.get_attribute("data-project-directory-picker") == "true"
+            assert load_button.get_attribute("data-project-load-dialog") == "true"
             assert load_button.get_attribute("data-project-directory-state") == "detached"
             assert page.get_by_role("button", name="打开上一次工程").count() == 0
             assert page.get_by_role("button", name="加载路径").count() == 0
 
+            load_button.click()
+            load_dialog = page.get_by_role("dialog", name="加载工程")
+            load_dialog.wait_for()
+            page.wait_for_function(
+                "document.querySelector('.project-load-modal')?.dataset.defaultSource !== 'checking'"
+            )
+            assert load_dialog.get_attribute("data-default-source") == "none"
+            assert page.get_by_role(
+                "button", name="加载工程引导文件", exact=True
+            ).is_visible()
+
             with page.expect_file_chooser() as chooser_info:
-                load_button.click()
+                page.get_by_role(
+                    "button", name="选择其他工程目录", exact=True
+                ).click()
             chooser = chooser_info.value
             assert chooser.is_multiple()
             chooser.set_files(str(fixture_directory))
@@ -71,6 +85,22 @@ def run():
 
             legacy_input = page.locator('input[type="file"][accept*=".zip"]')
             assert ".json" in (legacy_input.get_attribute("accept") or "")
+            assert legacy_input.get_attribute("data-project-guide-input") == "true"
+
+            load_button.click()
+            load_dialog.wait_for()
+            page.wait_for_function(
+                "document.querySelector('.project-load-modal')?.dataset.defaultSource !== 'checking'"
+            )
+            assert load_dialog.get_attribute("data-default-source") == "workspace"
+            with page.expect_file_chooser() as guide_chooser_info:
+                page.get_by_role(
+                    "button", name="加载工程引导文件", exact=True
+                ).click()
+            guide_chooser = guide_chooser_info.value
+            assert not guide_chooser.is_multiple()
+            guide_chooser.set_files(str(fixture_zip))
+            page.get_by_text("ZIP 工程包已加载", exact=False).wait_for()
 
             page.screenshot(path="/tmp/atlas-load-project-button.png", full_page=True)
             assert not page_errors
@@ -87,11 +117,78 @@ def run():
             picker_page.goto(f"{BASE_URL.rstrip('/')}/workbench", wait_until="networkidle")
             picker_page.locator('[data-session-state="ready"]').wait_for()
             picker_page.get_by_role("button", name="加载工程", exact=True).click()
+            picker_page.get_by_role("dialog", name="加载工程").wait_for()
+            picker_page.get_by_role(
+                "button", name="选择其他工程目录", exact=True
+            ).click()
             picker_page.wait_for_function("window.__atlasPickerCalls.length === 1")
             picker_options = picker_page.evaluate("window.__atlasPickerCalls[0]")
             assert picker_options["mode"] == "readwrite"
-            assert picker_options["id"] == "atlas-virtual-teaching-project"
+            assert picker_options["id"] == "atlas-project-map"
             assert picker_page.get_by_role("button", name="加载工程", exact=True).is_enabled()
+
+            picker_page.evaluate(
+                """
+                async () => {
+                  const database = await new Promise((resolve, reject) => {
+                    const request = indexedDB.open('atlas-project-directory-bindings', 1);
+                    request.onupgradeneeded = () => {
+                      if (!request.result.objectStoreNames.contains('bindings')) {
+                        request.result.createObjectStore('bindings', {keyPath: 'key'});
+                      }
+                    };
+                    request.onsuccess = () => resolve(request.result);
+                    request.onerror = () => reject(request.error);
+                  });
+                  const transaction = database.transaction('bindings', 'readwrite');
+                  const store = transaction.objectStore('bindings');
+                  const record = {
+                    key: 'project:map',
+                    handle: {kind: 'directory', name: 'remembered-default.atlas-project'},
+                    name: 'remembered-default.atlas-project',
+                    projectFile: 'config/project.json',
+                    sessionId: 'previous-service-session',
+                    teachingSpaceMode: 'map',
+                    savedAt: '2026-09-20T08:00:00.000Z',
+                  };
+                  store.put(record);
+                  store.put({...record, key: 'active-project'});
+                  await new Promise((resolve, reject) => {
+                    transaction.oncomplete = resolve;
+                    transaction.onerror = () => reject(transaction.error);
+                  });
+                  database.close();
+                }
+                """
+            )
+            picker_page.reload(wait_until="networkidle")
+            picker_page.locator('[data-session-state="ready"]').wait_for()
+            picker_page.get_by_role("button", name="加载工程", exact=True).click()
+            remembered_dialog = picker_page.get_by_role("dialog", name="加载工程")
+            remembered_dialog.wait_for()
+            picker_page.wait_for_function(
+                "document.querySelector('.project-load-modal')?.dataset.defaultSource === 'directory'"
+            )
+            assert "remembered-default.atlas-project" in remembered_dialog.inner_text()
+            picker_page.get_by_role("button", name="关闭加载工程窗口").click()
+            picker_page.evaluate(
+                """
+                async () => {
+                  const database = await new Promise((resolve, reject) => {
+                    const request = indexedDB.open('atlas-project-directory-bindings', 1);
+                    request.onsuccess = () => resolve(request.result);
+                    request.onerror = () => reject(request.error);
+                  });
+                  const transaction = database.transaction('bindings', 'readwrite');
+                  transaction.objectStore('bindings').clear();
+                  await new Promise((resolve, reject) => {
+                    transaction.oncomplete = resolve;
+                    transaction.onerror = () => reject(transaction.error);
+                  });
+                  database.close();
+                }
+                """
+            )
             assert not page_errors
 
             writable_page = browser.new_page(viewport={"width": 1440, "height": 900})
@@ -166,9 +263,33 @@ def run():
             writable_page.locator('[data-session-state="ready"]').wait_for()
             writable_button = writable_page.get_by_role("button", name="加载工程", exact=True)
             writable_button.click()
+            writable_page.get_by_role("dialog", name="加载工程").wait_for()
+            writable_page.get_by_role(
+                "button", name="选择其他工程目录", exact=True
+            ).click()
             writable_page.locator(
                 '[data-project-directory-state="synced"]'
             ).wait_for(timeout=15_000)
+
+            writable_button.click()
+            writable_dialog = writable_page.get_by_role("dialog", name="加载工程")
+            writable_dialog.wait_for()
+            writable_page.wait_for_function(
+                "document.querySelector('.project-load-modal')?.dataset.defaultSource === 'directory'"
+            )
+            assert writable_dialog.get_attribute("data-default-path-state") == "available"
+            writable_page.wait_for_timeout(250)
+            writable_page.screenshot(
+                path="/tmp/atlas-project-load-default-path.png", full_page=True
+            )
+            writable_page.get_by_role(
+                "button", name="从默认保存路径加载", exact=True
+            ).click()
+            writable_dialog.wait_for(state="hidden")
+            writable_page.locator(".loading-curtain").wait_for(
+                state="hidden", timeout=15_000
+            )
+
             writable_page.evaluate("window.__atlasWrittenPaths.length = 0")
             writable_page.get_by_role("button", name="切换点云颜色模式").click()
             writable_page.wait_for_function(
@@ -187,7 +308,9 @@ def run():
     print("project_directory_chooser=ok")
     print("project_directory_readwrite_request=ok")
     print("project_directory_incremental_autosave=ok")
-    print("legacy_zip_fallback=ok")
+    print("project_default_path_reload=ok")
+    print("project_default_path_cross_session=ok")
+    print("project_guide_file_load=ok")
 
 
 if __name__ == "__main__":

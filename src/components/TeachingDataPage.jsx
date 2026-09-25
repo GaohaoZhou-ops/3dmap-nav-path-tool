@@ -241,6 +241,7 @@ export default function TeachingDataPage({
               parkingPoint={archiveSelection?.parkingPoint || null}
               pose={archiveSelection?.pose || null}
               robot={previewRobot}
+              teachingSpaceMode={teachingSpaceMode}
             />
           </div>
         </div>
@@ -249,7 +250,11 @@ export default function TeachingDataPage({
       <footer className="teaching-data-page__statusbar">
         <span><CircleDot size={9} /> TEACHING ARCHIVE</span>
         <span>{tasks.length} TASKS / {parkingPointCount} STOPS / {pointCount} POSES / {cameraFrameCount} CAMERA FRAMES</span>
-        <strong>{coordinateFrameLabel} FRAME · ABSOLUTE POSE</strong>
+        <strong>
+          {coordinateFrameLabel} FRAME · {teachingSpaceMode === 'independent'
+            ? 'BASE ABSOLUTE / ARMS RELATIVE'
+            : 'ABSOLUTE POSE'}
+        </strong>
       </footer>
     </div>
   );

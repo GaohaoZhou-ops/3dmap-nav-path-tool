@@ -4,6 +4,7 @@ import { TrackballControls } from 'three/examples/jsm/controls/TrackballControls
 import {
   Bot,
   Box,
+  Crosshair,
   LoaderCircle,
   MousePointer2,
   RotateCcw,
@@ -12,14 +13,66 @@ import {
 import {
   applyRobotJointValues,
   disposeRobotModel,
+  getRobotEndEffector,
   loadRobotModel,
   normalizeRobotDescriptor,
   normalizeRobotPose,
 } from '../lib/robotLoader.js';
 
+const EMPTY_JOINT_VALUES = Object.freeze({});
+
 const formatPoseValue = (value, digits = 2) => {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed.toFixed(digits) : '--';
+};
+
+const normalizeDegrees = (value) => {
+  const wrapped = ((Number(value) + 180) % 360 + 360) % 360 - 180;
+  return Math.abs(wrapped) < 1e-10 ? 0 : wrapped;
+};
+
+const objectRelativeEndEffectorPose = (robot, side, robotPose) => {
+  const endEffector = getRobotEndEffector(robot, side);
+  if (!endEffector?.frame) return null;
+  robot.updateMatrixWorld(true);
+
+  // Remove the isolated preview transform first, then place the recorded
+  // kinematic chain in the object's virtual_origin coordinate system.
+  const toolInRobot = robot.matrixWorld.clone().invert()
+    .multiply(endEffector.frame.matrixWorld.clone());
+  const baseQuaternion = new THREE.Quaternion().setFromEuler(new THREE.Euler(
+    THREE.MathUtils.degToRad(robotPose.rpy.roll),
+    THREE.MathUtils.degToRad(robotPose.rpy.pitch),
+    THREE.MathUtils.degToRad(robotPose.rpy.yaw),
+    'XYZ',
+  ));
+  const toolInObject = new THREE.Matrix4()
+    .compose(
+      new THREE.Vector3(
+        robotPose.position.x,
+        robotPose.position.y,
+        robotPose.position.z,
+      ),
+      baseQuaternion,
+      new THREE.Vector3(1, 1, 1),
+    )
+    .multiply(toolInRobot);
+  const position = new THREE.Vector3();
+  const quaternion = new THREE.Quaternion();
+  toolInObject.decompose(position, quaternion, new THREE.Vector3());
+  const euler = new THREE.Euler().setFromQuaternion(quaternion.normalize(), 'ZYX');
+  return {
+    side,
+    frameId: 'virtual_origin',
+    frameName: endEffector.frame.name || `tool_${side}`,
+    source: 'recorded-joints-forward-kinematics',
+    position: { x: position.x, y: position.y, z: position.z },
+    rpy: {
+      roll: normalizeDegrees(THREE.MathUtils.radToDeg(euler.x)),
+      pitch: normalizeDegrees(THREE.MathUtils.radToDeg(euler.y)),
+      yaw: normalizeDegrees(THREE.MathUtils.radToDeg(euler.z)),
+    },
+  };
 };
 
 const disposeHelper = (object) => {
@@ -36,6 +89,7 @@ export default function TeachingPoseRobotPreview({
   parkingPoint,
   pose,
   robot,
+  teachingSpaceMode = 'map',
 }) {
   const viewportRef = useRef(null);
   const canvasRef = useRef(null);
@@ -43,12 +97,29 @@ export default function TeachingPoseRobotPreview({
   const robotRef = useRef(null);
   const [modelRevision, setModelRevision] = useState(0);
   const [loadState, setLoadState] = useState({ status: 'idle', detail: '' });
+  const [relativeArmPoseSnapshot, setRelativeArmPoseSnapshot] = useState({
+    poseId: '',
+    poses: {},
+  });
 
   const descriptor = useMemo(() => normalizeRobotDescriptor(robot), [robot]);
   const descriptorKey = descriptor?.id || descriptor?.relativePath || '';
   const recordedPose = useMemo(() => normalizeRobotPose(pose?.mapPose), [pose?.mapPose]);
-  const jointValues = pose?.fullBodyJoints?.values || {};
+  const jointValues = pose?.fullBodyJoints?.values || EMPTY_JOINT_VALUES;
   const jointCount = Object.keys(jointValues).length;
+  const isIndependentTeachingSpace = teachingSpaceMode === 'independent'
+    || task?.coordinateFrame === 'virtual_origin';
+  const relativeArmPoses = relativeArmPoseSnapshot.poseId === pose?.id
+    ? relativeArmPoseSnapshot.poses
+    : {};
+  const relativeArmPoseCount = Object.keys(relativeArmPoses).length;
+  const relativeArmPoseState = !pose
+    ? 'empty'
+    : loadState.status === 'loading'
+      ? 'calculating'
+      : loadState.status === 'error'
+        ? 'unavailable'
+        : relativeArmPoseCount === 2 ? 'ready' : 'unavailable';
 
   const fitRobot = useCallback(() => {
     const context = sceneContextRef.current;
@@ -252,6 +323,11 @@ export default function TeachingPoseRobotPreview({
     if (!pose) {
       canvas.dataset.appliedJointValues = '{}';
       canvas.dataset.appliedJointCount = '0';
+      setRelativeArmPoseSnapshot((current) => (
+        current.poseId || Object.keys(current.poses).length
+          ? { poseId: '', poses: {} }
+          : current
+      ));
       return;
     }
 
@@ -273,15 +349,47 @@ export default function TeachingPoseRobotPreview({
     canvas.dataset.mapRoll = String(recordedPose.rpy.roll);
     canvas.dataset.mapPitch = String(recordedPose.rpy.pitch);
     canvas.dataset.mapYaw = String(recordedPose.rpy.yaw);
+    if (isIndependentTeachingSpace) {
+      const poses = Object.fromEntries(
+        ['left', 'right'].flatMap((side) => {
+          const relativePose = objectRelativeEndEffectorPose(
+            loadedRobot,
+            side,
+            recordedPose,
+          );
+          return relativePose ? [[side, relativePose]] : [];
+        }),
+      );
+      setRelativeArmPoseSnapshot({ poseId: pose.id || '', poses });
+      canvas.dataset.relativeArmPoseFrame = 'virtual_origin';
+      canvas.dataset.relativeArmPoseSource = 'recorded-joints-forward-kinematics';
+      canvas.dataset.relativeArmPoseCount = String(Object.keys(poses).length);
+    } else {
+      setRelativeArmPoseSnapshot((current) => (
+        current.poseId || Object.keys(current.poses).length
+          ? { poseId: '', poses: {} }
+          : current
+      ));
+      delete canvas.dataset.relativeArmPoseFrame;
+      delete canvas.dataset.relativeArmPoseSource;
+      canvas.dataset.relativeArmPoseCount = '0';
+    }
     window.requestAnimationFrame(fitRobot);
-  }, [fitRobot, jointValues, modelRevision, pose, recordedPose]);
+  }, [
+    fitRobot,
+    isIndependentTeachingSpace,
+    jointValues,
+    modelRevision,
+    pose,
+    recordedPose,
+  ]);
 
   const ready = loadState.status === 'ready';
   const hasPose = Boolean(pose);
 
   return (
     <section
-      className={`teaching-pose-robot-preview is-${loadState.status} ${hasPose ? 'has-pose' : 'is-empty'}`}
+      className={`teaching-pose-robot-preview is-${loadState.status} ${hasPose ? 'has-pose' : 'is-empty'} ${isIndependentTeachingSpace && hasPose ? 'shows-object-relative-poses' : ''}`}
       aria-label="机器人示教姿态三维预览"
       data-preview-state={loadState.status}
       data-pose-id={pose?.id || ''}
@@ -289,6 +397,11 @@ export default function TeachingPoseRobotPreview({
       data-scene-content="robot-only"
       data-environment-point-cloud="false"
       data-environment-mesh="false"
+      data-relative-arm-pose-state={isIndependentTeachingSpace
+        ? relativeArmPoseState
+        : 'disabled'}
+      data-relative-arm-pose-count={isIndependentTeachingSpace ? relativeArmPoseCount : 0}
+      data-relative-arm-pose-frame={isIndependentTeachingSpace ? 'virtual_origin' : ''}
     >
       <header className="teaching-pose-robot-preview__header">
         <div>
@@ -359,9 +472,73 @@ export default function TeachingPoseRobotPreview({
         )}
       </div>
 
+      {isIndependentTeachingSpace && hasPose && (
+        <section
+          className={`teaching-object-arm-poses is-${relativeArmPoseState}`}
+          aria-label="物体坐标系下双臂相对姿态"
+          data-relative-pose-state={relativeArmPoseState}
+          data-coordinate-frame="virtual_origin"
+          data-calculation-source="recorded-joints-forward-kinematics"
+        >
+          <header>
+            <span><Crosshair size={12} /></span>
+            <div>
+              <strong>物体坐标系相对姿态</strong>
+              <small>VIRTUAL_ORIGIN · XYZ m / RPY °</small>
+            </div>
+            <em>{relativeArmPoseState === 'ready'
+              ? 'FK READY'
+              : relativeArmPoseState === 'calculating' ? 'CALCULATING' : 'NO TOOL FRAME'}</em>
+          </header>
+          <div className="teaching-object-arm-poses__grid">
+            {['left', 'right'].map((side) => {
+              const armPose = relativeArmPoses[side];
+              const sideLabel = side === 'left' ? '左臂末端' : '右臂末端';
+              return (
+                <article
+                  key={side}
+                  className={`teaching-object-arm-pose is-${side}`}
+                  aria-label={`${sideLabel}物体坐标系相对姿态`}
+                  data-arm-side={side}
+                  data-frame-id={armPose?.frameId || 'virtual_origin'}
+                  data-frame-name={armPose?.frameName || `tool_${side}`}
+                  data-position-x={armPose?.position.x ?? ''}
+                  data-position-y={armPose?.position.y ?? ''}
+                  data-position-z={armPose?.position.z ?? ''}
+                  data-roll={armPose?.rpy.roll ?? ''}
+                  data-pitch={armPose?.rpy.pitch ?? ''}
+                  data-yaw={armPose?.rpy.yaw ?? ''}
+                >
+                  <header>
+                    <span>{side === 'left' ? 'L' : 'R'}</span>
+                    <div><strong>{sideLabel}</strong><small>{armPose?.frameName || `tool_${side}`}</small></div>
+                  </header>
+                  <dl>
+                    {[
+                      ['X', armPose?.position.x, 'm', 3],
+                      ['Y', armPose?.position.y, 'm', 3],
+                      ['Z', armPose?.position.z, 'm', 3],
+                      ['R', armPose?.rpy.roll, '°', 2],
+                      ['P', armPose?.rpy.pitch, '°', 2],
+                      ['Y', armPose?.rpy.yaw, '°', 2],
+                    ].map(([label, value, unit, digits], index) => (
+                      <div key={`${label}-${index}`}>
+                        <dt>{label}</dt>
+                        <dd>{formatPoseValue(value, digits)}</dd>
+                        <small>{unit}</small>
+                      </div>
+                    ))}
+                  </dl>
+                </article>
+              );
+            })}
+          </div>
+        </section>
+      )}
+
       <footer className="teaching-pose-robot-preview__footer">
         <div>
-          <span>MAP XYZ</span>
+          <span>{isIndependentTeachingSpace ? 'OBJECT BASE XYZ' : 'MAP XYZ'}</span>
           <strong>
             {hasPose
               ? `${formatPoseValue(recordedPose.position.x)} / ${formatPoseValue(recordedPose.position.y)} / ${formatPoseValue(recordedPose.position.z)} m`
@@ -369,7 +546,7 @@ export default function TeachingPoseRobotPreview({
           </strong>
         </div>
         <div>
-          <span>MAP RPY</span>
+          <span>{isIndependentTeachingSpace ? 'OBJECT BASE RPY' : 'MAP RPY'}</span>
           <strong>
             {hasPose
               ? `${formatPoseValue(recordedPose.rpy.roll, 1)} / ${formatPoseValue(recordedPose.rpy.pitch, 1)} / ${formatPoseValue(recordedPose.rpy.yaw, 1)}°`

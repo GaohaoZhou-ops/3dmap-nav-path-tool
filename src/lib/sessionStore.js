@@ -166,7 +166,12 @@ const readWorkspaceRecords = async (database) => {
     workspaceIndex,
     activeMode,
     legacyWorkspace: !indexedMode,
-    recoveryMeta,
+    recoveryMeta: recoveryMeta?.available
+      ? {
+          ...recoveryMeta,
+          teachingSpaceMode: inferWorkspaceMode(recoveryMap, recoveryConfig, recoveryMeta.teachingSpaceMode),
+        }
+      : recoveryMeta,
     recoveryMap,
     recoveryConfig,
   };
@@ -328,6 +333,7 @@ const summarizeRecovery = ({ recoveryId, sourceSessionId, archivedAt }, map, con
   return {
     available: true,
     recoveryId,
+    teachingSpaceMode: inferWorkspaceMode(map, config),
     sourceSessionId: sourceSessionId || null,
     archivedAt: Number(archivedAt) || Date.now(),
     savedAt,
@@ -478,7 +484,7 @@ export async function prepareWorkspaceSession(sessionId) {
   };
 }
 
-export async function activateWorkspaceRecovery(sessionId) {
+export async function activateWorkspaceRecovery(sessionId, requestedMode = null) {
   if (!sessionId) throw new Error('当前服务会话尚未就绪');
   const database = await openDatabase();
   const records = await readWorkspaceRecords(database);
@@ -498,6 +504,9 @@ export async function activateWorkspaceRecovery(sessionId) {
   }
 
   const activeMode = inferWorkspaceMode(recoveryMap, recoveryConfig, 'map');
+  if (requestedMode !== null && normalizeWorkspaceMode(requestedMode) !== activeMode) {
+    throw new Error('恢复副本的示教类型与当前入口不一致，请切换示教模式后再加载');
+  }
   const restoredMap = recoveryMap
     ? restoreRecoveryRecord(recoveryMap, workspaceMapKey(activeMode), sessionId)
     : null;
@@ -507,14 +516,21 @@ export async function activateWorkspaceRecovery(sessionId) {
   const workspaceIndex = normalizeWorkspaceIndex(
     sessionId,
     activeMode,
-    null,
+    records.workspaceIndex?.sessionId === sessionId
+      ? {
+          ...records.workspaceIndex,
+          modes: { ...records.workspaceIndex.modes, [activeMode]: null },
+        }
+      : null,
     restoredMap,
     restoredConfig,
   );
 
   const transaction = database.transaction(STORE_NAME, 'readwrite');
   const store = transaction.objectStore(STORE_NAME);
-  ALL_WORKSPACE_KEYS.forEach((key) => store.delete(key));
+  CURRENT_KEYS.forEach((key) => store.delete(key));
+  store.delete(workspaceMapKey(activeMode));
+  store.delete(workspaceConfigKey(activeMode));
   store.put({
     key: 'meta',
     sessionId,
@@ -527,7 +543,7 @@ export async function activateWorkspaceRecovery(sessionId) {
   if (restoredConfig) store.put(restoredConfig);
   RECOVERY_KEYS.forEach((key) => store.delete(key));
   await transactionComplete(transaction);
-  clearWorkspaceViewState();
+  clearWorkspaceViewState(activeMode);
   return recoveryMeta;
 }
 

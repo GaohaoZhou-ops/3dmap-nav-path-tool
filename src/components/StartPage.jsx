@@ -166,15 +166,15 @@ export default function StartPage({
             <button
               type="button"
               className="start-page__load-project"
-              onClick={onLoadProject}
+              onClick={() => onLoadProject?.(selectedMode)}
               disabled={controlsDisabled}
               aria-label="加载工程"
             >
               <span><FolderOpen size={20} /></span>
               <span>
-                <small>ATLAS.PROJECT.JSON</small>
+                <small>AUTO-SAVE / GUIDE FILE</small>
                 <strong>加载工程</strong>
-                <p>打开已有工程目录并恢复其模式、资源、视角与未完成任务</p>
+                <p>{independent ? '加载独立示教工程，使用独立示教的默认目录与缓存' : '加载地图示教工程，使用地图示教的默认目录与缓存'}</p>
               </span>
               <ArrowRight size={17} />
             </button>

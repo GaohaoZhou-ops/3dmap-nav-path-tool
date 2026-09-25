@@ -1,5 +1,14 @@
 {
   "schemaVersion": "1.3",
+  "workspace": {
+    "teachingSpaceMode": "independent"
+  },
+  "teachingSpace": {
+    "mode": "independent",
+    "coordinateFrame": "virtual_origin",
+    "origin": { "x": 0, "y": 0, "z": 0 },
+    "originSource": "point-cloud-origin"
+  },
   "map": {
     "fileName": "archived-preview-map.ply",
     "format": "ply",
@@ -21,7 +30,7 @@
         "id": "preview-task",
         "name": "预览验证任务",
         "createdAt": "2026-09-15T02:10:00.000Z",
-        "coordinateFrame": "map",
+        "coordinateFrame": "virtual_origin",
         "robot": {
           "id": "botx_abx_zivid_m70/urdf/botx_abx_zivid_m70.urdf",
           "name": "botx_abx_zivid_m70",
@@ -29,7 +38,9 @@
         },
         "map": {
           "fileName": "archived-preview-map.ply",
-          "sourceHash": "teaching-pose-preview-map"
+          "sourceHash": "teaching-pose-preview-map",
+          "teachingSpaceMode": "independent",
+          "coordinateFrame": "virtual_origin"
         },
         "parkingPoints": [
           {
@@ -37,7 +48,7 @@
             "name": "停车点 P01",
             "sequence": 1,
             "mapPose": {
-              "frameId": "map",
+              "frameId": "virtual_origin",
               "position": { "x": 2.4, "y": -1.25, "z": 0.08 },
               "rpy": { "roll": 1.5, "pitch": -2.25, "yaw": 32 }
             },
@@ -48,7 +59,7 @@
                 "sequence": 1,
                 "capturedAt": "2026-09-15T02:12:00.000Z",
                 "mapPose": {
-                  "frameId": "map",
+                  "frameId": "virtual_origin",
                   "position": { "x": 2.4, "y": -1.25, "z": 0.08 },
                   "rpy": { "roll": 1.5, "pitch": -2.25, "yaw": 32 }
                 },

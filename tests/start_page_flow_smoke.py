@@ -6,6 +6,7 @@ from playwright.sync_api import sync_playwright
 
 BASE_URL = os.environ.get("BASE_URL", "http://127.0.0.1:21990").rstrip("/")
 FIXTURE = Path(__file__).parent / "fixtures" / "rotation-map.ply"
+CHROME = Path("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome")
 
 
 def wait_for_home(page):
@@ -23,7 +24,10 @@ def wait_for_workbench(page):
 def run():
     errors = []
     with sync_playwright() as playwright:
-        browser = playwright.chromium.launch(headless=True)
+        options = {"headless": True}
+        if CHROME.exists():
+            options["executable_path"] = str(CHROME)
+        browser = playwright.chromium.launch(**options)
         page = browser.new_page(viewport={"width": 1440, "height": 900})
         page.set_default_timeout(30_000)
         page.on("pageerror", lambda exc: errors.append(str(exc)))
@@ -44,6 +48,18 @@ def run():
         assert page.get_by_role("radio", name="独立示教").get_attribute(
             "aria-checked"
         ) == "true"
+
+        page.get_by_role("button", name="加载工程", exact=True).click()
+        load_dialog = page.get_by_role("dialog", name="加载工程")
+        load_dialog.wait_for()
+        assert load_dialog.get_attribute("data-teaching-space-mode") == "independent"
+        assert page.get_by_role(
+            "button", name="加载工程引导文件", exact=True
+        ).is_visible()
+        page.wait_for_timeout(250)
+        page.screenshot(path="/tmp/atlas-project-load-dialog.png", full_page=True)
+        page.get_by_role("button", name="关闭加载工程窗口").click()
+        load_dialog.wait_for(state="hidden")
 
         with page.expect_file_chooser() as chooser_info:
             page.get_by_role("button", name="新建工程").click()

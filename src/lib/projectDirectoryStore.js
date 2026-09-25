@@ -71,11 +71,13 @@ export const loadProjectDirectoryBinding = async (teachingSpaceMode = 'map') => 
   let result = await runTransaction('readonly', (store) => store.get(modeKey(mode)));
   if (!result) {
     const legacy = await runTransaction('readonly', (store) => store.get(ACTIVE_KEY));
-    if (legacy && (!legacy.teachingSpaceMode || normalizeMode(legacy.teachingSpaceMode) === mode)) {
+    // Bindings predating teaching modes belong to the original map workspace.
+    if (legacy && normalizeMode(legacy.teachingSpaceMode) === mode) {
       result = { ...legacy, key: modeKey(mode), teachingSpaceMode: mode };
       await runTransaction('readwrite', (store) => store.put(result));
     }
   }
+  if (result?.teachingSpaceMode && normalizeMode(result.teachingSpaceMode) !== mode) return null;
   return result?.handle?.kind === 'directory' ? result : null;
 };
 
@@ -87,8 +89,9 @@ export const clearProjectDirectoryBinding = async (teachingSpaceMode = null) => 
     ]);
     return;
   }
-  await Promise.all([
-    runTransaction('readwrite', (store) => store.delete(ACTIVE_KEY)),
-    runTransaction('readwrite', (store) => store.delete(modeKey(teachingSpaceMode))),
-  ]);
+  const active = await runTransaction('readonly', (store) => store.get(ACTIVE_KEY));
+  await runTransaction('readwrite', (store) => store.delete(modeKey(teachingSpaceMode)));
+  if (active && normalizeMode(active.teachingSpaceMode) === normalizeMode(teachingSpaceMode)) {
+    await runTransaction('readwrite', (store) => store.delete(ACTIVE_KEY));
+  }
 };

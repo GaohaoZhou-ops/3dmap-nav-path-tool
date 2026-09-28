@@ -3334,6 +3334,7 @@ export default function App() {
         payload,
         `virtual-teaching-${stamp}.zip`,
         {
+          includeAbxTeaching: teachingSpaceMode === 'map',
           mapResource,
           existingRobotPackage: reusableRobotPackage,
           onProgress: ({ phase, detail, progress }) => setProjectExportState({
@@ -3351,6 +3352,10 @@ export default function App() {
         statistics: archive.manifest.statistics,
       });
       const sizeMb = archive.byteLength / (1024 * 1024);
+      if (archive.manifest.abxExport?.status === 'blocked') {
+        notify(`工程 ZIP 备份已导出；ABX 任务未生成：${archive.manifest.abxExport.message}`, 'warning');
+        return;
+      }
       notify(
         teachingTasks.length
           ? `便携工程 ZIP 已导出 · ${sizeMb >= 0.1 ? `${sizeMb.toFixed(1)} MB` : `${Math.max(1, Math.round(archive.byteLength / 1024))} KB`}`

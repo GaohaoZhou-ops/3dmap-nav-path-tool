@@ -78,3 +78,11 @@ Server manifest 使用 SHA-256 同时绑定任务计算字段、原始地图来�
 带 mesh 的 PLY 会额外缓存原始三角面索引；首次以新版本重新选择一次文件后，后续刷新可直接恢复混合渲染，不会再次解析数百万个 face。
 
 导出的导航点同时包含通用的 `pose` 对象，以及兼容字段 `xzy`（`[x, z, y]`）和 `rpy`（`[roll, pitch, yaw]`）。
+
+地图示教的“导出 ZIP”还会在原有完整工程包中附加 `abx/`：`manifest.json` 使用 ABX 的 `abx-teaching-export` v1，各任务为 `tasks/*.abxteach.ndjson`（`abx-teaching-task` v11，包含正文 SHA-256 校验），并提供已有导航图的 `graph_route.geojson`、`graph_yaw.geojson` 和来源映射。解压后，在对应机器人/实例的大脑 Web“示教任务”中逐个导入 NDJSON；存储服务负责写入当前 abxpipeline 分支的真机 `teaching/<robot_id>.sqlite3` 或 Mock `simulation/<deployment_id>/teaching.sqlite3`。导出本身不修改这些工程、数据库或运行服务，不生成运动 workflow，也不安装路网。路网部署位置与限制见包内 `abx/README.txt`。
+
+ABX 执行依赖显式导航动作，因此导出只匹配已有导航点的 X/Y/yaw（容差 `1e-6 m` / `1e-6 rad`，允许整圈等效朝向），在停车点首个姿态和同组底盘目标变化处插入导航步骤，并检查有向可达性。不会自动连线、补反向边或将近邻停车点吸附到导航图。不能唯一匹配、型号不一致、关节缺失或存在不能表达的运动设置时，整批 ABX 任务停止生成，现有提示显示原因，ZIP 内 `abx/export-status.json` 记录原因；完整虚拟工程仍正常备份、恢复。20 个全身关节按实际 URDF 名称匹配并转成弧度，不补零；轮组由导航控制，灵巧手等超出 ABX 20 关节记录格式的关节会明确报错。
+
+ABX 导航使用平面的 X/Y/yaw；原始 Z/roll/pitch、视觉快照和路径参数保留在完整工程中。大脑/RouteServer 使用自身实例的速度、加速度配置，不能将源工程的逐边 `limits` 当作已生效的执行约束。导出的虚拟姿态不伪造实测 SLAM/里程计，参考 RGB/XYZ 不变成真实采集记录或自动拍照动作。`abx/` 仅为手动导出时的快照；修改示教后须重新导出，工程目录自动保存不会刷新 ABX 文件。独立示教导出、目录保存和原有恢复流程保持原样。
+
+导出适配回归：`node tests/abx_teaching_export_smoke.mjs`。该测试还会只读加载同级 ABXBrainSystem 的现有导入器和执行计划代码，在临时目录内验证导入、再导出和计划生成；可用 `ABX_BRAIN_ROOT` 指定其位置，不向运行中的大脑提交任务。

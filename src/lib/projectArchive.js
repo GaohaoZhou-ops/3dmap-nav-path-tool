@@ -1,5 +1,6 @@
 import { strFromU8, strToU8, unzip, zip } from 'fflate';
 import { sha256Bytes } from './hash.js';
+import { buildAbxTeachingExport } from './abxTeachingExport.js';
 
 export const PROJECT_ARCHIVE_FORMAT = 'atlas-route-studio-project';
 export const PROJECT_ARCHIVE_VERSION = 2;
@@ -679,6 +680,12 @@ export async function buildProjectArchive(payload, options = {}) {
   const robotMetadata = robotPackage
     ? addRobotResource(entries, robotPackage, payload.robot)
     : null;
+  const abxExport = options.includeAbxTeaching
+    ? await buildAbxTeachingExport(payload, { robotPackage })
+    : null;
+  if (abxExport) {
+    Object.entries(abxExport.files).forEach(([path, data]) => addEntry(entries, path, data));
+  }
   statistics.environmentFileCount = Object.keys(entries).filter((path) => path.startsWith('environment/')).length;
   statistics.robotFileCount = Object.keys(entries).filter((path) => path.startsWith('robot/')).length;
   const project = {
@@ -738,6 +745,7 @@ export async function buildProjectArchive(payload, options = {}) {
     'manifest.json 保存逐文件 SHA-256；导入时会先校验完整性、地图与机器人身份。',
     '日常工作请直接打开本目录；程序会增量写入配置与新增示教资源，不会反复压缩。',
     '需要迁移到其他设备时，请人工压缩/解压整个目录，保持目录层级不变。',
+    ...(abxExport ? ['', 'ABX 地图示教适配结果及导入说明：abx/README.txt'] : []),
   ].join('\n')));
 
   const entryPaths = Object.keys(entries).sort();
@@ -766,6 +774,7 @@ export async function buildProjectArchive(payload, options = {}) {
     exportedAt: project.exportedAt || new Date().toISOString(),
     projectFile: PROJECT_ARCHIVE_CONFIG,
     portable: true,
+    ...(abxExport ? { abxExport: abxExport.summary } : {}),
     layout: {
       descriptor: PROJECT_DIRECTORY_DESCRIPTOR,
       environment: 'environment/{map.json,positions.f32le,colors.rgb8,triangles.*}',

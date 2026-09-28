@@ -4,6 +4,8 @@ from pathlib import Path
 
 from playwright.sync_api import sync_playwright
 
+from viewer_tools_helpers import viewer_tool
+
 from archive_helpers import read_exported_project
 
 
@@ -97,7 +99,7 @@ def run():
         assert first_parking_node.is_visible()
         assert first_parking_node.get_attribute("aria-current") == "true"
 
-        robot_button = page.get_by_role("button", name="定位机器人模型")
+        robot_button = viewer_tool(page, name="定位机器人模型")
         robot_button.click()
         page.wait_for_function(
             "document.querySelector('.three-canvas')?.dataset.robotControlEnabled === 'true'"

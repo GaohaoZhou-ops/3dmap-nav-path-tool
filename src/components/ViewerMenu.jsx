@@ -1,8 +1,8 @@
 import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { ChevronDown, SlidersHorizontal, X } from 'lucide-react';
+import { ChevronDown, X } from 'lucide-react';
 
-export default function ViewerDisplaySettings({ children, isActive = true }) {
+export default function ViewerMenu({ children, label, title, icon: Icon, align = 'end', isActive = true }) {
   const menuId = useId();
   const triggerRef = useRef(null);
   const menuRef = useRef(null);
@@ -48,7 +48,10 @@ export default function ViewerDisplaySettings({ children, isActive = true }) {
       const placeAbove = below < menu.scrollHeight && above > below;
       const maxHeight = Math.max(0, placeAbove ? above : below);
       setPosition({
-        left: Math.max(padding, Math.min(trigger.right - menu.offsetWidth, window.innerWidth - menu.offsetWidth - padding)),
+        left: Math.max(padding, Math.min(
+          align === 'start' ? trigger.left : trigger.right - menu.offsetWidth,
+          window.innerWidth - menu.offsetWidth - padding,
+        )),
         top: placeAbove ? trigger.top - gap - Math.min(menu.offsetHeight, maxHeight) : trigger.bottom + gap,
         maxHeight,
       });
@@ -64,11 +67,11 @@ export default function ViewerDisplaySettings({ children, isActive = true }) {
       window.removeEventListener('resize', updatePosition);
       window.removeEventListener('scroll', updatePosition, true);
     };
-  }, [open]);
+  }, [open, align]);
 
   return (
     <div
-      className="viewer-display-settings"
+      className="viewer-menu"
       onBlur={(event) => {
         if (!triggerRef.current?.contains(event.relatedTarget) && !menuRef.current?.contains(event.relatedTarget)) {
           setOpen(false);
@@ -86,8 +89,8 @@ export default function ViewerDisplaySettings({ children, isActive = true }) {
       <button
         ref={triggerRef}
         type="button"
-        className={`viewer-display-settings__trigger ${open ? 'is-open' : ''}`}
-        aria-label="显示设置"
+        className={`viewer-menu__trigger ${open ? 'is-open' : ''}`}
+        aria-label={label}
         aria-haspopup="dialog"
         aria-expanded={open}
         aria-controls={open ? menuId : undefined}
@@ -99,25 +102,25 @@ export default function ViewerDisplaySettings({ children, isActive = true }) {
             setOpen(true);
           }
         }}
-        title="点云颜色、显示密度与网格质量"
+        title={title}
       >
-        <SlidersHorizontal size={13} />
-        <span>显示设置</span>
+        <Icon size={13} />
+        <span>{label}</span>
         <ChevronDown size={11} />
       </button>
       {open && createPortal(
         <div
           ref={menuRef}
           id={menuId}
-          className="viewer-display-settings__menu"
+          className="viewer-menu__panel"
           role="dialog"
-          aria-label="3D 显示设置"
+          aria-label={`3D ${label}`}
           tabIndex={-1}
           style={position}
         >
-          <header className="viewer-display-settings__heading">
-            <strong><SlidersHorizontal size={13} /> 显示设置</strong>
-            <button type="button" aria-label="关闭显示设置" onClick={closeAndFocus}>
+          <header className="viewer-menu__heading">
+            <strong><Icon size={13} /> {label}</strong>
+            <button type="button" aria-label={`关闭${label}`} onClick={closeAndFocus}>
               <X size={13} />
             </button>
           </header>

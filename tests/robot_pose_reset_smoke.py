@@ -4,6 +4,8 @@ from pathlib import Path
 
 from playwright.sync_api import sync_playwright
 
+from viewer_tools_helpers import open_viewer_tools, viewer_tool
+
 
 BASE_URL = os.environ.get("BASE_URL", "http://127.0.0.1:21990").rstrip("/")
 FIXTURE = Path(__file__).parent / "fixtures" / "rotation-map.ply"
@@ -31,7 +33,7 @@ def run():
         page.goto(f"{BASE_URL}/workbench", wait_until="networkidle")
         page.locator('[data-session-state="ready"]').wait_for()
         page.locator(".loading-curtain").wait_for(state="hidden")
-        assert page.get_by_role("button", name="复位机器人关节姿态").count() == 0
+        assert viewer_tool(page, name="复位机器人关节姿态").count() == 0
 
         page.locator('input[type="file"][accept=".ply"]').set_input_files(str(FIXTURE))
         page.locator(".loading-curtain").wait_for(state="hidden")
@@ -45,14 +47,14 @@ def run():
             "document.querySelector('.three-canvas')?.dataset.robotModelState === 'loaded'",
             timeout=180_000,
         )
-        reset_button = page.get_by_role("button", name="复位机器人关节姿态")
+        reset_button = viewer_tool(page, name="复位机器人关节姿态")
         assert reset_button.is_visible()
         assert reset_button.is_enabled()
         assert int(reset_button.get_attribute("data-resettable-joint-count")) > 0
 
         slice_control_box = page.locator(".height-range").bounding_box()
         slice_rail_box = page.locator(".height-range__rail").bounding_box()
-        toolbar_box = page.locator(".viewer-tool-switch").bounding_box()
+        toolbar_box = page.get_by_role("button", name="视图工具", exact=True).bounding_box()
         assert slice_control_box and slice_rail_box and toolbar_box
         assert slice_control_box["height"] <= 227
         assert slice_rail_box["height"] <= 110
@@ -117,6 +119,7 @@ def run():
         page.get_by_role("dialog", name="全关节控制浮动窗口").wait_for(
             state="detached"
         )
+        open_viewer_tools(page)
         reset_button.click()
         page.wait_for_function(
             """

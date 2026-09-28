@@ -5,6 +5,8 @@ from pathlib import Path
 
 from playwright.sync_api import sync_playwright
 
+from viewer_tools_helpers import open_viewer_tools, viewer_tool
+
 from archive_helpers import read_exported_project
 
 
@@ -103,10 +105,9 @@ def run():
         assert abs(left_tool[2] - right_tool[2]) < 1e-5
         assert left_tool[2] < waist[2]
         assert page.locator(".robot-picker").get_attribute("data-robot-picker-state") == "loaded"
-        assert "2× Zivid" in page.get_by_label("机器人模型状态").inner_text()
         assert page.get_by_text("2 × Zivid · 2 optical frames", exact=True).is_visible()
 
-        control = page.get_by_role("button", name="定位机器人模型")
+        control = viewer_tool(page, name="定位机器人模型")
         assert control.is_visible()
         assert page.get_by_role("button", name="切换机器人键盘控制").count() == 0
         assert control.get_attribute("aria-pressed") == "false"
@@ -118,18 +119,17 @@ def run():
         assert height_lock.get_attribute("aria-pressed") == "false"
         assert canvas.get_attribute("data-robot-height-locked") == "false"
 
+        open_viewer_tools(page)
         control.click()
         page.wait_for_function(
             "document.querySelector('.three-canvas')?.dataset.robotControlEnabled === 'true'"
         )
-        assert control.get_attribute("aria-pressed") == "true"
+        assert canvas.get_attribute("data-robot-control-enabled") == "true"
         assert canvas.get_attribute("data-keyboard-control-owner") == "robot"
-        assert "MECANUM DRIVE · ACTIVE" in page.get_by_label("机器人模型状态").inner_text()
 
         # Selecting the robot must not disable the global Shift + left-drag
         # viewport pan contract. The camera and target translate together while
         # the robot remains untouched and keeps keyboard ownership afterwards.
-        interaction_button = page.locator(".viewer-interaction-mode")
         shift_pose_before = read_pose(canvas)
         shift_camera_before = read_camera(canvas)
         shift_box = canvas.bounding_box()
@@ -140,8 +140,6 @@ def run():
         )
         assert canvas.get_attribute("data-shift-pan-scope") == "camera-and-robot"
         assert canvas.get_attribute("data-shift-pan-priority") == "viewport-first"
-        assert interaction_button.get_attribute("data-mode") == "shift-pan"
-        assert "Shift 平移" in interaction_button.inner_text()
         page.mouse.move(
             shift_box["x"] + shift_box["width"] * 0.32,
             shift_box["y"] + shift_box["height"] * 0.56,
@@ -163,7 +161,6 @@ def run():
         assert canvas.get_attribute("data-last-pointer-gesture") == "shift-pan"
         assert canvas.get_attribute("data-robot-control-enabled") == "true"
         assert canvas.get_attribute("data-keyboard-control-owner") == "robot"
-        assert interaction_button.get_attribute("data-mode") == "rotate"
         assert math.hypot(
             shift_camera_after[3] - shift_camera_before[3],
             shift_camera_after[4] - shift_camera_before[4],
@@ -220,16 +217,17 @@ def run():
         assert canvas.get_attribute("data-keyboard-control-owner") == "robot"
         assert read_camera(canvas) == camera_before_control
 
+        open_viewer_tools(page)
         height_lock.click()
         page.wait_for_function(
             "document.querySelector('.three-canvas')?.dataset.robotHeightLocked === 'true'"
         )
         assert height_lock.get_attribute("aria-label") == "解锁机器人高度"
         assert height_lock.get_attribute("aria-pressed") == "true"
-        assert "Z HOLD" in page.get_by_label("机器人模型状态").inner_text()
         assert "Z 高度已锁" in page.locator(".robot-drive-row").inner_text()
 
         locked_robot_z = read_pose(canvas)["z"]
+        canvas.focus()
         page.keyboard.press("ArrowDown")
         page.wait_for_timeout(160)
         assert abs(read_pose(canvas)["z"] - locked_robot_z) < 1e-9
@@ -237,10 +235,12 @@ def run():
         assert int(canvas.get_attribute("data-robot-height-lock-blocked-count")) >= 1
         assert read_camera(canvas) == camera_before_control
 
+        open_viewer_tools(page)
         height_lock.click()
         page.wait_for_function(
             "document.querySelector('.three-canvas')?.dataset.robotHeightLocked === 'false'"
         )
+        canvas.focus()
         page.keyboard.press("ArrowDown")
         page.wait_for_function(
             "(threshold) => Number(document.querySelector('.three-canvas')?.dataset.robotZ) < threshold",
@@ -249,6 +249,7 @@ def run():
         robot_z_after_trim = read_pose(canvas)["z"]
         assert canvas.get_attribute("data-last-robot-action") == "z-down"
         assert read_camera(canvas) == camera_before_control
+        open_viewer_tools(page)
         height_lock.click()
         page.wait_for_function(
             "document.querySelector('.three-canvas')?.dataset.robotHeightLocked === 'true'"
@@ -256,6 +257,7 @@ def run():
 
         robot_before_vertical_camera = read_pose(canvas)
         camera_before_vertical = read_camera(canvas)
+        canvas.focus()
         page.keyboard.press("q")
         page.wait_for_timeout(120)
         camera_after_vertical_up = read_camera(canvas)
@@ -282,6 +284,7 @@ def run():
         assert moved_pose["roll"] == 0
         assert moved_pose["pitch"] == 0
 
+        open_viewer_tools(page)
         control.click()
         page.wait_for_function(
             "document.querySelector('.three-canvas')?.dataset.robotControlEnabled === 'false'"
@@ -298,6 +301,7 @@ def run():
 
         # Leave robot control active to prove refresh restores the pose but does
         # not automatically re-arm the keyboard ownership latch.
+        open_viewer_tools(page)
         control.click()
         page.wait_for_function(
             "document.querySelector('.three-canvas')?.dataset.robotControlEnabled === 'true'"
@@ -362,19 +366,21 @@ def run():
         assert page.locator(".robot-picker").get_attribute("data-robot-picker-state") == "loaded"
         assert canvas.get_attribute("data-robot-control-enabled") == "false"
         assert canvas.get_attribute("data-robot-height-locked") == "true"
+        open_viewer_tools(page)
         assert page.locator(".robot-height-lock-toggle").get_attribute(
             "aria-pressed"
         ) == "true"
-        assert page.get_by_role("button", name="定位机器人模型").get_attribute(
+        assert viewer_tool(page, name="定位机器人模型").get_attribute(
             "aria-pressed"
         ) == "false"
         restored_pose = read_pose(canvas)
         assert abs(restored_pose["x"] - moved_pose["x"]) < 1e-5
         assert abs(restored_pose["y"] - moved_pose["y"]) < 1e-5
         assert abs(restored_pose["yaw"] - moved_pose["yaw"]) < 1e-5
-        page.get_by_role("button", name="定位机器人模型").click()
+        viewer_tool(page, name="定位机器人模型").click()
         page.wait_for_timeout(250)
         restored_locked_pose = read_pose(canvas)
+        canvas.focus()
         page.keyboard.press("ArrowDown")
         page.wait_for_timeout(160)
         assert read_pose(canvas) == restored_locked_pose
@@ -387,7 +393,7 @@ def run():
         assert dimensions["sh"] == dimensions["ch"]
         page.screenshot(path="/tmp/atlas-robot-model.png", full_page=True)
 
-        print("robot_metrics=", page.get_by_label("机器人模型状态").inner_text())
+        print("robot_pose=", read_pose(canvas))
         print("robot_requests=", len(robot_requests))
         print("page_errors=", errors)
         assert not errors

@@ -28,6 +28,8 @@ coverage/
 playwright-report/
 blob-report/
 test-results/
+/test-artifacts/
+.playwright/
 playwright/.cache/
 playwright/.auth/
 *.lcov
@@ -121,10 +123,10 @@ Desktop.ini
 robots/
 
 # Point-cloud assets are ignored by default; keep compact repository fixtures
-*.ply
+*.[pP][lL][yY]
 !maps/xian_map.ply
-!tests/fixtures/*.ply
-!tests/fixtures/**/*.ply
+!tests/fixtures/*.[pP][lL][yY]
+!tests/fixtures/**/*.[pP][lL][yY]
 
 # Locally recovered/exported projects may contain hundreds of MB of map data
 recovered-projects/
@@ -133,6 +135,8 @@ recovered-projects/
 
 # Exported teaching archives and parking-merge jobs/results
 virtual-teaching-*.zip
+virtual-teaching-*.json
+/virtual-teaching-*/
 parking-merge-server-*.zip
 parking-merge-server-*/
 parking-merge-*-result.zip

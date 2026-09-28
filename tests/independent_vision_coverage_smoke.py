@@ -3,6 +3,8 @@ from io import BytesIO
 from pathlib import Path
 
 from playwright.sync_api import sync_playwright
+
+from viewer_tools_helpers import viewer_tool
 from PIL import Image, ImageChops, ImageStat
 
 
@@ -393,7 +395,7 @@ def run():
             float(canvas.get_attribute("data-robot-y") or 0),
             float(canvas.get_attribute("data-robot-z") or 0),
         )
-        page.get_by_role("button", name="定位机器人模型", exact=True).click()
+        viewer_tool(page, name="定位机器人模型", exact=True).click()
         page.keyboard.down("d")
         page.wait_for_timeout(1400)
         page.keyboard.up("d")
@@ -520,7 +522,7 @@ def run():
         page.wait_for_function(
             "document.querySelector('.three-canvas')?.dataset.visionCoverageGenerationMode === 'static-all-records'"
         )
-        page.get_by_role("button", name="原点", exact=True).click()
+        viewer_tool(page, name="原点", exact=True).click()
         page.wait_for_timeout(800)
         page.screenshot(path="/tmp/atlas-independent-vision-coverage.png", full_page=True)
 

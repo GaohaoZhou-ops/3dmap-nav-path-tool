@@ -2,6 +2,8 @@ import os
 
 from playwright.sync_api import sync_playwright
 
+from viewer_tools_helpers import viewer_tool
+
 
 BASE_URL = os.environ.get("BASE_URL", "http://127.0.0.1:22120")
 
@@ -63,7 +65,7 @@ def run():
         assert panel.is_visible()
         assert page.get_by_label("自碰撞保护", exact=True).count() == 0
         assert panel.get_attribute("data-capture-surface") == "task-actions"
-        assert page.get_by_role("button", name="开启碰撞保护").count() == 0
+        assert viewer_tool(page, name="开启碰撞保护").count() == 0
 
         map_input = page.locator('input[type="file"][accept=".ply"]')
         map_input.set_input_files(
@@ -73,7 +75,7 @@ def run():
             )
         )
         page.locator(".loading-curtain").wait_for(state="hidden")
-        toggle = page.get_by_role("button", name="开启碰撞保护")
+        toggle = viewer_tool(page, name="开启碰撞保护")
         assert toggle.is_visible()
         assert toggle.count() == 1
         assert toggle.is_disabled()
@@ -82,15 +84,12 @@ def run():
         wait_for_robot(page)
 
         canvas = page.locator(".three-canvas")
-        toggle = page.get_by_role("button", name="开启碰撞保护")
+        toggle = viewer_tool(page, name="开启碰撞保护")
         assert not toggle.is_disabled()
         assert toggle.get_attribute("aria-pressed") == "false"
-        assert toggle.locator("xpath=following-sibling::button[1]").get_attribute(
-            "aria-label"
-        ) == "重置3D视角"
-        assert toggle.locator("xpath=preceding-sibling::button[1]").get_attribute(
-            "aria-label"
-        ) == "定位机器人模型"
+        assert page.get_by_role("group", name="机器人控制", exact=True).get_by_role(
+            "button", name="开启碰撞保护"
+        ).is_visible()
         assert canvas.get_attribute("data-collision-protection-enabled") == "false"
         assert canvas.get_attribute("data-collision-worker") == "inactive"
         assert page.locator(".robot-collision-alert").count() == 0
@@ -122,7 +121,7 @@ def run():
         assert probe_link
         assert probe_link not in excluded
 
-        page.get_by_role("button", name="关闭碰撞保护").click()
+        viewer_tool(page, name="关闭碰撞保护").click()
         page.wait_for_function(
             "document.querySelector('.three-canvas')?.dataset.collisionProtectionEnabled === 'false'"
         )
@@ -146,7 +145,7 @@ def run():
         )
         wait_for_robot(page)
         canvas = page.locator(".three-canvas")
-        page.get_by_role("button", name="开启碰撞保护").click()
+        viewer_tool(page, name="开启碰撞保护").click()
         page.wait_for_function(
             "document.querySelector('.three-canvas')?.dataset.collisionState === 'collision'"
         )
@@ -174,7 +173,7 @@ def run():
         camera_dialog.screenshot(path="/tmp/atlas-zivid-camera-collision.png")
         camera_dialog.get_by_role("button", name="关闭 Zivid 相机大图").click()
         camera_dialog.wait_for(state="detached")
-        page.get_by_role("button", name="定位机器人模型").click()
+        viewer_tool(page, name="定位机器人模型").click()
         page.wait_for_function(
             "document.querySelector('.three-canvas')?.dataset.robotControlEnabled === 'true'"
         )
@@ -230,7 +229,7 @@ def run():
         canvas = page.locator(".three-canvas")
         assert page.get_by_label("自碰撞保护", exact=True).count() == 0
         assert canvas.get_attribute("data-collision-worker") == "inactive"
-        assert page.get_by_role("button", name="开启碰撞保护").get_attribute(
+        assert viewer_tool(page, name="开启碰撞保护").get_attribute(
             "aria-pressed"
         ) == "false"
 

@@ -5,6 +5,8 @@ from pathlib import Path
 
 from playwright.sync_api import sync_playwright
 
+from viewer_tools_helpers import viewer_tool
+
 
 BASE_URL = os.environ.get("BASE_URL", "http://127.0.0.1:21990")
 FIXTURE = Path(__file__).parent / "fixtures" / "rotation-map.ply"
@@ -118,10 +120,10 @@ def run():
         assert waypoint_search.locator("option").count() == 3
         first_waypoint_id = waypoint_search.locator("option").nth(1).get_attribute("value")
         assert first_waypoint_id
-        page.get_by_role("button", name="隐藏3D路径点").click()
+        viewer_tool(page, name="隐藏3D路径点").click()
         assert canvas.get_attribute("data-waypoints-visible") == "false"
         assert canvas.get_attribute("data-waypoint-visual-status") == "hidden-by-user"
-        assert "点已隐藏" in page.get_by_role("button", name="显示3D路径点").inner_text()
+        assert "点已隐藏" in viewer_tool(page, name="显示3D路径点").inner_text()
         waypoint_search.select_option(first_waypoint_id)
         assert canvas.get_attribute("data-waypoints-visible") == "true"
         assert canvas.get_attribute("data-selected-waypoint-pulse-state") == "active"

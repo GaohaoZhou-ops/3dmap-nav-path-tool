@@ -3,6 +3,8 @@ import os
 from pathlib import Path
 from playwright.sync_api import sync_playwright
 
+from viewer_tools_helpers import open_viewer_tools, viewer_tool
+
 
 BASE_URL = os.environ.get("BASE_URL", "http://127.0.0.1:21990")
 FIXTURE = Path(__file__).parent / "fixtures" / "rotation-map.ply"
@@ -68,8 +70,8 @@ def run():
         assert vector_map.get_attribute("data-render-mode") == "vector-coordinate-webgl"
         assert vector_map.get_attribute("data-source-point-count") == "24"
         assert vector_map.get_attribute("data-color-mode") == "height"
-        assert page.get_by_role("button", name="原点", exact=True).is_visible()
-        waypoint_visibility = page.get_by_role("button", name="隐藏3D路径点")
+        assert viewer_tool(page, name="原点", exact=True).is_visible()
+        waypoint_visibility = viewer_tool(page, name="隐藏3D路径点")
         assert waypoint_visibility.is_visible()
         assert waypoint_visibility.get_attribute("aria-pressed") == "true"
         assert canvas.get_attribute("data-waypoints-visible") == "true"
@@ -345,7 +347,7 @@ def run():
         height_input.fill(original_height_value)
         height_input.blur()
         page.screenshot(path="/tmp/atlas-keyboard-navigation.png", full_page=True)
-        page.get_by_role("button", name="原点", exact=True).click()
+        viewer_tool(page, name="原点", exact=True).click()
         page.wait_for_timeout(120)
         overview_axis_scale = float(canvas.get_attribute("data-coordinate-axis-scale"))
         assert 20 <= float(canvas.get_attribute("data-coordinate-axis-screen-length")) <= 68.1
@@ -419,27 +421,18 @@ def run():
             axis: float(canvas.get_attribute(f"data-camera-{axis}"))
             for axis in ("x", "y", "z")
         }
+        open_viewer_tools(page)
         interaction_button = page.locator(".viewer-interaction-mode")
         assert interaction_button.count() == 1
-        assert page.get_by_role("button", name="平移", exact=True).count() == 0
+        assert viewer_tool(page, name="平移", exact=True).count() == 0
         assert interaction_button.get_attribute("data-mode") == "rotate"
         assert "旋转" in interaction_button.inner_text()
         assert "lucide-rotate3d" in interaction_button.locator("svg").get_attribute("class")
-        rotate_background = interaction_button.evaluate(
-            "element => getComputedStyle(element).backgroundColor"
-        )
+        canvas.focus()
         page.keyboard.down("Shift")
         page.wait_for_timeout(180)
         assert canvas.get_attribute("data-shift-pan-armed") == "true"
         assert canvas.get_attribute("data-effective-interaction-mode") == "shift-pan"
-        assert interaction_button.get_attribute("aria-pressed") == "true"
-        assert interaction_button.get_attribute("data-mode") == "shift-pan"
-        assert "Shift 平移" in interaction_button.inner_text()
-        assert "lucide-move3d" in interaction_button.locator("svg").get_attribute("class")
-        shift_pan_background = interaction_button.evaluate(
-            "element => getComputedStyle(element).backgroundColor"
-        )
-        assert shift_pan_background != rotate_background
         page.mouse.move(
             shift_box["x"] + shift_box["width"] * 0.43,
             shift_box["y"] + shift_box["height"] * 0.47,
@@ -464,9 +457,6 @@ def run():
         assert canvas.get_attribute("data-interaction-mode") == "rotate"
         assert canvas.get_attribute("data-shift-pan-armed") == "false"
         assert canvas.get_attribute("data-effective-interaction-mode") == "rotate"
-        assert interaction_button.get_attribute("data-mode") == "rotate"
-        assert interaction_button.inner_text().strip() == "旋转"
-        assert "lucide-rotate3d" in interaction_button.locator("svg").get_attribute("class")
         assert canvas.get_attribute("data-last-pointer-gesture") == "shift-pan"
         assert math.hypot(
             shift_target_after["x"] - shift_target_before["x"],
@@ -524,11 +514,11 @@ def run():
                 - (late_shift_target_after[axis] - late_shift_target_before[axis])
             ) < 1e-6
 
+        assert viewer_tool(page, name="重置3D视角").is_visible()
         page.get_by_role("button", name="显示设置", exact=True).click()
         resolution = page.get_by_role("group", name="点云显示分辨率")
         point_density = page.get_by_label("点云显示密度")
         assert page.get_by_role("button", name="重置全部视角").count() == 0
-        assert page.get_by_role("button", name="重置3D视角").is_visible()
         assert page.get_by_role("button", name="重置2D视角").is_visible()
         assert resolution.is_visible()
         assert "100%" in resolution.inner_text()
@@ -628,12 +618,13 @@ def run():
         print("page_errors=", errors)
         assert responsive_rotations == 10
 
-        assert page.get_by_role("button", name="平移", exact=True).count() == 0
+        assert viewer_tool(page, name="平移", exact=True).count() == 0
         assert canvas.get_attribute("data-interaction-mode") == "rotate"
         pan_target_before = {
             axis: float(canvas.get_attribute(f"data-target-{axis}"))
             for axis in ("x", "y", "z")
         }
+        canvas.focus()
         page.keyboard.press("d")
         page.wait_for_timeout(100)
         pan_target_after = {
@@ -667,7 +658,7 @@ def run():
         assert canvas.get_attribute("data-last-pointer-gesture") == "shift-pan"
         assert canvas.get_attribute("data-interaction-mode") == "rotate"
 
-        page.get_by_role("button", name="原点", exact=True).click()
+        viewer_tool(page, name="原点", exact=True).click()
         page.wait_for_timeout(80)
         axis_scale_before_deep_zoom = float(
             canvas.get_attribute("data-coordinate-axis-scale")
@@ -720,8 +711,8 @@ def run():
                     "data-keyboard-pan-implementation"
                 ) == "precision-offset"
 
-        page.get_by_role("button", name="重置3D视角").click()
-        page.get_by_role("button", name="原点", exact=True).click()
+        viewer_tool(page, name="重置3D视角").click()
+        viewer_tool(page, name="原点", exact=True).click()
         page.wait_for_timeout(80)
 
         # Deep zoom must continue beyond the former radius * 0.015 clamp. A

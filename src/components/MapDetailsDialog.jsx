@@ -5,6 +5,7 @@ import {
   Box,
   Clock3,
   Database,
+  Download,
   FileBox,
   Fingerprint,
   HardDrive,
@@ -57,6 +58,7 @@ const sourceLabels = {
   'independent-teaching-file': '独立示教点云',
   'example-map': 'maps 示例地图',
   'project-metadata': '路径工程元数据',
+  'project-archive': '工程文件',
   'session-cache': '浏览器会话缓存',
   unknown: '未记录来源',
 };
@@ -89,6 +91,20 @@ export default function MapDetailsDialog({ mapData, onClose, returnFocusRef }) {
   const hash = mapData?.sourceHash || null;
   const isIndependentTeachingSpace = mapData?.teachingSpaceMode === 'independent';
   const coordinateFrame = isIndependentTeachingSpace ? 'VIRTUAL_ORIGIN' : 'MAP';
+  const sourceBlob = mapData?.sourceBlob;
+  const canDownloadOriginal = sourceBlob instanceof Blob && sourceBlob.size > 0;
+
+  const downloadOriginal = () => {
+    if (!canDownloadOriginal) return;
+    const url = URL.createObjectURL(sourceBlob);
+    const anchor = document.createElement('a');
+    anchor.href = url;
+    anchor.download = fileName;
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+    window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+  };
 
   useEffect(() => {
     const previouslyFocused = returnFocusRef?.current || document.activeElement;
@@ -228,8 +244,19 @@ export default function MapDetailsDialog({ mapData, onClose, returnFocusRef }) {
 
         <footer>
           <span><Axis3D size={12} /> {coordinateFrame} FRAME · ORIGIN (0, 0, 0) · Z-UP</span>
-          <span>READ ONLY / SOURCE MANIFEST</span>
-          <button type="button" onClick={onClose}>关闭</button>
+          <span>{canDownloadOriginal ? 'READ ONLY / SOURCE MANIFEST' : '此工程未保留原始文件'}</span>
+          <div className="map-details-dialog__actions">
+            <button
+              type="button"
+              disabled={!canDownloadOriginal}
+              title={canDownloadOriginal ? `下载 ${fileName}` : '此工程未保留原始文件，无法下载'}
+              onClick={downloadOriginal}
+            >
+              <Download size={13} />
+              下载原始文件
+            </button>
+            <button type="button" onClick={onClose}>关闭</button>
+          </div>
         </footer>
       </section>
     </div>,

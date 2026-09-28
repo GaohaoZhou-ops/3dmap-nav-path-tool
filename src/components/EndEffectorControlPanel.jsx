@@ -24,6 +24,8 @@ function PoseField({ axis, label, value, unit, step, tone, disabled, onCommit })
 
   const commit = () => {
     focusedRef.current = false;
+    // Focusing a rounded readout alone must not edit the pose or discard drag undo.
+    if (draft === Number(value).toFixed(unit === 'm' ? 3 : 1)) return;
     const parsed = Number(draft);
     if (Number.isFinite(parsed)) onCommit(parsed);
     else setDraft(Number(value).toFixed(unit === 'm' ? 3 : 1));
@@ -202,7 +204,7 @@ export default function EndEffectorControlPanel({
             ? '本体锁定：关节角保持不变'
             : mapLocked
               ? '全局锁定：地图 XYZ / RPY 保持不变'
-              : '拖拽完成后可选择本体或全局锁定'}
+              : 'Ctrl+Z 撤销拖拽 · 完成后可选择锁定'}
         </span>
         <div className="end-effector-panel__actions">
           <button type="button" disabled={locked || control.dragging} onClick={onReset}>

@@ -8,6 +8,7 @@ export const PROJECT_ARCHIVE_MANIFEST = 'manifest.json';
 export const PROJECT_ARCHIVE_CONFIG = 'config/project.json';
 export const PROJECT_DIRECTORY_DESCRIPTOR = 'atlas.project.json';
 export const PROJECT_ARCHIVE_MAP_META = 'environment/map.json';
+export const PROJECT_ARCHIVE_MAP_ORIGINAL = 'environment/original.ply';
 export const PROJECT_ARCHIVE_MAP_POSITIONS = 'environment/positions.f32le';
 export const PROJECT_ARCHIVE_MAP_COLORS = 'environment/colors.rgb8';
 export const PROJECT_ARCHIVE_MAP_INDICES_U16 = 'environment/triangles.u16le';
@@ -543,7 +544,7 @@ const unzipEntries = (bytes) => new Promise((resolve, reject) => {
   });
 });
 
-const addEnvironmentResource = (entries, mapResource, projectMap) => {
+const addEnvironmentResource = async (entries, mapResource, projectMap) => {
   if (!mapResource?.positionBuffer) {
     throw new Error('当前地图没有可打包的几何缓存，请重新加载地图后再导出');
   }
@@ -571,6 +572,10 @@ const addEnvironmentResource = (entries, mapResource, projectMap) => {
   addEntry(entries, PROJECT_ARCHIVE_MAP_POSITIONS, positionBytes, 1);
   if (colorBytes) addEntry(entries, PROJECT_ARCHIVE_MAP_COLORS, colorBytes, 1);
   if (indexBytes) addEntry(entries, indexFile, indexBytes, 1);
+  const sourceBytes = mapResource.sourceBlob instanceof Blob && mapResource.sourceBlob.size > 0
+    ? new Uint8Array(await mapResource.sourceBlob.arrayBuffer())
+    : null;
+  if (sourceBytes) addEntry(entries, PROJECT_ARCHIVE_MAP_ORIGINAL, sourceBytes, 1);
   const metadata = {
     schemaVersion: 1,
     storage: 'atlas-geometry-cache',
@@ -581,6 +586,7 @@ const addEnvironmentResource = (entries, mapResource, projectMap) => {
     coordinateSystem: 'right-handed-z-up',
     name: String(projectMap?.fileName || mapResource.name || 'map.ply'),
     original: {
+      file: sourceBytes ? PROJECT_ARCHIVE_MAP_ORIGINAL : null,
       format: String(projectMap?.format || 'ply'),
       byteLength: Math.max(0, Number(projectMap?.byteLength ?? mapResource.byteLength) || 0),
       fileModifiedAt: projectMap?.fileModifiedAt || mapResource.fileModifiedAt || null,
@@ -673,7 +679,7 @@ export async function buildProjectArchive(payload, options = {}) {
     robotFileCount: 0,
   };
   onProgress?.({ phase: '冻结地图资源', detail: payload.map?.fileName || '当前地图' });
-  const environmentMetadata = addEnvironmentResource(entries, mapResource, payload.map);
+  const environmentMetadata = await addEnvironmentResource(entries, mapResource, payload.map);
   const robotPackage = payload.robot
     ? await collectProjectRobotResources(payload.robot, onProgress, existingRobotPackage)
     : null;
@@ -1023,6 +1029,12 @@ const hydrateEnvironmentResource = (project, files, manifest) => {
     throw new Error('地图三角面索引资源无效');
   }
   const sourceHash = metadata.original?.sourceHash || null;
+  const sourceBytes = metadata.original?.file
+    ? requiredAsset(files, metadata.original.file)
+    : null;
+  if (sourceBytes && sourceBytes.byteLength !== Number(metadata.original.byteLength)) {
+    throw new Error('地图原始文件大小与元数据不一致');
+  }
   if (
     project.map?.sourceHash
     && sourceHash
@@ -1046,6 +1058,9 @@ const hydrateEnvironmentResource = (project, files, manifest) => {
     bounds: geometry.bounds || project.map?.bounds || null,
     sphere: geometry.sphere || null,
     sourceHash,
+    sourceBlob: sourceBytes
+      ? new Blob([sourceBytes], { type: metadata.original.mimeType || 'application/octet-stream' })
+      : null,
     sourceHashKind: metadata.original?.sourceHashKind || project.map?.sourceHashKind || 'file',
     fileModifiedAt: metadata.original?.fileModifiedAt || project.map?.fileModifiedAt || null,
     mimeType: metadata.original?.mimeType || project.map?.mimeType || 'application/octet-stream',

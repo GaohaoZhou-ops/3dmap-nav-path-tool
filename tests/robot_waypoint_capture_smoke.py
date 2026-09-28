@@ -3,6 +3,8 @@ from pathlib import Path
 
 from playwright.sync_api import sync_playwright
 
+from viewer_tools_helpers import viewer_tool
+
 
 BASE_URL = os.environ.get("BASE_URL", "http://127.0.0.1:21990")
 ROOT = Path(__file__).resolve().parents[1]
@@ -73,7 +75,7 @@ def run():
         page.wait_for_function(
             "document.querySelector('.three-canvas')?.dataset.robotModelState === 'loaded'"
         )
-        page.get_by_role("button", name="定位机器人模型", exact=True).click()
+        viewer_tool(page, name="定位机器人模型", exact=True).click()
         page.wait_for_function(
             "document.querySelector('.three-canvas')?.dataset.robotControlEnabled === 'true'"
         )

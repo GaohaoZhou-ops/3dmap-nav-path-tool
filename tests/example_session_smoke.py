@@ -1,12 +1,14 @@
 import os
+from pathlib import Path
 
 from playwright.sync_api import sync_playwright
 
 
 BASE_URL = os.environ.get("BASE_URL", "http://127.0.0.1:21990")
+MAP_FIXTURE = Path(__file__).resolve().parents[1] / "maps/xian_map.ply"
 EXPECTED_POINTS = "2685018"
 EXPECTED_RENDERED_POINTS = "671255"
-EXPECTED_BYTES = 51_015_691
+EXPECTED_BYTES = MAP_FIXTURE.stat().st_size
 
 
 def wait_for_session(page):
@@ -53,7 +55,11 @@ def run():
         page.goto(f"{BASE_URL.rstrip('/')}/workbench")
         page.wait_for_load_state("networkidle")
         wait_for_session(page)
-        page.get_by_role("button", name="示例地图").click()
+        page.get_by_role("button", name="返回主页面", exact=True).click()
+        page.get_by_role("radio", name="地图示教").click()
+        with page.expect_file_chooser() as chooser_info:
+            page.get_by_role("button", name="新建工程", exact=True).click()
+        chooser_info.value.set_files(str(MAP_FIXTURE))
         page.locator(".map-state-dot.online").wait_for()
         page.locator(".loading-curtain").wait_for(state="hidden")
         page.locator(".projection-status").wait_for(state="hidden")

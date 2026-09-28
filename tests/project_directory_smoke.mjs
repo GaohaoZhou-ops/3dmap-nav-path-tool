@@ -4,6 +4,7 @@ import {
   PROJECT_ARCHIVE_CONFIG,
   PROJECT_ARCHIVE_MANIFEST,
   PROJECT_ARCHIVE_MAP_POSITIONS,
+  PROJECT_ARCHIVE_MAP_ORIGINAL,
   PROJECT_DIRECTORY_DESCRIPTOR,
   buildProjectArchive,
   readProjectDirectoryHandle,
@@ -94,13 +95,28 @@ class MemoryDirectoryHandle {
   }
 }
 
+const sourceBlob = new Blob([`ply
+format ascii 1.0
+comment Preserve this exact source through incremental directory saves.
+element vertex 3
+property float x
+property float y
+property float z
+element face 1
+property list uchar int vertex_indices
+end_header
+0 0 0
+1 0 0
+0 1 0
+3 0 1 2
+`]);
 const payload = {
   schemaVersion: '1.3',
   exportedAt: '2026-09-15T00:00:00.000Z',
   map: {
     fileName: 'directory-map.ply',
     format: 'ply',
-    byteLength: 36,
+    byteLength: sourceBlob.size,
     pointCount: 3,
     faceCount: 1,
     bounds: {
@@ -125,6 +141,7 @@ const archive = await buildProjectArchive(payload, {
     geometryCacheVersion: 1,
     name: payload.map.fileName,
     byteLength: payload.map.byteLength,
+    sourceBlob,
     positionBuffer: positions.buffer,
     colorBuffer: colors.buffer,
     indexBuffer: indices.buffer,
@@ -150,6 +167,12 @@ const opened = await readProjectDirectoryHandle(root);
 assert.equal(opened.source, 'directory');
 assert.equal(opened.directory.writable, true);
 assert.equal(opened.resources.map.pointCount, 3);
+assert.deepEqual(
+  await opened.resources.map.sourceBlob.arrayBuffer(),
+  await sourceBlob.arrayBuffer(),
+);
+const sourceHandle = root.resolveFile(PROJECT_ARCHIVE_MAP_ORIGINAL);
+const sourceWritesBefore = sourceHandle.writeCount;
 
 const nextPayload = structuredClone(opened.payload);
 nextPayload.waypoints.push({
@@ -224,6 +247,11 @@ assert.equal(rgbHandle.writeCount, rgbWritesBefore, 'unchanged RGB snapshot must
 assert.equal(poseHandle.writeCount, poseWritesBefore, 'unchanged pose metadata must not be rewritten');
 
 const reopened = await readProjectDirectoryHandle(root);
+assert.deepEqual(
+  await reopened.resources.map.sourceBlob.arrayBuffer(),
+  await sourceBlob.arrayBuffer(),
+);
+assert.equal(sourceHandle.writeCount, sourceWritesBefore, 'original map file must not be rewritten');
 assert.equal(reopened.payload.waypoints[0].id, 'waypoint-directory-save');
 assert.equal(reopened.payload.virtualTeaching.tasks[0].parkingPoints[0].poses.length, 1);
 const rgbWritesAfterReopen = rgbHandle.writeCount;

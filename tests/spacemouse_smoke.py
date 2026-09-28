@@ -5,6 +5,8 @@ from pathlib import Path
 
 from playwright.sync_api import sync_playwright
 
+from viewer_tools_helpers import viewer_tool
+
 
 BASE_URL = os.environ.get("BASE_URL", "http://127.0.0.1:21990")
 ROOT = Path(__file__).resolve().parents[1]
@@ -467,7 +469,7 @@ def run():
       # Some 3DxWare configurations also expose cap motion and the two device
       # keys as a conventional system mouse. A HID button report must arm the
       # page-level firewall before that mapped click can activate another UI.
-      protected_toggle = page.get_by_role("button", name="隐藏3D路径点")
+      protected_toggle = viewer_tool(page, name="隐藏3D路径点")
       protected_toggle_box = protected_toggle.bounding_box()
       assert protected_toggle_box is not None
       page.evaluate("window.__spaceMouseMock.emitButtons(2)")
@@ -476,7 +478,7 @@ def run():
           protected_toggle_box["y"] + protected_toggle_box["height"] / 2,
       )
       page.evaluate("window.__spaceMouseMock.emitButtons(0)")
-      assert page.get_by_role("button", name="隐藏3D路径点").get_attribute(
+      assert viewer_tool(page, name="隐藏3D路径点").get_attribute(
           "aria-pressed"
       ) == "true"
       assert control.get_attribute("data-spacemouse-pointer-guard") == "active"
@@ -501,10 +503,10 @@ def run():
           "document.querySelector('.spacemouse-control')?.dataset.spacemousePointerGuard === 'idle'"
       )
       assert page.evaluate("document.pointerLockElement === null")
-      page.get_by_role("button", name="隐藏3D路径点").click()
-      assert page.get_by_role("button", name="显示3D路径点").is_visible()
-      page.get_by_role("button", name="显示3D路径点").click()
-      assert page.get_by_role("button", name="隐藏3D路径点").is_visible()
+      viewer_tool(page, name="隐藏3D路径点").click()
+      assert viewer_tool(page, name="显示3D路径点").is_visible()
+      viewer_tool(page, name="显示3D路径点").click()
+      assert viewer_tool(page, name="隐藏3D路径点").is_visible()
 
       # Cap motion uses a shorter guard and automatically hands ordinary mouse
       # interaction back after the final zero report.
@@ -523,7 +525,7 @@ def run():
           "document.querySelector('[aria-label=\"隐藏3D路径点\"]').click()"
       )
       emit_vector(page, [0, 0, 0, 0, 0, 0])
-      assert page.get_by_role("button", name="隐藏3D路径点").is_visible()
+      assert viewer_tool(page, name="隐藏3D路径点").is_visible()
       assert control.get_attribute("data-spacemouse-pointer-guard-reason") == "cap-motion"
       assert int(control.get_attribute("data-spacemouse-suppressed-pointer-events")) > (
           suppressed_before_motion

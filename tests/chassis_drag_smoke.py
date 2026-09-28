@@ -3,6 +3,8 @@ from pathlib import Path
 
 from playwright.sync_api import sync_playwright
 
+from viewer_tools_helpers import viewer_tool
+
 
 BASE_URL = os.environ.get("BASE_URL", "http://127.0.0.1:22052")
 ROOT = Path(__file__).resolve().parents[1]
@@ -71,7 +73,7 @@ def run():
         assert canvas.get_attribute("data-chassis-drag-handle-ready") == "true"
         assert canvas.get_attribute("data-chassis-drag-target-frame") == "base_link"
 
-        robot_button = page.get_by_role("button", name="定位机器人模型")
+        robot_button = viewer_tool(page, name="定位机器人模型")
         robot_button.click()
         page.wait_for_function(
             "document.querySelector('.three-canvas')?.dataset.robotControlEnabled === 'true'"
@@ -89,8 +91,6 @@ def run():
             "document.querySelector('.three-canvas')?.dataset.chassisDragMode === 'armed'"
         )
         assert canvas.get_attribute("data-robot-control-enabled") == "false"
-        assert robot_button.get_attribute("aria-pressed") == "false"
-        assert "CHASSIS · XY PLANE DRAG" in page.get_by_label("机器人模型状态").inner_text()
         assert "按住底盘拖拽" in page.locator(".viewer-help").inner_text()
         page.screenshot(path="/tmp/atlas-chassis-plane-drag-armed.png", full_page=True)
 

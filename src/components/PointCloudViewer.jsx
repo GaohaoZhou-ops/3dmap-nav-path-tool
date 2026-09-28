@@ -22,11 +22,12 @@ import {
   Ruler,
   ShieldAlert,
   ShieldCheck,
+  SlidersHorizontal,
   Unlock,
   X,
 } from 'lucide-react';
 import EndEffectorControlPanel from './EndEffectorControlPanel.jsx';
-import ViewerDisplaySettings from './ViewerDisplaySettings.jsx';
+import ViewerMenu from './ViewerMenu.jsx';
 import {
   createUniformMeshIndex,
   MESH_RENDER_QUALITY_OPTIONS,
@@ -454,6 +455,29 @@ const writeRobotJointDataset = (canvas, robot, source = 'scene') => {
 };
 
 const createEndEffectorLocks = () => ({ left: null, right: null });
+
+const ROBOT_DRAG_UNDO_LIMIT = 50;
+const sameNumericValues = (a, b) => {
+  const keys = new Set([...Object.keys(a), ...Object.keys(b)]);
+  return [...keys].every((key) => Math.abs((a[key] ?? 0) - (b[key] ?? 0)) < 1e-8);
+};
+const sameRobotPose = (a, b) => (
+  sameNumericValues(a.position, b.position) && sameNumericValues(a.rpy, b.rpy)
+);
+const cloneEndEffectorLocks = (locks) => Object.fromEntries(
+  Object.entries(locks).map(([side, lock]) => [side, !lock ? null : {
+    ...lock,
+    ...(lock.type === 'body' ? { jointValues: new Map(lock.jointValues) } : {
+      pose: normalizeRobotPose(lock.pose),
+      targetPosition: lock.targetPosition.clone(),
+      targetQuaternion: lock.targetQuaternion.clone(),
+      lastResult: lock.lastResult && {
+        ...lock.lastResult,
+        actualPose: normalizeRobotPose(lock.lastResult.actualPose),
+      },
+    }),
+  }]),
+);
 
 const endEffectorLockModes = (locks) => ({
   left: locks?.left?.type || null,
@@ -1469,6 +1493,8 @@ export default function PointCloudViewer({
   const globalEndEffectorUpdateRef = useRef(null);
   const endEffectorInteractionRef = useRef(null);
   const endEffectorObjectChangeRef = useRef(null);
+  const robotDragHistoryRef = useRef({ entries: [], pending: null, restoring: false });
+  const robotDragActionsRef = useRef(null);
   const selectedWaypointPulseRef = useRef(null);
   const controlsRef = useRef(null);
   const cameraRef = useRef(null);
@@ -2334,6 +2360,7 @@ export default function PointCloudViewer({
   const exitEndEffectorControl = () => {
     const transform = transformControlsRef.current;
     const target = endEffectorTargetRef.current;
+    if (transform?.dragging) transform.pointerUp(null);
     transform?.detach();
     if (target) target.visible = false;
     if (controlsRef.current) controlsRef.current.enabled = true;
@@ -2368,6 +2395,7 @@ export default function PointCloudViewer({
     const target = endEffectorTargetRef.current;
     const active = endEffectorControlRef.current;
     if (!target || !active || lockedEndEffectorsRef.current[active.side]) return;
+    robotDragActionsRef.current?.clear();
     applyPoseToWorldTarget(target, pose);
     updateEndEffectorTarget(true);
   };
@@ -2375,6 +2403,7 @@ export default function PointCloudViewer({
   const resetEndEffectorJoints = () => {
     const active = endEffectorControlRef.current;
     if (!active || lockedEndEffectorsRef.current[active.side]) return;
+    robotDragActionsRef.current?.clear();
     const frozenJoints = restoreLockedEndEffectorJoints(active.side);
     const values = readRobotJointValues(active.controller.robot);
     active.controller.joints.forEach((joint) => {
@@ -2514,6 +2543,150 @@ export default function PointCloudViewer({
     writeEndEffectorLockDataset(controlsRef.current?.domElement, lockedEndEffectorsRef.current);
   };
 
+  const writeRobotDragHistoryDataset = () => {
+    const canvas = controlsRef.current?.domElement;
+    if (canvas) {
+      canvas.dataset.robotDragUndoDepth = String(robotDragHistoryRef.current.entries.length);
+    }
+  };
+
+  const clearRobotDragHistory = () => {
+    const history = robotDragHistoryRef.current;
+    history.entries = [];
+    history.pending = null;
+    writeRobotDragHistoryDataset();
+  };
+
+  const captureRobotDragState = () => {
+    const active = endEffectorControlRef.current;
+    return {
+      robot: loadedRobotRef.current,
+      pose: normalizeRobotPose(robotPoseRef.current),
+      joints: readRobotJointValues(loadedRobotRef.current),
+      locks: cloneEndEffectorLocks(lockedEndEffectorsRef.current),
+      control: active && {
+        side: active.side,
+        pose: normalizeRobotPose(active.pose),
+        status: active.status,
+        positionError: active.positionError,
+        rotationError: active.rotationError,
+      },
+    };
+  };
+
+  const beginRobotDrag = (kind) => {
+    const history = robotDragHistoryRef.current;
+    if (history.restoring || !loadedRobotRef.current || robotTrajectoryActiveRef.current) return;
+    history.pending = { kind, before: captureRobotDragState(), moved: false };
+  };
+
+  const markRobotDragMovement = () => {
+    const pending = robotDragHistoryRef.current.pending;
+    if (!pending || pending.moved) return;
+    const endEffector = pending.kind === 'end-effector';
+    const before = endEffector ? pending.before.control?.pose : pending.before.pose;
+    const current = endEffector
+      ? poseFromWorldObject(endEffectorTargetRef.current)
+      : robotPoseRef.current;
+    pending.moved = Boolean(before && !sameRobotPose(before, current));
+  };
+
+  const finishRobotDrag = () => {
+    const history = robotDragHistoryRef.current;
+    const pending = history.pending;
+    if (history.restoring || !pending) return;
+    history.pending = null;
+    if (!pending.moved) return;
+    const after = captureRobotDragState();
+    const before = pending.before;
+    const targetChanged = before.control && after.control
+      && !sameRobotPose(before.control.pose, after.control.pose);
+    if (
+      !targetChanged
+      && sameRobotPose(before.pose, after.pose)
+      && sameNumericValues(before.joints, after.joints)
+    ) return;
+    history.entries.push(pending);
+    if (history.entries.length > ROBOT_DRAG_UNDO_LIMIT) history.entries.shift();
+    writeRobotDragHistoryDataset();
+  };
+
+  const undoRobotDrag = () => {
+    const history = robotDragHistoryRef.current;
+    if (!renderActiveRef.current || robotTrajectoryActiveRef.current || history.restoring) {
+      return false;
+    }
+    // A gesture still under the pointer takes priority over completed drags.
+    const entry = history.pending || history.entries.pop();
+    if (!entry) return false;
+    const snapshot = entry.before;
+    if (snapshot.robot !== loadedRobotRef.current) {
+      clearRobotDragHistory();
+      return false;
+    }
+    history.restoring = true;
+    history.pending = null;
+    try {
+      const transform = transformControlsRef.current;
+      if (transform?.dragging) transform.pointerUp(null);
+      chassisDragInteractionRef.current?.cancel?.('undo');
+      pressedKeysRef.current.clear();
+      keyboardImpulseRef.current.clear();
+
+      lockedEndEffectorsRef.current = cloneEndEffectorLocks(snapshot.locks);
+      robotPoseRef.current = applyRobotPose(robotLayerRef.current, snapshot.pose);
+      applyRobotJointStateToScene(snapshot.joints, 'drag-undo');
+      const canvas = controlsRef.current?.domElement;
+      writeRobotPoseDataset(canvas, robotPoseRef.current);
+      updateRobotParkingGhostGuide(robotParkingGhostVisualRef.current, snapshot.pose, canvas);
+
+      const active = endEffectorControlRef.current;
+      const target = endEffectorTargetRef.current;
+      if (active && target && transform) {
+        const lock = lockedEndEffectorsRef.current[active.side];
+        const saved = snapshot.control?.side === active.side ? snapshot.control : null;
+        const actualPose = poseFromWorldObject(active.controller.frame);
+        active.pose = normalizeRobotPose(saved?.pose || lock?.pose || actualPose);
+        active.status = lock?.type === 'body' ? 'locked' : saved?.status || 'tracking';
+        active.positionError = saved?.positionError || 0;
+        active.rotationError = saved?.rotationError || 0;
+        applyPoseToWorldTarget(target, active.pose);
+        transform.detach();
+        transform.enabled = !lock;
+        target.visible = !lock;
+        if (!lock) transform.attach(target);
+        setEndEffectorControl(endEffectorPanelState(active));
+        writeActiveEndEffectorDataset(canvas, active, { ...active, actualPose }, active.pose);
+        canvas.dataset.endEffectorSpaceBallVisible = lock ? 'false' : 'true';
+        canvas.dataset.endEffectorTransformAttached = lock ? 'false' : 'true';
+      }
+      syncEndEffectorLockState();
+      // Restore saved joint angles exactly; another IK solve could choose a
+      // different posture for the same target, especially near a joint limit.
+      onRobotPoseChangeRef.current?.(normalizeRobotPose(snapshot.pose));
+      reportRobotJointValues(true);
+      reportZividCameraPoses(true);
+      if (canvas) {
+        canvas.dataset.robotDragUndoCount = String(
+          Number(canvas.dataset.robotDragUndoCount || 0) + 1,
+        );
+        canvas.dataset.robotDragUndoKind = entry.kind;
+      }
+    } finally {
+      history.restoring = false;
+      writeRobotDragHistoryDataset();
+    }
+    return true;
+  };
+
+  robotDragActionsRef.current = {
+    begin: beginRobotDrag,
+    markMovement: markRobotDragMovement,
+    finish: finishRobotDrag,
+    clear: clearRobotDragHistory,
+    undo: undoRobotDrag,
+  };
+
   endEffectorInteractionRef.current = {
     enter: enterEndEffectorControl,
     exit: exitEndEffectorControl,
@@ -2522,6 +2695,7 @@ export default function PointCloudViewer({
 
   useEffect(() => {
     const nextPose = normalizeRobotPose(robotPose);
+    if (!sameRobotPose(nextPose, robotPoseRef.current)) clearRobotDragHistory();
     robotPoseRef.current = nextPose;
     applyRobotPose(robotLayerRef.current, nextPose);
     const canvas = controlsRef.current?.domElement;
@@ -2530,6 +2704,9 @@ export default function PointCloudViewer({
   }, [mapData?.geometry, robotPose]);
 
   useLayoutEffect(() => {
+    if (!sameNumericValues(normalizeRobotJointValues(robotJointValues), robotJointValuesRef.current)) {
+      clearRobotDragHistory();
+    }
     const appliedValues = applyRobotJointStateToScene(robotJointValues, 'external-control');
     if (loadedRobotRef.current) {
       robotJointValuesRef.current = appliedValues;
@@ -2588,6 +2765,7 @@ export default function PointCloudViewer({
     }
 
     if (endEffectorControlRef.current) endEffectorInteractionRef.current?.exit?.();
+    clearRobotDragHistory();
     if (lockedEndEffectorsRef.current[side]) {
       lockedEndEffectorsRef.current = {
         ...lockedEndEffectorsRef.current,
@@ -3315,13 +3493,19 @@ export default function PointCloudViewer({
       setEndEffectorControl((current) =>
         current ? { ...current, dragging: Boolean(event.value) } : current,
       );
-      if (!event.value) {
-        endEffectorObjectChangeRef.current?.();
+      if (robotDragHistoryRef.current.restoring) return;
+      if (event.value) {
+        robotDragActionsRef.current?.begin('end-effector');
+      } else {
+        if (robotDragHistoryRef.current.pending?.moved) endEffectorObjectChangeRef.current?.();
         robotPoseActionsRef.current?.publish?.(true);
         reportRobotJointValues(true);
+        robotDragActionsRef.current?.finish();
       }
     };
     const onTransformObjectChange = () => {
+      if (robotDragHistoryRef.current.restoring) return;
+      robotDragActionsRef.current?.markMovement();
       endEffectorObjectChangeRef.current?.();
     };
     transformControls.addEventListener('dragging-changed', onTransformDraggingChanged);
@@ -3704,7 +3888,10 @@ export default function PointCloudViewer({
       renderer.domElement.dataset.chassisDragging = 'false';
       renderer.domElement.dataset.chassisDragGestureState = reason;
       if (updateUi) setChassisDragging(false);
-      if (forcePublish) robotPoseActionsRef.current?.publish?.(true);
+      if (!robotDragHistoryRef.current.restoring) {
+        if (forcePublish) robotPoseActionsRef.current?.publish?.(true);
+        robotDragActionsRef.current?.finish();
+      }
       return true;
     };
 
@@ -3768,6 +3955,7 @@ export default function PointCloudViewer({
       if (!point) return false;
 
       cancelPointerGesture(event, 'chassis-drag-start');
+      robotDragActionsRef.current?.begin('chassis');
       chassisPointerDrag = {
         pointerId: event.pointerId,
         plane,
@@ -3816,6 +4004,7 @@ export default function PointCloudViewer({
       nextPose.position.x = point.x + chassisPointerDrag.offsetX;
       nextPose.position.y = point.y + chassisPointerDrag.offsetY;
       robotPoseRef.current = applyRobotPose(robotLayer, nextPose);
+      robotDragActionsRef.current?.markMovement();
       writeRobotPoseDataset(renderer.domElement, robotPoseRef.current);
       renderer.domElement.dataset.chassisDragDeltaX = (
         nextPose.position.x - chassisPointerDrag.startX
@@ -4451,6 +4640,7 @@ export default function PointCloudViewer({
               );
             }
 
+            robotDragActionsRef.current?.clear();
             robotPoseRef.current = applyRobotPose(robotLayer, nextPose);
             writeRobotPoseDataset(renderer.domElement, robotPoseRef.current);
             renderer.domElement.dataset.lastRobotAction = [...ROBOT_CONTROL_CODES]
@@ -4732,6 +4922,13 @@ export default function PointCloudViewer({
 
       if (endEffectorTarget.visible && endEffectorSpaceBall.visible) {
         endEffectorTarget.getWorldPosition(endEffectorWorldPosition);
+        endEffectorProjectedPosition.copy(endEffectorWorldPosition).project(camera);
+        renderer.domElement.dataset.endEffectorTargetScreenX = (
+          (endEffectorProjectedPosition.x + 1) * 0.5 * renderer.domElement.clientWidth
+        ).toFixed(2);
+        renderer.domElement.dataset.endEffectorTargetScreenY = (
+          (1 - endEffectorProjectedPosition.y) * 0.5 * renderer.domElement.clientHeight
+        ).toFixed(2);
         endEffectorCameraPosition
           .copy(endEffectorWorldPosition)
           .applyMatrix4(camera.matrixWorldInverse);
@@ -4880,6 +5077,7 @@ export default function PointCloudViewer({
       endEffectorControllersRef.current = { left: null, right: null };
       endEffectorControlRef.current = null;
       lockedEndEffectorsRef.current = createEndEffectorLocks();
+      robotDragActionsRef.current?.clear();
       if (transformControlsRef.current === transformControls) transformControlsRef.current = null;
       if (endEffectorTargetRef.current === endEffectorTarget) endEffectorTargetRef.current = null;
       if (endEffectorSpaceBallRef.current === endEffectorSpaceBall) {
@@ -4921,6 +5119,7 @@ export default function PointCloudViewer({
     collisionHighlightCleanupRef.current?.();
     collisionHighlightCleanupRef.current = null;
     chassisDragInteractionRef.current?.exit?.('robot-change');
+    clearRobotDragHistory();
     robotChassisHandleRef.current = null;
     loadedRobotRef.current = null;
     canvas.dataset.chassisDragHandleReady = 'false';
@@ -5727,6 +5926,7 @@ export default function PointCloudViewer({
       chassisDragInteractionRef.current?.exit?.('teaching-trajectory-playback');
       endEffectorInteractionRef.current?.exit?.();
       robotControlEnabledRef.current = false;
+      clearRobotDragHistory();
       pressedKeysRef.current.clear();
       keyboardImpulseRef.current.clear();
       setShiftPanArmed(false);
@@ -5763,12 +5963,24 @@ export default function PointCloudViewer({
         || tagName === 'input'
         || tagName === 'textarea'
         || tagName === 'select'
-        || event.metaKey
-        || event.ctrlKey
-        || event.altKey
       ) {
         return;
       }
+      if (
+        (event.ctrlKey || event.metaKey)
+        && !event.shiftKey
+        && !event.altKey
+        && (event.code === 'KeyZ' || event.key?.toLowerCase() === 'z')
+      ) {
+        if (
+          !event.defaultPrevented
+          && !event.repeat
+          && !target?.closest?.('[aria-modal="true"], dialog[open]')
+          && robotDragActionsRef.current?.undo()
+        ) event.preventDefault();
+        return;
+      }
+      if (event.metaKey || event.ctrlKey || event.altKey) return;
       if (event.code === 'Escape' && chassisDragModeRef.current) {
         event.preventDefault();
         chassisDragInteractionRef.current?.exit?.('escape');
@@ -6685,127 +6897,146 @@ export default function PointCloudViewer({
             </aside>
           )}
           <div className="viewer-top-tools">
-            <div className="viewer-tool-switch" role="toolbar" aria-label="三维视图工具">
-              <button
-                type="button"
-                className={`viewer-interaction-mode is-active ${temporaryShiftPan ? 'is-temporary' : ''} ${persistentPanMode ? 'is-pan-mode' : ''}`}
-                aria-label={temporaryShiftPan ? 'Shift 临时平移' : persistentPanMode ? '平移' : '旋转'}
-                aria-pressed="true"
-                aria-keyshortcuts="Shift"
-                data-base-mode={interactionMode}
-                data-mode={shiftPanArmed ? 'shift-pan' : interactionMode}
-                data-switchable="true"
-                onClick={toggleInteractionMode}
-                title={temporaryShiftPan
-                  ? 'Shift 已按下：左键拖拽临时平移，松开后恢复旋转'
-                  : persistentPanMode
-                    ? '平移模式：左键拖拽平移；点击切换为旋转'
-                    : '旋转模式：左键拖拽旋转；点击切换为平移；按住 Shift 临时平移'}
-              >
-                {effectiveViewportPan ? <Move3D size={13} /> : <Rotate3D size={13} />}
-                {temporaryShiftPan ? 'Shift 平移' : persistentPanMode ? '平移' : '旋转'}
-              </button>
-              <button
-                type="button"
-                className={showWaypoints ? 'is-active' : 'is-hidden-state'}
-                aria-label={showWaypoints ? '隐藏3D路径点' : '显示3D路径点'}
-                aria-pressed={showWaypoints}
-                title={showWaypoints ? '隐藏3D导航点小球，保留路径连线' : '显示3D导航点小球'}
-                onClick={() => onShowWaypointsChange?.(!showWaypoints)}
-              >
-                {showWaypoints ? <Eye size={13} /> : <EyeOff size={13} />}
-                {showWaypoints ? '路径点' : '点已隐藏'}
-              </button>
-              <button type="button" onClick={focusOrigin} title="将三维视图中心定位到坐标原点">
-                <Crosshair size={13} /> 原点
-              </button>
-              {robotLoadState?.status === 'loaded' && (
-                <>
-                  <button
-                    type="button"
-                    className={`robot-control-toggle ${robotControlActive ? 'is-active' : ''}`}
-                    disabled={robotTrajectoryActive}
-                    onClick={() => {
-                      focusRobot();
-                      toggleRobotControl();
-                    }}
-                    aria-label="定位机器人模型"
-                    aria-pressed={robotControlActive}
-                    title={
-                      robotTrajectoryActive
-                        ? '示教轨迹播放期间由规划器接管机器人，暂停或停止后可恢复手动控制'
-                        : endEffectorControlActive
-                        ? '退出机械臂末端控制，定位机器人并启用麦轮底盘控制'
-                        : robotControlActive
-                          ? '底盘控制已启用；再次点击将键盘交还相机'
-                          : '定位机器人并启用麦轮底盘控制：W/S 前后、A/D 横移、←/→ 旋转、↑/↓ 微调底盘高度'
-                    }
-                  >
-                    <Bot size={13} /> 机器人
-                  </button>
-                  <button
-                    type="button"
-                    className={`robot-height-lock-toggle ${robotHeightLockActive ? 'is-active' : ''}`}
-                    aria-label={robotHeightLockActive ? '解锁机器人高度' : '锁定机器人高度'}
-                    aria-pressed={robotHeightLockActive}
-                    data-height-lock-state={robotHeightLockActive ? 'locked' : 'unlocked'}
-                    title={robotHeightLockActive
-                      ? `机器人 Z=${displayedRobotPose.position.z.toFixed(3)} m 已锁定；点击后允许 ↑/↓ 调整`
-                      : '锁定当前机器人 Z 高度，避免之后误触 ↑/↓ 改变底盘高度'}
-                    onClick={() => onRobotHeightLockChange?.(!robotHeightLockActive)}
-                  >
-                    {robotHeightLockActive ? <Lock size={12} /> : <Unlock size={12} />}
-                    {robotHeightLockActive ? '高度已锁' : '锁定高度'}
-                  </button>
-                  <button
-                    type="button"
-                    className="robot-pose-reset"
-                    aria-label="复位机器人关节姿态"
-                    data-resettable-joint-count={robotLoadState?.movableJoints?.length || 0}
-                    disabled={
-                      robotTrajectoryActive
-                      || !robotLoadState?.movableJoints?.length
-                    }
-                    title={robotTrajectoryActive
-                      ? '示教轨迹播放期间由规划器接管机器人，停止后可复位姿态'
-                      : robotLoadState?.movableJoints?.length
-                        ? '将全部可动关节恢复为初始角度，不改变机器人底盘位置与朝向'
-                        : '当前机器人模型没有可复位的关节'}
-                    onClick={() => onResetRobotJointPose?.()}
-                  >
-                    <RotateCcw size={12} /> 姿态复位
-                  </button>
-                </>
-              )}
-              <button
-                type="button"
-                className={`collision-protection-toggle is-${collisionButtonState} ${collisionProtectionEnabled ? 'is-active' : ''}`}
-                aria-label={collisionProtectionEnabled ? '关闭碰撞保护' : '开启碰撞保护'}
-                aria-pressed={collisionProtectionEnabled}
-                data-collision-control-state={collisionButtonState}
-                disabled={!collisionProtectionEnabled && !collisionControlReady}
-                onClick={() => onCollisionProtectionChange?.(!collisionProtectionEnabled)}
-                title={!collisionControlReady && !collisionProtectionEnabled
-                  ? '请先加载机器人；模型装配完成后即可开启碰撞保护'
-                  : collisionProtectionEnabled
-                    ? '关闭碰撞保护并释放环境空间索引'
-                    : '开启非底盘结构的环境干涉与 10 cm 安全距离检测'}
-              >
-                {collisionProtectionEnabled && collisionStatusState === 'safe'
-                  ? <ShieldCheck size={13} />
-                  : <ShieldAlert size={13} />}
-                {collisionButtonLabel}
-              </button>
-              <button
-                type="button"
-                onClick={resetView}
-                title="恢复点云初始相机位置、旋转与缩放"
-                aria-label="重置3D视角"
-              >
-                <RotateCcw size={13} /> 重置视角
-              </button>
-            </div>
-            <ViewerDisplaySettings key={resolutionMapKey} isActive={isActive}>
+            <ViewerMenu
+              key={`tools-${resolutionMapKey}`}
+              label="视图工具"
+              title="视角、路径点与机器人控制"
+              icon={MousePointer2}
+              align="start"
+              isActive={isActive}
+            >
+              <div className="viewer-tool-switch" role="group" aria-label="视图操作">
+                <p className="viewer-tool-switch__title">视图操作</p>
+                <button
+                  type="button"
+                  className={`viewer-interaction-mode is-active ${temporaryShiftPan ? 'is-temporary' : ''} ${persistentPanMode ? 'is-pan-mode' : ''}`}
+                  aria-label={temporaryShiftPan ? 'Shift 临时平移' : persistentPanMode ? '平移' : '旋转'}
+                  aria-pressed="true"
+                  aria-keyshortcuts="Shift"
+                  data-base-mode={interactionMode}
+                  data-mode={shiftPanArmed ? 'shift-pan' : interactionMode}
+                  data-switchable="true"
+                  onClick={toggleInteractionMode}
+                  title={temporaryShiftPan
+                    ? 'Shift 已按下：左键拖拽临时平移，松开后恢复旋转'
+                    : persistentPanMode
+                      ? '平移模式：左键拖拽平移；点击切换为旋转'
+                      : '旋转模式：左键拖拽旋转；点击切换为平移；按住 Shift 临时平移'}
+                >
+                  {effectiveViewportPan ? <Move3D size={13} /> : <Rotate3D size={13} />}
+                  {temporaryShiftPan ? 'Shift 平移' : persistentPanMode ? '平移' : '旋转'}
+                </button>
+                <button
+                  type="button"
+                  className={showWaypoints ? 'is-active' : 'is-hidden-state'}
+                  aria-label={showWaypoints ? '隐藏3D路径点' : '显示3D路径点'}
+                  aria-pressed={showWaypoints}
+                  title={showWaypoints ? '隐藏3D导航点小球，保留路径连线' : '显示3D导航点小球'}
+                  onClick={() => onShowWaypointsChange?.(!showWaypoints)}
+                >
+                  {showWaypoints ? <Eye size={13} /> : <EyeOff size={13} />}
+                  {showWaypoints ? '路径点' : '点已隐藏'}
+                </button>
+                <button type="button" onClick={focusOrigin} title="将三维视图中心定位到坐标原点">
+                  <Crosshair size={13} /> 原点
+                </button>
+                <button
+                  type="button"
+                  onClick={resetView}
+                  title="恢复点云初始相机位置、旋转与缩放"
+                  aria-label="重置3D视角"
+                >
+                  <RotateCcw size={13} /> 重置视角
+                </button>
+              </div>
+              <div className="viewer-tool-switch" role="group" aria-label="机器人控制">
+                <p className="viewer-tool-switch__title">机器人控制</p>
+                {robotLoadState?.status === 'loaded' && (
+                  <>
+                    <button
+                      type="button"
+                      className={`robot-control-toggle ${robotControlActive ? 'is-active' : ''}`}
+                      disabled={robotTrajectoryActive}
+                      onClick={() => {
+                        focusRobot();
+                        toggleRobotControl();
+                      }}
+                      aria-label="定位机器人模型"
+                      aria-pressed={robotControlActive}
+                      title={
+                        robotTrajectoryActive
+                          ? '示教轨迹播放期间由规划器接管机器人，暂停或停止后可恢复手动控制'
+                          : endEffectorControlActive
+                          ? '退出机械臂末端控制，定位机器人并启用麦轮底盘控制'
+                          : robotControlActive
+                            ? '底盘控制已启用；再次点击将键盘交还相机'
+                            : '定位机器人并启用麦轮底盘控制：W/S 前后、A/D 横移、←/→ 旋转、↑/↓ 微调底盘高度'
+                      }
+                    >
+                      <Bot size={13} /> 机器人
+                    </button>
+                    <button
+                      type="button"
+                      className={`robot-height-lock-toggle ${robotHeightLockActive ? 'is-active' : ''}`}
+                      aria-label={robotHeightLockActive ? '解锁机器人高度' : '锁定机器人高度'}
+                      aria-pressed={robotHeightLockActive}
+                      data-height-lock-state={robotHeightLockActive ? 'locked' : 'unlocked'}
+                      title={robotHeightLockActive
+                        ? `机器人 Z=${displayedRobotPose.position.z.toFixed(3)} m 已锁定；点击后允许 ↑/↓ 调整`
+                        : '锁定当前机器人 Z 高度，避免之后误触 ↑/↓ 改变底盘高度'}
+                      onClick={() => onRobotHeightLockChange?.(!robotHeightLockActive)}
+                    >
+                      {robotHeightLockActive ? <Lock size={12} /> : <Unlock size={12} />}
+                      {robotHeightLockActive ? '高度已锁' : '锁定高度'}
+                    </button>
+                    <button
+                      type="button"
+                      className="robot-pose-reset"
+                      aria-label="复位机器人关节姿态"
+                      data-resettable-joint-count={robotLoadState?.movableJoints?.length || 0}
+                      disabled={
+                        robotTrajectoryActive
+                        || !robotLoadState?.movableJoints?.length
+                      }
+                      title={robotTrajectoryActive
+                        ? '示教轨迹播放期间由规划器接管机器人，停止后可复位姿态'
+                        : robotLoadState?.movableJoints?.length
+                          ? '将全部可动关节恢复为初始角度，不改变机器人底盘位置与朝向'
+                          : '当前机器人模型没有可复位的关节'}
+                      onClick={() => onResetRobotJointPose?.()}
+                    >
+                      <RotateCcw size={12} /> 姿态复位
+                    </button>
+                  </>
+                )}
+                <button
+                  type="button"
+                  className={`collision-protection-toggle is-${collisionButtonState} ${collisionProtectionEnabled ? 'is-active' : ''}`}
+                  aria-label={collisionProtectionEnabled ? '关闭碰撞保护' : '开启碰撞保护'}
+                  aria-pressed={collisionProtectionEnabled}
+                  data-collision-control-state={collisionButtonState}
+                  disabled={!collisionProtectionEnabled && !collisionControlReady}
+                  onClick={() => onCollisionProtectionChange?.(!collisionProtectionEnabled)}
+                  title={!collisionControlReady && !collisionProtectionEnabled
+                    ? '请先加载机器人；模型装配完成后即可开启碰撞保护'
+                    : collisionProtectionEnabled
+                      ? '关闭碰撞保护并释放环境空间索引'
+                      : '开启非底盘结构的环境干涉与 10 cm 安全距离检测'}
+                >
+                  {collisionProtectionEnabled && collisionStatusState === 'safe'
+                    ? <ShieldCheck size={13} />
+                    : <ShieldAlert size={13} />}
+                  {collisionButtonLabel}
+                </button>
+              </div>
+            </ViewerMenu>
+            <ViewerMenu
+              key={`display-${resolutionMapKey}`}
+              label="显示设置"
+              title="点云颜色、显示密度与网格质量"
+              icon={SlidersHorizontal}
+              isActive={isActive}
+            >
               <div className="viewer-display-settings__color">
                 <span><Palette size={13} /> 点云颜色</span>
                 <button
@@ -6892,7 +7123,7 @@ export default function PointCloudViewer({
                   <strong>{formatPointCount(meshInfo.faceCount)} 面</strong>
                 </div>
               )}
-            </ViewerDisplaySettings>
+            </ViewerMenu>
           </div>
           {isHeightColor && (
             <aside className="height-color-legend" aria-label="点云高程比例尺">
@@ -7019,46 +7250,6 @@ export default function PointCloudViewer({
             onToggleMapLock={toggleMapEndEffectorLock}
             onClose={exitEndEffectorControl}
           />
-          {robotDescriptor && (
-            <div
-              className={`robot-model-indicator is-${robotLoadState?.status || 'pending'} ${robotControlActive ? 'is-driving' : ''} ${robotHeightLockActive ? 'is-height-locked' : ''} ${chassisDragMode ? 'is-planar-drag' : ''}`}
-              role="status"
-              aria-label="机器人模型状态"
-            >
-              <span><Bot size={14} /></span>
-              <div>
-                <small>
-                  {endEffectorControlActive
-                    ? endEffectorControl.locked
-                      ? endEffectorControl.lockMode === 'map'
-                        ? `${endEffectorControl.side.toUpperCase()} ARM · MAP POSE HOLD`
-                        : `${endEffectorControl.side.toUpperCase()} ARM · BODY POSE HOLD`
-                      : `${endEffectorControl.side.toUpperCase()} ARM · 6D CONTROL`
-                    : chassisDragMode
-                      ? chassisDragging
-                        ? 'CHASSIS · MOVING ON XY'
-                        : 'CHASSIS · XY PLANE DRAG'
-                    : robotControlActive
-                      ? mapLockedSides.length
-                        ? `MECANUM DRIVE · MAP HOLD ${mapLockSideLabel}${robotHeightLockActive ? ' · Z HOLD' : ''}`
-                        : `MECANUM DRIVE · ${robotHeightLockActive ? 'Z HOLD' : 'ACTIVE'}`
-                      : mapLockedSides.length
-                        ? `ROBOT POSE · MAP HOLD ${mapLockSideLabel}${robotHeightLockActive ? ' · Z HOLD' : ''}`
-                        : `ROBOT POSE · ${robotHeightLockActive ? 'Z HOLD' : 'MAP FRAME'}`}
-                </small>
-                <strong>{robotDescriptor.name}</strong>
-              </div>
-              <em>
-                {robotLoadState?.status === 'loaded'
-                  ? chassisDragMode
-                    ? `按住底盘拖拽 · Z ${displayedRobotPose.position.z.toFixed(2)} 固定`
-                    : `${robotLoadState.zividCount || 0}× Zivid · X ${displayedRobotPose.position.x.toFixed(2)} · Y ${displayedRobotPose.position.y.toFixed(2)} · Z ${displayedRobotPose.position.z.toFixed(2)} · YAW ${displayedRobotPose.rpy.yaw.toFixed(1)}°`
-                  : robotLoadState?.status === 'error'
-                    ? '加载失败'
-                    : robotLoadState?.phase || '正在装配…'}
-              </em>
-            </div>
-          )}
           <div className="viewer-help">
             <span>
               {effectiveViewportPan || chassisDragMode
@@ -7074,7 +7265,9 @@ export default function PointCloudViewer({
             </span>
             <span>
               <Keyboard size={12} />
-              {robotControlActive
+              {endEffectorControlActive || chassisDragMode
+                ? 'Ctrl+Z 撤销最近一次拖拽'
+                : robotControlActive
                 ? robotHeightLockActive
                   ? 'W/S 前后 · A/D 麦轮横移 · ←→ 旋转 · Z 高度已锁'
                   : 'W/S 前后 · A/D 麦轮横移 · ←→ 旋转 · ↑↓ 高度'

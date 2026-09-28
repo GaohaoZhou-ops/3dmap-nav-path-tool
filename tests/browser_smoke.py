@@ -3,6 +3,8 @@ import os
 from pathlib import Path
 from playwright.sync_api import sync_playwright
 
+from viewer_tools_helpers import open_viewer_tools, viewer_tool
+
 from archive_helpers import read_exported_project
 
 
@@ -37,7 +39,11 @@ def run():
         assert page.locator(".viewport-panel").count() == 2
         assert page.locator(".inspector-panel").count() == 1
 
-        page.get_by_role("button", name="示例地图").click()
+        page.get_by_role("button", name="返回主页面", exact=True).click()
+        page.get_by_role("radio", name="地图示教").click()
+        with page.expect_file_chooser() as chooser_info:
+            page.get_by_role("button", name="新建工程", exact=True).click()
+        chooser_info.value.set_files(str(Path(__file__).resolve().parents[1] / "maps/xian_map.ply"))
         page.locator(".map-state-dot.online").wait_for(timeout=120_000)
         page.locator(".loading-curtain").wait_for(state="hidden", timeout=120_000)
         page.locator(".projection-status").wait_for(state="hidden", timeout=120_000)
@@ -101,11 +107,12 @@ def run():
         assert three_canvas.get_attribute("data-resolution-percent") == "100"
         assert three_canvas.get_attribute("data-render-point-count") == "2685018"
         page.get_by_role("button", name="关闭显示设置", exact=True).click()
+        open_viewer_tools(page)
         interaction_button = page.locator(".viewer-interaction-mode")
         assert interaction_button.count() == 1
         assert interaction_button.inner_text().strip() == "旋转"
         assert interaction_button.get_attribute("data-mode") == "rotate"
-        assert page.get_by_role("button", name="平移", exact=True).count() == 0
+        assert viewer_tool(page, name="平移", exact=True).count() == 0
         map_origin = page.get_by_role("button", name="二维坐标原点")
         assert map_origin.count() == 1
         assert "is-offscreen" in (map_origin.get_attribute("class") or "")
@@ -121,10 +128,8 @@ def run():
         page.mouse.up()
         page.keyboard.down("Shift")
         page.wait_for_function(
-            "document.querySelector('.viewer-interaction-mode')?.dataset.mode === 'shift-pan'"
+            "document.querySelector('.three-canvas')?.dataset.effectiveInteractionMode === 'shift-pan'"
         )
-        assert "Shift 平移" in interaction_button.inner_text()
-        assert "is-temporary" in (interaction_button.get_attribute("class") or "")
         assert three_canvas.get_attribute("data-effective-interaction-mode") == "shift-pan"
         page.mouse.move(
             three_box["x"] + three_box["width"] * 0.42,
@@ -139,9 +144,8 @@ def run():
         page.mouse.up()
         page.keyboard.up("Shift")
         page.wait_for_function(
-            "document.querySelector('.viewer-interaction-mode')?.dataset.mode === 'rotate'"
+            "document.querySelector('.three-canvas')?.dataset.effectiveInteractionMode === 'rotate'"
         )
-        assert interaction_button.inner_text().strip() == "旋转"
         assert three_canvas.get_attribute("data-interaction-mode") == "rotate"
 
         # The same toolbar control is also a persistent rotate/pan toggle.
@@ -153,16 +157,19 @@ def run():
             axis: float(three_canvas.get_attribute(f"data-camera-{axis}"))
             for axis in ("x", "y", "z")
         }
+        open_viewer_tools(page)
         interaction_button.click()
         page.wait_for_function(
             "document.querySelector('.three-canvas')?.dataset.interactionMode === 'pan'"
         )
+        open_viewer_tools(page)
         assert interaction_button.get_attribute("data-base-mode") == "pan"
         assert interaction_button.get_attribute("data-mode") == "pan"
         assert interaction_button.inner_text().strip() == "平移"
         assert "is-pan-mode" in (interaction_button.get_attribute("class") or "")
         assert "lucide-move3d" in interaction_button.locator("svg").get_attribute("class")
         assert three_canvas.get_attribute("data-effective-interaction-mode") == "pan"
+        three_canvas.focus()
         page.mouse.move(
             three_box["x"] + three_box["width"] * 0.41,
             three_box["y"] + three_box["height"] * 0.47,
@@ -192,10 +199,12 @@ def run():
                 (persistent_pan_camera_after[axis] - persistent_pan_camera_before[axis])
                 - (persistent_pan_target_after[axis] - persistent_pan_target_before[axis])
             ) < 1e-6
+        open_viewer_tools(page)
         interaction_button.click()
         page.wait_for_function(
             "document.querySelector('.three-canvas')?.dataset.interactionMode === 'rotate'"
         )
+        open_viewer_tools(page)
         assert interaction_button.inner_text().strip() == "旋转"
         assert "lucide-rotate3d" in interaction_button.locator("svg").get_attribute("class")
 

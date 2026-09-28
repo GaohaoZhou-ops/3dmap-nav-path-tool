@@ -3,6 +3,8 @@ from pathlib import Path
 
 from playwright.sync_api import sync_playwright
 
+from viewer_tools_helpers import viewer_tool
+
 
 BASE_URL = os.environ.get("BASE_URL", "http://127.0.0.1:21990")
 FIXTURE = Path(__file__).parent / "fixtures" / "rotation-map.ply"
@@ -174,12 +176,12 @@ def run():
         assert abs(float(three_canvas.get_attribute("data-waypoint-radius-scale")) - 0.519249) < 1e-6
         assert abs(float(three_canvas.get_attribute("data-waypoint-hit-radius-scale")) - 1.286568) < 1e-6
         visible_waypoint_frame = three_canvas.screenshot()
-        hide_waypoints = page.get_by_role("button", name="隐藏3D路径点")
+        hide_waypoints = viewer_tool(page, name="隐藏3D路径点")
         assert hide_waypoints.get_attribute("aria-pressed") == "true"
         hide_waypoints.click()
         page.wait_for_timeout(120)
         assert three_canvas.get_attribute("data-waypoints-visible") == "false"
-        assert page.get_by_role("button", name="显示3D路径点").get_attribute("aria-pressed") == "false"
+        assert viewer_tool(page, name="显示3D路径点").get_attribute("aria-pressed") == "false"
         assert three_canvas.get_attribute("data-route-edge-count") == "1"
         hidden_waypoint_frame = three_canvas.screenshot()
         assert hidden_waypoint_frame != visible_waypoint_frame
@@ -203,7 +205,7 @@ def run():
 
         three_box = three_canvas.bounding_box()
         assert three_box
-        assert page.get_by_role("button", name="旋转", exact=True).get_attribute(
+        assert viewer_tool(page, name="旋转", exact=True).get_attribute(
             "data-base-mode"
         ) == "rotate"
         three_canvas.focus()
@@ -247,7 +249,7 @@ def run():
                 "precision-pan-y",
             )
         }
-        assert "重置视角" in page.get_by_role("button", name="重置3D视角").inner_text()
+        assert "重置视角" in viewer_tool(page, name="重置3D视角").inner_text()
         assert "重置视角" in page.get_by_role("button", name="重置2D视角").inner_text()
         assert page.get_by_role("button", name="重置全部视角").count() == 0
 
@@ -280,8 +282,8 @@ def run():
         assert page.locator(".three-canvas").get_attribute("data-geometry-source") == "session-cache"
         assert page.locator(".three-canvas").get_attribute("data-color-mode") == "white"
         assert page.locator(".three-canvas").get_attribute("data-waypoints-visible") == "false"
-        assert page.get_by_role("button", name="显示3D路径点").get_attribute("aria-pressed") == "false"
-        page.get_by_role("button", name="显示3D路径点").click()
+        assert viewer_tool(page, name="显示3D路径点").get_attribute("aria-pressed") == "false"
+        viewer_tool(page, name="显示3D路径点").click()
         assert page.locator(".three-canvas").get_attribute("data-waypoints-visible") == "true"
         page.get_by_role("button", name="显示设置", exact=True).click()
         assert page.get_by_role("button", name="切换点云颜色模式").get_attribute("data-color-mode") == "white"
@@ -382,7 +384,7 @@ def run():
         for key, expected in immediate_view3d.items():
             assert abs(immediate_restored_view3d[key] - expected) <= max(1e-7, abs(expected) * 1e-8)
 
-        page.get_by_role("button", name="重置3D视角").click()
+        viewer_tool(page, name="重置3D视角").click()
         page.get_by_role("button", name="重置2D视角").click()
         page.wait_for_timeout(120)
         assert immediate_restored_canvas.get_attribute("data-view-state") == "reset"

@@ -4,6 +4,8 @@ from pathlib import Path
 
 from playwright.sync_api import sync_playwright
 
+from viewer_tools_helpers import viewer_tool
+
 from archive_helpers import read_exported_project
 
 
@@ -98,7 +100,7 @@ def run():
         )
 
         floating.get_by_role("button", name="最小化全关节浮动窗口").click()
-        page.get_by_role("button", name="定位机器人模型", exact=True).click()
+        viewer_tool(page, name="定位机器人模型", exact=True).click()
         page.wait_for_function(
             "document.querySelector('.three-canvas')?.dataset.robotControlEnabled === 'true'"
         )

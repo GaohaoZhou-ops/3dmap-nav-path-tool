@@ -5,6 +5,7 @@ import { sha256BytesFallback } from '../src/lib/hash.js';
 import {
   PROJECT_ARCHIVE_MAP_COLORS,
   PROJECT_ARCHIVE_MAP_INDICES_U16,
+  PROJECT_ARCHIVE_MAP_ORIGINAL,
   PROJECT_ARCHIVE_MAP_POSITIONS,
   PROJECT_ARCHIVE_VERSION,
   buildProjectArchive,
@@ -157,6 +158,7 @@ assert.deepEqual(
 );
 
 const restored = await readProjectArchive(archive.bytes);
+assert.equal(restored.resources.map.sourceBlob, null);
 assert.equal(restored.portable, true);
 assert.equal(restored.resources.map.pointCount, 3);
 assert.equal(restored.resources.map.faceCount, 1);
@@ -205,11 +207,52 @@ const restoredLegacy = await readProjectArchive(legacyArchive);
 assert.equal(restoredLegacy.portable, false);
 assert.equal(restoredLegacy.resources.map, null);
 
+const originalBytes = strToU8(`ply
+format ascii 1.0
+comment Preserve original comments, whitespace, and extra vertex properties.
+element vertex 3
+property float x
+property float y
+property float z
+property float intensity
+element face 1
+property list uchar int vertex_indices
+end_header
+0 0 0 0.25
+1 0 0 0.50
+0 1 0 0.75
+3 0 1 2
+`);
+const sourceHash = await sha256BytesFallback(originalBytes);
+const sourcePayload = {
+  ...payload,
+  map: { ...payload.map, byteLength: originalBytes.byteLength, sourceHash },
+};
+const sourceArchive = await buildProjectArchive(sourcePayload, {
+  mapResource: {
+    ...mapResource,
+    byteLength: originalBytes.byteLength,
+    sourceHash,
+    sourceBlob: new Blob([originalBytes]),
+  },
+  existingRobotPackage: robotPackage,
+});
+const sourceFiles = unzipSync(sourceArchive.bytes);
+assert.deepEqual(sourceFiles[PROJECT_ARCHIVE_MAP_ORIGINAL], originalBytes);
+const sourceRestored = await readProjectArchive(sourceArchive.bytes);
+assert.deepEqual(
+  new Uint8Array(await sourceRestored.resources.map.sourceBlob.arrayBuffer()),
+  originalBytes,
+);
+sourceFiles[PROJECT_ARCHIVE_MAP_ORIGINAL][0] ^= 0xff;
+await assert.rejects(() => readProjectArchive(zipSync(sourceFiles)), /SHA-256 校验失败/);
+
 console.log(`archive_version=${archive.manifest.archiveVersion}`);
 console.log(`archive_files=${archive.manifest.statistics.fileCount}`);
 console.log(`archive_bytes=${archive.byteLength}`);
 console.log('tamper_detection=ok');
 console.log('legacy_v1=ok');
+console.log('original_file_roundtrip_and_integrity=ok');
 
 if (process.argv[2]) {
   await writeFile(process.argv[2], archive.bytes);

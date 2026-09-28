@@ -4,6 +4,8 @@ from pathlib import Path
 
 from playwright.sync_api import sync_playwright
 
+from viewer_tools_helpers import viewer_tool
+
 from archive_helpers import read_exported_project
 
 
@@ -54,7 +56,7 @@ def run():
         assert canvas.get_attribute("data-robot-end-effector-count") == "2"
         assert canvas.get_attribute("data-end-effector-control-state") == "idle"
 
-        page.get_by_role("button", name="定位机器人模型").click()
+        viewer_tool(page, name="定位机器人模型").click()
         page.wait_for_function(
             "document.querySelector('.three-canvas')?.dataset.robotControlEnabled === 'true'"
         )
@@ -231,7 +233,7 @@ def run():
             ) < 1e-6
 
         global_solve_count = number_attr(canvas, "end-effector-global-solve-count")
-        page.get_by_role("button", name="定位机器人模型", exact=True).click()
+        viewer_tool(page, name="定位机器人模型", exact=True).click()
         page.wait_for_function(
             "document.querySelector('.three-canvas')?.dataset.robotControlEnabled === 'true'"
         )

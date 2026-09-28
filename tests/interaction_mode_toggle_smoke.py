@@ -3,6 +3,8 @@ from pathlib import Path
 
 from playwright.sync_api import sync_playwright
 
+from viewer_tools_helpers import open_viewer_tools
+
 
 BASE_URL = os.environ.get("BASE_URL", "http://127.0.0.1:21990")
 FIXTURE = Path(__file__).parent / "fixtures" / "rotation-map.ply"
@@ -35,9 +37,11 @@ def run():
         page.locator(".loading-curtain").wait_for(state="hidden")
 
         canvas = page.get_by_label("三维点云交互画布")
+        open_viewer_tools(page)
         mode_button = page.locator(".viewer-interaction-mode")
         assert mode_button.get_attribute("data-base-mode") == "rotate"
         assert mode_button.get_attribute("data-mode") == "rotate"
+        open_viewer_tools(page)
         assert mode_button.inner_text().strip() == "旋转"
         assert canvas.get_attribute("data-interaction-mode") == "rotate"
         rotate_background = mode_button.evaluate(
@@ -48,6 +52,7 @@ def run():
         page.wait_for_function(
             "document.querySelector('.three-canvas')?.dataset.interactionMode === 'pan'"
         )
+        open_viewer_tools(page)
         assert mode_button.get_attribute("data-base-mode") == "pan"
         assert mode_button.get_attribute("data-mode") == "pan"
         assert mode_button.inner_text().strip() == "平移"
@@ -58,6 +63,7 @@ def run():
             "element => getComputedStyle(element).backgroundImage"
         ) != rotate_background
 
+        canvas.focus()
         target_before = read_vector(canvas, "target")
         camera_before = read_vector(canvas, "camera")
         box = canvas.bounding_box()
@@ -89,33 +95,35 @@ def run():
         canvas.focus()
         page.keyboard.down("Shift")
         page.wait_for_function(
-            "document.querySelector('.viewer-interaction-mode')?.dataset.mode === 'shift-pan'"
+            "document.querySelector('.three-canvas')?.dataset.effectiveInteractionMode === 'shift-pan'"
         )
-        assert mode_button.inner_text().strip() == "平移"
+        assert canvas.get_attribute("data-interaction-mode") == "pan"
         page.keyboard.up("Shift")
         page.wait_for_function(
-            "document.querySelector('.viewer-interaction-mode')?.dataset.mode === 'pan'"
+            "document.querySelector('.three-canvas')?.dataset.effectiveInteractionMode === 'pan'"
         )
         page.screenshot(path="/tmp/atlas-persistent-pan-mode.png", full_page=True)
 
+        open_viewer_tools(page)
         mode_button.click()
         page.wait_for_function(
             "document.querySelector('.three-canvas')?.dataset.interactionMode === 'rotate'"
         )
+        open_viewer_tools(page)
         assert mode_button.inner_text().strip() == "旋转"
         assert "lucide-rotate3d" in mode_button.locator("svg").get_attribute("class")
 
         canvas.focus()
         page.keyboard.down("Shift")
         page.wait_for_function(
-            "document.querySelector('.viewer-interaction-mode')?.dataset.mode === 'shift-pan'"
+            "document.querySelector('.three-canvas')?.dataset.effectiveInteractionMode === 'shift-pan'"
         )
-        assert mode_button.inner_text().strip() == "Shift 平移"
-        assert "is-temporary" in (mode_button.get_attribute("class") or "")
+        assert canvas.get_attribute("data-shift-pan-armed") == "true"
         page.keyboard.up("Shift")
         page.wait_for_function(
-            "document.querySelector('.viewer-interaction-mode')?.dataset.mode === 'rotate'"
+            "document.querySelector('.three-canvas')?.dataset.effectiveInteractionMode === 'rotate'"
         )
+        open_viewer_tools(page)
         assert mode_button.inner_text().strip() == "旋转"
 
         page.screenshot(path="/tmp/atlas-interaction-mode-toggle.png", full_page=True)

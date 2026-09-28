@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import {
   Bluetooth,
@@ -204,8 +204,10 @@ const summarizeCoupledCapture = (samples, metadata = {}) => {
   };
 };
 
-export default function SpaceMouseControl({ inputRef, onNotify }) {
+export default function SpaceMouseControl({ inputRef, onNotify, isActive = true }) {
   const rootRef = useRef(null);
+  const menuRef = useRef(null);
+  const menuId = useId();
   const deviceRef = useRef(null);
   const inputHandlerRef = useRef(null);
   const profileRef = useRef(null);
@@ -236,6 +238,7 @@ export default function SpaceMouseControl({ inputRef, onNotify }) {
     typeof navigator !== 'undefined' && navigator.hid ? 'idle' : 'unsupported'
   ));
   const [open, setOpen] = useState(false);
+  const [menuPosition, setMenuPosition] = useState({ left: 8, top: 8 });
   const [deviceInfo, setDeviceInfo] = useState(null);
   const [profile, setProfile] = useState(() => loadSpaceMouseProfile());
   const [mode, setMode] = useState('xyz');
@@ -1120,9 +1123,47 @@ export default function SpaceMouseControl({ inputRef, onNotify }) {
   ]);
 
   useEffect(() => {
+    if (!isActive) setOpen(false);
+  }, [isActive]);
+
+  useLayoutEffect(() => {
+    if (!open || !isActive) return undefined;
+    const updateMenuPosition = () => {
+      const trigger = rootRef.current?.getBoundingClientRect();
+      const menu = menuRef.current;
+      if (!trigger || !menu) return;
+      const padding = 8;
+      const top = trigger.bottom + padding;
+      setMenuPosition({
+        left: Math.max(padding, Math.min(
+          trigger.right - menu.offsetWidth,
+          window.innerWidth - menu.offsetWidth - padding,
+        )),
+        top,
+        maxHeight: Math.max(0, window.innerHeight - top - padding),
+      });
+    };
+    updateMenuPosition();
+    const observer = new ResizeObserver(updateMenuPosition);
+    observer.observe(rootRef.current);
+    observer.observe(menuRef.current);
+    window.addEventListener('resize', updateMenuPosition);
+    window.addEventListener('scroll', updateMenuPosition, true);
+    return () => {
+      observer.disconnect();
+      window.removeEventListener('resize', updateMenuPosition);
+      window.removeEventListener('scroll', updateMenuPosition, true);
+    };
+  }, [open, isActive]);
+
+  useEffect(() => {
     if (!open) return undefined;
     const onPointerDown = (event) => {
-      if (!calibrationRef.current.open && !rootRef.current?.contains(event.target)) {
+      if (
+        !calibrationRef.current.open
+        && !rootRef.current?.contains(event.target)
+        && !menuRef.current?.contains(event.target)
+      ) {
         setOpen(false);
       }
     };
@@ -1299,6 +1340,7 @@ export default function SpaceMouseControl({ inputRef, onNotify }) {
         aria-label="检测3D鼠标"
         aria-haspopup="dialog"
         aria-expanded={open}
+        aria-controls={open && isActive ? menuId : undefined}
         title="检测或配置 3DConnexion SpaceMouse Wireless Bluetooth Edition"
         disabled={status === 'requesting' || status === 'connecting'}
         onClick={() => {
@@ -1320,8 +1362,15 @@ export default function SpaceMouseControl({ inputRef, onNotify }) {
         {connected && <i>{controlEnabled ? selectedAxisMeta.code : 'PAUSE'}</i>}
       </button>
 
-      {open && (
-        <div className="spacemouse-menu" role="dialog" aria-label="3D鼠标控制器">
+      {open && isActive && createPortal(
+        <div
+          ref={menuRef}
+          id={menuId}
+          className="spacemouse-menu"
+          role="dialog"
+          aria-label="3D鼠标控制器"
+          style={menuPosition}
+        >
           <div className="spacemouse-menu__heading">
             <span className={`spacemouse-device-orbit ${signalActive && controlEnabled ? 'is-live' : ''}`}>
               <i /><b /><em />
@@ -1427,7 +1476,8 @@ export default function SpaceMouseControl({ inputRef, onNotify }) {
               )}
             </div>
           )}
-        </div>
+        </div>,
+        document.body,
       )}
 
       {calibration.open && createPortal(

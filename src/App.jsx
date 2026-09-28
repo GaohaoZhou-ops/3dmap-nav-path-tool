@@ -3,7 +3,6 @@ import * as THREE from 'three';
 import { PLYLoader } from 'three/examples/jsm/loaders/PLYLoader.js';
 import {
   Bot,
-  Box,
   Check,
   ChevronDown,
   ChevronUp,
@@ -22,7 +21,6 @@ import {
   Server,
   ShieldAlert,
   ShieldCheck,
-  Upload,
   X,
   Zap,
 } from 'lucide-react';
@@ -319,6 +317,7 @@ function createGeometryCache(
     sphere: sphere ? serializeSphere(sphere) : null,
     sourceHash,
     sourceHashKind,
+    sourceBlob: sourceDetails.sourceBlob instanceof Blob ? sourceDetails.sourceBlob : null,
     fileModifiedAt: normalizeTimestamp(sourceDetails.fileModifiedAt),
     mimeType: String(sourceDetails.mimeType || 'application/octet-stream'),
     loadedAt: normalizeTimestamp(sourceDetails.loadedAt),
@@ -822,6 +821,7 @@ export default function App() {
         geometrySource = 'ply-parse',
         sourceHash = null,
         sourceHashKind = 'file',
+        sourceBlob = null,
         sourceModifiedAt = null,
         sourceMimeType = 'application/octet-stream',
         sourceKind = 'unknown',
@@ -861,6 +861,7 @@ export default function App() {
         geometrySource,
         sourceHash,
         sourceHashKind,
+        sourceBlob: sourceBlob instanceof Blob ? sourceBlob : null,
         byteLength: normalizedByteLength,
         fileModifiedAt: normalizeTimestamp(sourceModifiedAt),
         mimeType: String(sourceMimeType || 'application/octet-stream'),
@@ -928,6 +929,7 @@ export default function App() {
                   mimeType: nextMap.mimeType,
                   loadedAt: nextMap.loadedAt,
                   sourceKind: nextMap.sourceKind,
+                  sourceBlob: nextMap.sourceBlob,
                   teachingSpaceMode: nextMap.teachingSpaceMode,
                 },
               ),
@@ -978,6 +980,7 @@ export default function App() {
         return await installMapGeometry(geometry, name, {
           ...options,
           sourceByteLength: buffer.byteLength,
+          sourceBlob: new Blob([buffer], { type: options.sourceMimeType || 'application/octet-stream' }),
           geometrySource: options.geometrySource || 'ply-parse',
           sourceHash,
           sourceHashKind: options.sourceHashKind || 'file',
@@ -1009,6 +1012,7 @@ export default function App() {
           ...options,
           persistSnapshot: false,
           sourceByteLength: record.byteLength,
+          sourceBlob: record.sourceBlob || record.blob || null,
           geometrySource: 'session-cache',
           mapId: record.mapId,
           sourceHash: record.sourceHash || null,
@@ -1192,6 +1196,7 @@ export default function App() {
                   mimeType: restoredMap.mimeType,
                   loadedAt: restoredMap.loadedAt,
                   sourceKind: restoredMap.sourceKind,
+                  sourceBlob: restoredMap.sourceBlob,
                   teachingSpaceMode: restoredMap.teachingSpaceMode,
                 },
               ),
@@ -3324,6 +3329,7 @@ export default function App() {
           mimeType: mapData.mimeType,
           loadedAt: mapData.loadedAt,
           sourceKind: mapData.sourceKind,
+          sourceBlob: mapData.sourceBlob,
           teachingSpaceMode,
         },
       );
@@ -4136,11 +4142,17 @@ export default function App() {
           >
             <House size={15} /> <span>主页面</span>
           </button>
-          <button type="button" className="action-button subtle topbar-file-action" aria-label="示例地图" title="加载内置示例地图" onClick={() => loadExample()}>
-            <Box size={15} /> <span>示例地图</span>
-          </button>
-          <button type="button" className="action-button topbar-file-action" aria-label="加载地图" title="选择本地 PLY 地图" onClick={() => mapInputRef.current?.click()}>
-            <Upload size={15} /> <span>加载地图</span>
+          <button
+            type="button"
+            className="action-button"
+            ref={mapDetailsButtonRef}
+            aria-label="查看地图详细信息"
+            disabled={!mapData?.bounds}
+            onClick={() => setMapDetailsOpen(true)}
+            title={mapData?.bounds ? '查看当前地图文件与空间范围' : '请先加载地图'}
+          >
+            <FileSearch size={15} />
+            <span>地图详情</span>
           </button>
           <button
             type="button"
@@ -4159,7 +4171,11 @@ export default function App() {
             loadState={robotLoadState}
             onSelect={handleSelectRobot}
           />
-          <SpaceMouseControl inputRef={spaceMouseInputRef} onNotify={notify} />
+          <SpaceMouseControl
+            inputRef={spaceMouseInputRef}
+            onNotify={notify}
+            isActive={appPage === APP_PAGE_WORKBENCH}
+          />
           <button
             type="button"
             className="action-button teaching-data-page-link"
@@ -4226,18 +4242,6 @@ export default function App() {
                 ))}
                 <small>m</small>
               </div>
-              <button
-                type="button"
-                className="panel-details-button"
-                ref={mapDetailsButtonRef}
-                aria-label="查看地图详细信息"
-                disabled={!mapData?.bounds}
-                onClick={() => setMapDetailsOpen(true)}
-                title={mapData?.bounds ? '查看当前地图文件与空间范围' : '请先加载地图'}
-              >
-                <FileSearch size={13} />
-                <span>地图详情</span>
-              </button>
               {!isIndependentTeachingSpace && (
                 <button
                   type="button"
@@ -4320,8 +4324,8 @@ export default function App() {
                 onSpeedChange={changeTeachingPlaybackSpeed}
               />
               {!mapData && (
-                <button type="button" className="placeholder-load" onClick={() => mapInputRef.current?.click()}>
-                  <FolderOpen size={15} /> 选择 PLY 地图
+                <button type="button" className="placeholder-load" onClick={() => navigateAppPage(APP_PAGE_HOME)}>
+                  <House size={15} /> 前往欢迎页新建工程
                 </button>
               )}
             </div>

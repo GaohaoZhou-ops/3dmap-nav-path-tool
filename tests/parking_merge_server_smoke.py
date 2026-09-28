@@ -8,6 +8,8 @@ from pathlib import Path
 
 from playwright.sync_api import sync_playwright
 
+from viewer_tools_helpers import viewer_tool
+
 
 BASE_URL = os.environ.get("BASE_URL", "http://127.0.0.1:21990")
 CHROMIUM_EXECUTABLE = os.environ.get("PLAYWRIGHT_CHROMIUM_EXECUTABLE")
@@ -80,7 +82,7 @@ def run():
             "document.querySelector('[aria-label=\"虚拟示教\"]')?.dataset.teachingPointCount === '1'"
         )
 
-        page.get_by_role("button", name="定位机器人模型").click()
+        viewer_tool(page, name="定位机器人模型").click()
         page.keyboard.press("w")
         page.keyboard.press("w")
         page.get_by_role("button", name="记录当前机械臂姿态").click()

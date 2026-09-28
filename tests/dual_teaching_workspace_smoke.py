@@ -44,12 +44,15 @@ def add_waypoints(page, count):
 
 
 def set_color_mode(page, expected):
+    page.get_by_role("button", name="显示设置", exact=True).click()
     button = page.get_by_role("button", name="切换点云颜色模式")
     for _ in range(3):
         if button.get_attribute("data-color-mode") == expected:
+            page.get_by_role("button", name="关闭显示设置", exact=True).click()
             return
         button.click()
     assert button.get_attribute("data-color-mode") == expected
+    page.get_by_role("button", name="关闭显示设置", exact=True).click()
 
 
 def return_home(page):
@@ -99,6 +102,7 @@ def run():
 
         continue_mode(page, "map")
         assert page.locator(".waypoint-marker").count() == 1
+        page.get_by_role("button", name="显示设置", exact=True).click()
         assert page.get_by_role("button", name="切换点云颜色模式").get_attribute(
             "data-color-mode"
         ) == "source"
@@ -108,6 +112,7 @@ def run():
         continue_mode(page, "independent")
         assert page.locator(".panel-2d").count() == 0
         assert page.locator(".map2d-view").count() == 0
+        page.get_by_role("button", name="显示设置", exact=True).click()
         assert page.get_by_role("button", name="切换点云颜色模式").get_attribute(
             "data-color-mode"
         ) == "white"

@@ -524,6 +524,7 @@ def run():
                 - (late_shift_target_after[axis] - late_shift_target_before[axis])
             ) < 1e-6
 
+        page.get_by_role("button", name="显示设置", exact=True).click()
         resolution = page.get_by_role("group", name="点云显示分辨率")
         point_density = page.get_by_label("点云显示密度")
         assert page.get_by_role("button", name="重置全部视角").count() == 0
@@ -600,6 +601,7 @@ def run():
         assert canvas.get_attribute("data-resolution-percent") == "100"
         assert canvas.get_attribute("data-render-point-count") == "24"
 
+        page.get_by_role("button", name="关闭显示设置", exact=True).click()
         box = canvas.bounding_box()
         assert box
         drag_x = box["x"] + box["width"] * 0.45

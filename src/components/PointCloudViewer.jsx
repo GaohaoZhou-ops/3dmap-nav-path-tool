@@ -26,6 +26,7 @@ import {
   X,
 } from 'lucide-react';
 import EndEffectorControlPanel from './EndEffectorControlPanel.jsx';
+import ViewerDisplaySettings from './ViewerDisplaySettings.jsx';
 import {
   createUniformMeshIndex,
   MESH_RENDER_QUALITY_OPTIONS,
@@ -6804,40 +6805,81 @@ export default function PointCloudViewer({
                 <RotateCcw size={13} /> 重置视角
               </button>
             </div>
-            <div
-              className="viewer-resolution-control"
-              role="group"
-              aria-label="点云显示分辨率"
-              title={
-                !hasManualResolution
-                  ? `自动档会在源点数超过 ${AUTO_POINT_BUDGET.toLocaleString('zh-CN')} 时选择合适密度；可用下拉框手动覆盖`
-                  : '仅调整 3D 显示采样，不改变 2D 截面和导航数据'
-              }
-            >
-              <label
-                className={`mesh-quality-control point-density-control tone-${resolution.tone} ${!hasManualResolution ? 'is-auto' : ''}`}
-                title={`${hasManualResolution ? '手动' : '自动'}档：当前渲染 ${renderedPointCount.toLocaleString('zh-CN')} / ${renderablePointCount.toLocaleString('zh-CN')} 个点`}
+            <ViewerDisplaySettings key={resolutionMapKey} isActive={isActive}>
+              <div className="viewer-display-settings__color">
+                <span><Palette size={13} /> 点云颜色</span>
+                <button
+                  type="button"
+                  className={`height-color-toggle mode-${colorModeMeta.id}`}
+                  aria-label="切换点云颜色模式"
+                  data-color-mode={colorModeMeta.id}
+                  title={`当前为${colorModeMeta.label}，点击切换为${nextColorMode.label}`}
+                  onClick={() => onColorModeChange?.(nextColorMode.id)}
+                >
+                  <i aria-hidden="true" />
+                  <span>{colorModeMeta.label}</span>
+                  <RotateCcw size={11} />
+                </button>
+              </div>
+              <div
+                className="viewer-resolution-control"
+                role="group"
+                aria-label="点云显示分辨率"
+                title={
+                  !hasManualResolution
+                    ? `自动档会在源点数超过 ${AUTO_POINT_BUDGET.toLocaleString('zh-CN')} 时选择合适密度；可用下拉框手动覆盖`
+                    : '仅调整 3D 显示采样，不改变 2D 截面和导航数据'
+                }
               >
-                <Gauge size={13} />
-                <span>
-                  <small>POINT DENSITY</small>
-                  <select
-                    aria-label="点云显示密度"
-                    value={hasManualResolution ? String(resolutionIndex) : 'auto'}
-                    onChange={(event) => chooseResolutionMode(event.target.value)}
-                  >
-                    <option value="auto">
-                      自动 · {suggestedResolution.label} {Math.round(suggestedResolution.ratio * 100)}%（推荐）
-                    </option>
-                    {RESOLUTION_LEVELS.map((option, index) => (
-                      <option key={option.ratio} value={index}>
-                        {option.label} · {Math.round(option.ratio * 100)}%
+                <p className="viewer-display-settings__section-title">显示质量</p>
+                <label
+                  className={`mesh-quality-control point-density-control tone-${resolution.tone} ${!hasManualResolution ? 'is-auto' : ''}`}
+                  title={`${hasManualResolution ? '手动' : '自动'}档：当前渲染 ${renderedPointCount.toLocaleString('zh-CN')} / ${renderablePointCount.toLocaleString('zh-CN')} 个点`}
+                >
+                  <Gauge size={13} />
+                  <span>
+                    <small>点云密度</small>
+                    <select
+                      aria-label="点云显示密度"
+                      value={hasManualResolution ? String(resolutionIndex) : 'auto'}
+                      onChange={(event) => chooseResolutionMode(event.target.value)}
+                    >
+                      <option value="auto">
+                        自动 · {suggestedResolution.label} {Math.round(suggestedResolution.ratio * 100)}%（推荐）
                       </option>
-                    ))}
-                  </select>
-                </span>
-                <em>{Math.round(resolution.ratio * 100)}% · {formatPointCount(renderedPointCount)} PTS</em>
-              </label>
+                      {RESOLUTION_LEVELS.map((option, index) => (
+                        <option key={option.ratio} value={index}>
+                          {option.label} · {Math.round(option.ratio * 100)}%
+                        </option>
+                      ))}
+                    </select>
+                  </span>
+                  <em>{Math.round(resolution.ratio * 100)}% · {formatPointCount(renderedPointCount)} 点</em>
+                </label>
+                {hasEmbeddedMesh && (
+                  <label
+                    className={`mesh-quality-control tone-${meshQualityPlan.effectiveId}`}
+                    title={`${meshQualityPlan.requestedLabel}：当前渲染 ${meshQualityPlan.renderedFaceCount.toLocaleString('zh-CN')} / ${meshQualityPlan.faceCount.toLocaleString('zh-CN')} 个三角面`}
+                  >
+                    <Gauge size={13} />
+                    <span>
+                      <small>网格质量</small>
+                      <select
+                        aria-label="网格渲染质量"
+                        value={meshQualityPlan.requestedId}
+                        onChange={(event) => onMeshRenderQualityChange?.(event.target.value)}
+                      >
+                        {MESH_RENDER_QUALITY_OPTIONS.map((option) => (
+                          <option key={option.id} value={option.id}>
+                            {option.label}{option.id === 'auto' ? '（推荐）' : ''}
+                          </option>
+                        ))}
+                      </select>
+                    </span>
+                    <em>{formatPointCount(meshQualityPlan.renderedFaceCount)} 面</em>
+                  </label>
+                )}
+              </div>
               {hasEmbeddedMesh && (
                 <div
                   className="mesh-topology-readout"
@@ -6845,45 +6887,12 @@ export default function PointCloudViewer({
                   aria-label={`PLY 内嵌网格 ${meshInfo.faceCount.toLocaleString('zh-CN')} 个三角面，另有 ${renderablePointCount.toLocaleString('zh-CN')} 个未成面点`}
                   title="PLY 自带 face 索引：成面区域以实体网格显示，未被引用的顶点继续显示为点云"
                 >
-                  <Box size={13} />
-                  <span><small>PLY MESH</small><strong>{formatPointCount(meshInfo.faceCount)} TRI</strong></span>
+                  <Box size={12} />
+                  <span>内嵌网格</span>
+                  <strong>{formatPointCount(meshInfo.faceCount)} 面</strong>
                 </div>
               )}
-              {hasEmbeddedMesh && (
-                <label
-                  className={`mesh-quality-control tone-${meshQualityPlan.effectiveId}`}
-                  title={`${meshQualityPlan.requestedLabel}：当前渲染 ${meshQualityPlan.renderedFaceCount.toLocaleString('zh-CN')} / ${meshQualityPlan.faceCount.toLocaleString('zh-CN')} 个三角面`}
-                >
-                  <Gauge size={13} />
-                  <span>
-                    <small>MESH QUALITY</small>
-                    <select
-                      aria-label="网格渲染质量"
-                      value={meshQualityPlan.requestedId}
-                      onChange={(event) => onMeshRenderQualityChange?.(event.target.value)}
-                    >
-                      {MESH_RENDER_QUALITY_OPTIONS.map((option) => (
-                        <option key={option.id} value={option.id}>
-                          {option.label}{option.id === 'auto' ? '（推荐）' : ''}
-                        </option>
-                      ))}
-                    </select>
-                  </span>
-                  <em>{formatPointCount(meshQualityPlan.renderedFaceCount)} TRI</em>
-                </label>
-              )}
-              <button
-                type="button"
-                className={`height-color-toggle is-active mode-${colorModeMeta.id}`}
-                aria-label="切换点云颜色模式"
-                data-color-mode={colorModeMeta.id}
-                title={`当前为${colorModeMeta.label}，点击切换为${nextColorMode.label}`}
-                onClick={() => onColorModeChange?.(nextColorMode.id)}
-              >
-                <Palette size={12} />
-                <span>{colorModeMeta.label}</span>
-              </button>
-            </div>
+            </ViewerDisplaySettings>
           </div>
           {isHeightColor && (
             <aside className="height-color-legend" aria-label="点云高程比例尺">

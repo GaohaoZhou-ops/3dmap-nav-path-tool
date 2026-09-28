@@ -18,6 +18,7 @@ build/
 out/
 output/
 .vite/
+.vite-temp/
 *.tsbuildinfo
 vite.config.*.timestamp-*
 
@@ -27,6 +28,8 @@ coverage/
 playwright-report/
 blob-report/
 test-results/
+playwright/.cache/
+playwright/.auth/
 *.lcov
 
 # Python bytecode, environments, and test caches
@@ -47,8 +50,10 @@ __pycache__/
 .coverage.*
 htmlcov/
 .venv/
+.venv-*/
 venv/
 env/
+.uv-cache/
 .atlas-merge-venv/
 
 # Local service runtime files
@@ -60,6 +65,12 @@ env/
 *.pid.lock
 *.sqlite
 *.sqlite3
+*.sqlite-journal
+*.sqlite-shm
+*.sqlite-wal
+*.sqlite3-journal
+*.sqlite3-shm
+*.sqlite3-wal
 *.db
 *.db-journal
 *.db-shm
@@ -70,6 +81,8 @@ yarn-error.log*
 pnpm-debug.log*
 
 # Temporary, patch, and local backup files
+/tmp/
+/temp/
 *.tmp
 *.temp
 *.bak
@@ -87,6 +100,9 @@ slurm-*.err
 .env
 .env.*
 !.env.example
+!.env.*.example
+!.env.template
+!.env.*.template
 
 # Editor and operating-system metadata
 .DS_Store
@@ -108,8 +124,17 @@ robots/
 *.ply
 !maps/xian_map.ply
 !tests/fixtures/*.ply
+!tests/fixtures/**/*.ply
 
 # Locally recovered/exported projects may contain hundreds of MB of map data
 recovered-projects/
 *.atlas-project/
 *.atlas-project.zip
+
+# Exported teaching archives and parking-merge jobs/results
+virtual-teaching-*.zip
+parking-merge-server-*.zip
+parking-merge-server-*/
+parking-merge-*-result.zip
+parking-merge-*-result.json
+/merge-job/

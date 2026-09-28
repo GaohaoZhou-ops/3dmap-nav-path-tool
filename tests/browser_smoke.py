@@ -60,6 +60,7 @@ def run():
         assert three_canvas.get_attribute("data-keyboard-enabled") == "true"
         assert three_canvas.get_attribute("data-keyboard-mode") == "always-on"
         assert page.get_by_role("button", name="键盘", exact=True).count() == 0
+        page.get_by_role("button", name="显示设置", exact=True).click()
         assert "自动" in page.get_by_role("group", name="点云显示分辨率").inner_text()
         vector_canvas = page.get_by_label("二维矢量点云截面")
         color_toggle = page.get_by_role("button", name="切换点云颜色模式")
@@ -99,6 +100,7 @@ def run():
         point_density.select_option("5")
         assert three_canvas.get_attribute("data-resolution-percent") == "100"
         assert three_canvas.get_attribute("data-render-point-count") == "2685018"
+        page.get_by_role("button", name="关闭显示设置", exact=True).click()
         interaction_button = page.locator(".viewer-interaction-mode")
         assert interaction_button.count() == 1
         assert interaction_button.inner_text().strip() == "旋转"

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import * as THREE from 'three';
 import { PLYLoader } from 'three/examples/jsm/loaders/PLYLoader.js';
 import {
+  Bot,
   Box,
   Check,
   ChevronDown,
@@ -4153,29 +4154,6 @@ export default function App() {
             <ScanLine size={15} />
             <span>{isIndependentTeachingSpace ? '独立空间' : '独立示教'}</span>
           </button>
-          <button
-            type="button"
-            className={`action-button topbar-file-action project-load-action is-${projectDirectoryState.status}`}
-            aria-label="加载工程"
-            data-project-directory-picker="true"
-            data-project-load-dialog="true"
-            data-project-directory-state={projectDirectoryState.status}
-            onClick={() => showProjectLoadDialog(teachingSpaceMode)}
-            disabled={loadState.loading}
-            title={projectDirectoryState.status === 'synced'
-              ? `${projectDirectoryState.name} · 修改会直接增量保存到工程目录`
-              : projectDirectoryState.status === 'saving'
-                ? `${projectDirectoryState.name} · 正在增量保存`
-                : projectDirectoryState.status === 'permission'
-                  ? `${projectDirectoryState.name} · 请重新选择目录以恢复写入权限`
-                  : projectDirectoryState.status === 'readonly'
-                    ? `${projectDirectoryState.name} · 当前浏览器仅能读取目录，工作仍由本地会话保护`
-                    : '打开工程加载窗口；优先使用默认保存路径，也可选择工程引导文件或其他目录'}
-          >
-            <FolderOpen size={15} />
-            <span>加载工程</span>
-            <i className="project-directory-indicator" aria-hidden="true" />
-          </button>
           <RobotPicker
             selectedRobot={selectedRobot}
             loadState={robotLoadState}
@@ -4229,10 +4207,24 @@ export default function App() {
                   </strong>
                 </div>
               </div>
-              <div className="panel-stats">
-                <span><i className="axis x">X</i>{mapData ? `${mapData.bounds.min.x.toFixed(1)} / ${mapData.bounds.max.x.toFixed(1)}` : '—'}</span>
-                <span><i className="axis y">Y</i>{mapData ? `${mapData.bounds.min.y.toFixed(1)} / ${mapData.bounds.max.y.toFixed(1)}` : '—'}</span>
-                <span><i className="axis z">Z</i>{mapData ? `${mapData.bounds.min.z.toFixed(1)} / ${mapData.bounds.max.z.toFixed(1)}` : '—'}</span>
+              <div
+                className="panel-stats robot-position-readout"
+                role="group"
+                aria-label="机器人实时坐标"
+                title={selectedRobot && robotLoadState.status === 'loaded'
+                  ? `机器人在 ${coordinateFrame.toUpperCase()} 坐标系中的实时位置，单位：米`
+                  : '加载机器人后显示实时 XYZ 坐标'}
+              >
+                <span className="robot-position-readout__label"><Bot size={12} /> 机器人定位</span>
+                {['x', 'y', 'z'].map((axis) => (
+                  <span key={axis} data-axis={axis}>
+                    <i className={`axis ${axis}`}>{axis.toUpperCase()}</i>
+                    <b>{selectedRobot && robotLoadState.status === 'loaded'
+                      ? (Math.round(robotPose.position[axis] * 1000) / 1000).toFixed(3)
+                      : '—'}</b>
+                  </span>
+                ))}
+                <small>m</small>
               </div>
               <button
                 type="button"

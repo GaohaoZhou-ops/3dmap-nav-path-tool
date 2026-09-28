@@ -13,6 +13,11 @@ BASE_URL = os.environ.get("BASE_URL", "http://127.0.0.1:21990")
 CHROME = Path("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome")
 
 
+def return_home(page):
+    page.get_by_role("button", name="返回主页面", exact=True).click()
+    page.locator('[data-app-page="home"][data-session-state="ready"]').wait_for()
+
+
 def run():
     page_errors = []
     with tempfile.TemporaryDirectory(prefix="atlas-project-directory-") as temporary:
@@ -48,13 +53,11 @@ def run():
             page.on("pageerror", lambda error: page_errors.append(str(error)))
             page.goto(f"{BASE_URL.rstrip('/')}/workbench", wait_until="networkidle")
             page.locator('[data-session-state="ready"]').wait_for()
+            return_home(page)
 
             load_button = page.get_by_role("button", name="加载工程", exact=True)
             assert load_button.is_visible()
             assert load_button.is_enabled()
-            assert load_button.get_attribute("data-project-directory-picker") == "true"
-            assert load_button.get_attribute("data-project-load-dialog") == "true"
-            assert load_button.get_attribute("data-project-directory-state") == "detached"
             assert page.get_by_role("button", name="打开上一次工程").count() == 0
             assert page.get_by_role("button", name="加载路径").count() == 0
 
@@ -77,7 +80,7 @@ def run():
             assert chooser.is_multiple()
             chooser.set_files(str(fixture_directory))
             page.get_by_text("工程目录（只读）已加载", exact=False).wait_for()
-            assert load_button.get_attribute("data-project-directory-state") == "readonly"
+            assert page.locator(".project-directory-guard.is-readonly").is_visible()
             assert page.get_by_text("PROJECT READ ONLY", exact=True).is_visible()
             directory_input = page.locator('input[type="file"][webkitdirectory]')
             assert directory_input.count() == 1
@@ -87,6 +90,7 @@ def run():
             assert ".json" in (legacy_input.get_attribute("accept") or "")
             assert legacy_input.get_attribute("data-project-guide-input") == "true"
 
+            return_home(page)
             load_button.click()
             load_dialog.wait_for()
             page.wait_for_function(
@@ -116,6 +120,7 @@ def run():
             picker_page.on("pageerror", lambda error: page_errors.append(str(error)))
             picker_page.goto(f"{BASE_URL.rstrip('/')}/workbench", wait_until="networkidle")
             picker_page.locator('[data-session-state="ready"]').wait_for()
+            return_home(picker_page)
             picker_page.get_by_role("button", name="加载工程", exact=True).click()
             picker_page.get_by_role("dialog", name="加载工程").wait_for()
             picker_page.get_by_role(
@@ -162,7 +167,7 @@ def run():
                 """
             )
             picker_page.reload(wait_until="networkidle")
-            picker_page.locator('[data-session-state="ready"]').wait_for()
+            picker_page.locator('[data-app-page="home"][data-session-state="ready"]').wait_for()
             picker_page.get_by_role("button", name="加载工程", exact=True).click()
             remembered_dialog = picker_page.get_by_role("dialog", name="加载工程")
             remembered_dialog.wait_for()
@@ -261,6 +266,7 @@ def run():
             writable_page.on("pageerror", lambda error: page_errors.append(str(error)))
             writable_page.goto(f"{BASE_URL.rstrip('/')}/workbench", wait_until="networkidle")
             writable_page.locator('[data-session-state="ready"]').wait_for()
+            return_home(writable_page)
             writable_button = writable_page.get_by_role("button", name="加载工程", exact=True)
             writable_button.click()
             writable_page.get_by_role("dialog", name="加载工程").wait_for()
@@ -268,9 +274,10 @@ def run():
                 "button", name="选择其他工程目录", exact=True
             ).click()
             writable_page.locator(
-                '[data-project-directory-state="synced"]'
+                '.project-directory-guard.is-synced'
             ).wait_for(timeout=15_000)
 
+            return_home(writable_page)
             writable_button.click()
             writable_dialog = writable_page.get_by_role("dialog", name="加载工程")
             writable_dialog.wait_for()
@@ -291,6 +298,7 @@ def run():
             )
 
             writable_page.evaluate("window.__atlasWrittenPaths.length = 0")
+            writable_page.get_by_role("button", name="显示设置", exact=True).click()
             writable_page.get_by_role("button", name="切换点云颜色模式").click()
             writable_page.wait_for_function(
                 "window.__atlasWrittenPaths.includes('config/project.json') "
@@ -299,7 +307,7 @@ def run():
             )
             written_paths = writable_page.evaluate("window.__atlasWrittenPaths")
             assert "environment/positions.f32le" not in written_paths
-            assert writable_button.get_attribute("data-project-directory-state") == "synced"
+            assert writable_page.locator(".project-directory-guard.is-synced").is_visible()
             assert writable_page.get_by_text("PROJECT SYNCED", exact=True).is_visible()
             assert not page_errors
             browser.close()

@@ -74,7 +74,9 @@ def run():
         )
         panel = page.get_by_label("Zivid 2 M70 相机视图", exact=True)
         canvas = camera_canvas(panel)
+        page.get_by_role("button", name="显示设置", exact=True).click()
         assert page.get_by_label("网格渲染质量", exact=True).input_value() == "balanced"
+        page.get_by_role("button", name="关闭显示设置", exact=True).click()
         assert canvas.get_attribute("data-rgb-mesh-visible") == "true"
 
         panel.get_by_role("button", name="点云", exact=True).click()

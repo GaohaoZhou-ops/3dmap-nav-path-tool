@@ -67,6 +67,7 @@ def run():
         assert page.locator(".three-canvas").get_attribute("data-resolution-percent") == "25"
         assert page.locator(".three-canvas").get_attribute("data-render-point-count") == EXPECTED_RENDERED_POINTS
         assert page.locator(".three-canvas").get_attribute("data-resolution-selection") == "auto"
+        page.get_by_role("button", name="显示设置", exact=True).click()
         assert "自动" in page.get_by_role("group", name="点云显示分辨率").inner_text()
 
         page.reload(wait_until="domcontentloaded")

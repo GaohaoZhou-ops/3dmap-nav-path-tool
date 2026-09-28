@@ -111,6 +111,7 @@ def run():
         page.locator(".loading-curtain").wait_for(state="hidden")
         page.locator(".projection-status").wait_for(state="hidden")
 
+        page.get_by_role("button", name="显示设置", exact=True).click()
         color_toggle = page.get_by_role("button", name="切换点云颜色模式")
         assert color_toggle.get_attribute("data-color-mode") == "height"
         color_toggle.click()
@@ -282,7 +283,9 @@ def run():
         assert page.get_by_role("button", name="显示3D路径点").get_attribute("aria-pressed") == "false"
         page.get_by_role("button", name="显示3D路径点").click()
         assert page.locator(".three-canvas").get_attribute("data-waypoints-visible") == "true"
+        page.get_by_role("button", name="显示设置", exact=True).click()
         assert page.get_by_role("button", name="切换点云颜色模式").get_attribute("data-color-mode") == "white"
+        page.get_by_role("button", name="关闭显示设置", exact=True).click()
         assert page.get_by_label("二维矢量点云截面").get_attribute("data-color-mode") == "white"
         assert page.get_by_label("点云高程比例尺").count() == 0
         assert page.get_by_label("二维矢量点云截面").get_attribute("data-render-mode") == "vector-coordinate-webgl"
@@ -412,9 +415,7 @@ def run():
         assert page.locator(".three-canvas").count() == 0
         assert page.locator(".waypoint-marker").count() == 0
         assert page.evaluate("localStorage.getItem('atlas-route-studio:view-state-v1')") is None
-        load_project_button = page.get_by_role("button", name="加载工程")
-        assert load_project_button.is_enabled()
-        assert load_project_button.get_attribute("data-project-directory-picker") == "true"
+        assert page.get_by_role("button", name="返回主页面").is_enabled()
         assert page.locator(".session-guard").get_attribute(
             "data-recovery-available"
         ) == "true"
@@ -452,7 +453,7 @@ def run():
         assert page.locator(".three-canvas").get_attribute("data-geometry-source") == "session-cache"
         assert page.locator(".waypoint-marker").count() == 2
         assert page.locator(".route-edge").count() == 1
-        assert page.get_by_role("button", name="加载工程").is_enabled()
+        assert page.get_by_role("button", name="返回主页面").is_enabled()
         recovered_map_view = page.locator(".map2d-view")
         recovered_canvas = page.locator(".three-canvas")
         for key, expected in recovery_view2d.items():

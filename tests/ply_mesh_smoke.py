@@ -51,13 +51,14 @@ def assert_hybrid_geometry(page, canvas, source, quality="auto"):
     assert canvas.get_attribute("data-mesh-render-quality") == quality
     assert canvas.get_attribute("data-render-mesh-face-count") == "2"
     assert page.get_by_role("button", name="切换地图显示模式").count() == 0
+    page.get_by_role("button", name="显示设置", exact=True).click()
     mesh_status = page.get_by_role(
         "status",
         name="PLY 内嵌网格 2 个三角面，另有 3 个未成面点",
     )
     mesh_status.wait_for()
-    assert "PLY MESH" in mesh_status.inner_text()
-    assert "2 TRI" in mesh_status.inner_text()
+    assert "内嵌网格" in mesh_status.inner_text()
+    assert "2 面" in mesh_status.inner_text()
 
 
 def run():

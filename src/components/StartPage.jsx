@@ -58,7 +58,7 @@ export default function StartPage({
       <header className="start-page__topbar">
         <div className="start-page__brand">
           <span><Route size={20} strokeWidth={1.7} /></span>
-          <div><small>ATLAS / TEACHING</small><strong>虚拟示教平台</strong></div>
+          <div><strong>虚拟示教平台</strong></div>
         </div>
         <div className="start-page__system">
           <span className={`is-${sessionState?.status || 'checking'}`}>
@@ -86,8 +86,6 @@ export default function StartPage({
 
       <main className="start-page__main">
         <section className="start-page__intro" aria-labelledby="start-page-title">
-          <div className="start-page__sequence"><span>00</span><i /><small>MISSION ENTRY</small></div>
-          <p className="start-page__eyebrow">ROBOT DIGITAL TEACHING / LOCAL WORKSPACE</p>
           <h1 id="start-page-title"><strong>虚拟示教平台</strong></h1>
         </section>
 

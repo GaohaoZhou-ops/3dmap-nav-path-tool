@@ -6,6 +6,9 @@ from playwright.sync_api import sync_playwright
 
 BASE_URL = os.environ.get("BASE_URL", "http://127.0.0.1:21990")
 FIXTURE = Path(__file__).parent / "fixtures" / "rotation-map.ply"
+CHROME = Path(os.environ.get(
+    "CHROME_EXECUTABLE", "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+))
 
 
 def wait_for_session(page):
@@ -51,7 +54,7 @@ def assert_independent_ui(page, expected_geometry_source):
     assert shell.get_attribute("data-teaching-space-mode") == "independent"
     assert shell.get_attribute("data-coordinate-frame") == "virtual_origin"
     assert "VIRTUAL SPACE" in page.locator(".map-identity").inner_text()
-    assert page.get_by_role("button", name="创建独立示教空间").get_attribute("aria-pressed") == "true"
+    assert page.get_by_role("button", name="切换到地图示教").inner_text() == "地图示教"
     assert "独立示教空间" in page.locator(".panel-3d .panel-heading__title").inner_text()
     workspace = page.locator(".visual-workspace")
     assert workspace.get_attribute("data-workspace-layout") == "spatial-only"
@@ -76,7 +79,10 @@ def assert_independent_ui(page, expected_geometry_source):
 def run():
     errors = []
     with sync_playwright() as playwright:
-        browser = playwright.chromium.launch(headless=True)
+        options = {"headless": True}
+        if CHROME.exists():
+            options["executable_path"] = str(CHROME)
+        browser = playwright.chromium.launch(**options)
         page = browser.new_page(viewport={"width": 1440, "height": 900})
         page.set_default_timeout(30_000)
         page.on("pageerror", lambda exc: errors.append(str(exc)))
@@ -121,9 +127,7 @@ def run():
             "data-coordinate-frame"
         ) == "map"
         assert page.locator(".three-canvas").get_attribute("data-reference-plane") == "map-reference-plane"
-        assert page.get_by_role("button", name="创建独立示教空间").get_attribute(
-            "aria-pressed"
-        ) == "false"
+        assert page.get_by_role("button", name="切换到独立示教").inner_text() == "独立示教"
         assert page.locator(".visual-workspace").get_attribute(
             "data-workspace-layout"
         ) == "spatial-and-map"

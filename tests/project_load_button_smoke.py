@@ -49,6 +49,7 @@ def run():
             page.add_init_script(
                 "Object.defineProperty(window, 'showDirectoryPicker', "
                 "{ value: undefined, configurable: true });"
+                "window.showOpenFilePicker = undefined;"
             )
             page.on("pageerror", lambda error: page_errors.append(str(error)))
             page.goto(f"{BASE_URL.rstrip('/')}/workbench", wait_until="networkidle")

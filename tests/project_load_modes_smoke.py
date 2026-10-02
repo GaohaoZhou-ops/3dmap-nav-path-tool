@@ -162,7 +162,9 @@ def run():
         try:
             page = browser.new_page(viewport={"width": 1440, "height": 900})
             page.on("pageerror", lambda error: errors.append(str(error)))
-            page.add_init_script("window.showDirectoryPicker = undefined;")
+            page.add_init_script(
+                "window.showDirectoryPicker = undefined; window.showOpenFilePicker = undefined;"
+            )
             page.goto(BASE_URL, wait_until="networkidle")
             wait_ready(page)
             for mode in ("independent", "map"):
@@ -275,7 +277,9 @@ def run():
             # Older recovery metadata has no mode; infer it from its stored project.
             recovery = browser.new_page(viewport={"width": 1440, "height": 900})
             recovery.on("pageerror", lambda error: errors.append(str(error)))
-            recovery.add_init_script("window.showDirectoryPicker = undefined;")
+            recovery.add_init_script(
+                "window.showDirectoryPicker = undefined; window.showOpenFilePicker = undefined;"
+            )
             recovery.goto(BASE_URL, wait_until="networkidle")
             wait_ready(recovery)
             recovery.evaluate("""async (encodedZip) => {

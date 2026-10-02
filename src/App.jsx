@@ -90,6 +90,7 @@ const pointColorModes = new Set(['height', 'source', 'white']);
 const APP_PAGE_HOME = 'home';
 const APP_PAGE_WORKBENCH = 'workbench';
 const APP_PAGE_TEACHING_DATA = 'teaching-data';
+const PROJECT_GUIDE_FILE_ACCEPT = '.json,.zip';
 
 const teachingModeLabel = (mode) => mode === 'independent' ? '独立示教' : '地图示教';
 const assertProjectMode = (actualMode, requestedMode) => {
@@ -436,6 +437,7 @@ export default function App() {
   const spaceMouseInputRef = useRef(createSpaceMouseInputState());
   const main3DCanvasRef = useRef(null);
   const [appPage, setAppPage] = useState(appPageFromLocation);
+  const [startPageMode, setStartPageMode] = useState(null);
   const [mapData, setMapData] = useState(null);
   const [teachingSpaceMode, setTeachingSpaceMode] = useState('map');
   const [heightRange, setHeightRange] = useState([0, 1]);
@@ -512,6 +514,7 @@ export default function App() {
   const closeMapDetails = useCallback(() => setMapDetailsOpen(false), []);
   const coordinateFrame = teachingCoordinateFrame(teachingSpaceMode);
   const isIndependentTeachingSpace = teachingSpaceMode === 'independent';
+  const alternateTeachingMode = isIndependentTeachingSpace ? 'map' : 'independent';
   const activeCollapsedPanel = isIndependentTeachingSpace ? null : collapsedPanel;
   const coordinateFrameLabel = isIndependentTeachingSpace ? 'VIRTUAL_ORIGIN' : 'MAP';
 
@@ -623,6 +626,11 @@ export default function App() {
     const targetPath = normalized === APP_PAGE_HOME
       ? '/'
       : normalized === APP_PAGE_WORKBENCH ? '/workbench' : '/teaching-data';
+    if (normalized === APP_PAGE_HOME) {
+      setStartPageMode(options.teachingSpaceMode == null
+        ? null
+        : normalizeTeachingSpaceMode(options.teachingSpaceMode));
+    }
     if (window.location.pathname !== targetPath) {
       const method = options.replace ? 'replaceState' : 'pushState';
       window.history[method]({ atlasPage: normalized }, '', targetPath);
@@ -2054,16 +2062,24 @@ export default function App() {
     }
   };
 
+  const loadProjectGuideFile = async (file, targetMode) => {
+    if (!file) return;
+    if (!/\.(json|zip)$/i.test(file.name)) {
+      notify('请选择 JSON 工程配置或 ZIP 工程包', 'warning');
+      return;
+    }
+    await applyImportedProject(async (onProgress) => {
+      const { readProjectFile } = await import('./lib/projectArchive.js');
+      return readProjectFile(file, { onProgress });
+    }, file.name, targetMode);
+  };
+
   const handlePathFile = async (event) => {
     const file = event.target.files?.[0];
     const targetMode = projectGuideModeRef.current ?? teachingSpaceMode;
     projectGuideModeRef.current = null;
     event.target.value = '';
-    if (!file) return;
-    await applyImportedProject(async (onProgress) => {
-      const { readProjectFile } = await import('./lib/projectArchive.js');
-      return readProjectFile(file, { onProgress });
-    }, file.name, targetMode);
+    await loadProjectGuideFile(file, targetMode);
   };
 
   const handleProjectDirectoryFiles = async (event) => {
@@ -3892,10 +3908,12 @@ export default function App() {
   ]);
 
   const continueWorkspace = async (requestedMode, destination = APP_PAGE_WORKBENCH) => {
+    if (loadState.loading || workspaceSwitchingRef.current) return;
     const targetMode = normalizeTeachingSpaceMode(requestedMode);
     const targetWorkspace = workspaceCatalog[targetMode];
     if (!targetWorkspace?.available) {
-      notify(targetMode === 'independent' ? '没有可继续的独立示教缓存' : '没有可继续的地图示教缓存', 'info');
+      navigateAppPage(APP_PAGE_HOME, { teachingSpaceMode: targetMode });
+      notify(`尚未打开${teachingModeLabel(targetMode)}工程，请在主页面新建或加载工程`, 'info');
       return;
     }
     if (targetMode === teachingSpaceMode && hasWorkspace) {
@@ -4056,9 +4074,34 @@ export default function App() {
     openProjectDirectory(targetMode, directory?.handle);
   };
 
-  const chooseProjectGuideFile = () => {
-    projectGuideModeRef.current = projectLoadDialog.mode;
+  const chooseProjectGuideFile = async () => {
+    const targetMode = projectLoadDialog.mode;
     closeProjectLoadDialog();
+    if (typeof window.showOpenFilePicker === 'function') {
+      try {
+        const [handle] = await window.showOpenFilePicker({
+          id: `atlas-project-guide-${targetMode}`,
+          multiple: false,
+          excludeAcceptAllOption: true,
+          types: [{
+            description: '示教工程（JSON / ZIP）',
+            accept: {
+              'application/json': ['.json'],
+              'application/zip': ['.zip'],
+            },
+          }],
+        });
+        if (handle) await loadProjectGuideFile(await handle.getFile(), targetMode);
+        return;
+      } catch (error) {
+        if (error?.name === 'AbortError') return;
+        if (!['SecurityError', 'NotSupportedError'].includes(error?.name)) {
+          notify(`工程文件打开失败：${error?.message || '无法读取所选文件'}`, 'error');
+          return;
+        }
+      }
+    }
+    projectGuideModeRef.current = targetMode;
     pathInputRef.current?.click();
   };
 
@@ -4089,7 +4132,7 @@ export default function App() {
       ref={pathInputRef}
       className="visually-hidden"
       type="file"
-      accept=".zip,.json,application/zip,application/x-zip-compressed,application/json"
+      accept={PROJECT_GUIDE_FILE_ACCEPT}
       data-project-guide-input="true"
       onChange={handlePathFile}
     />
@@ -4156,15 +4199,15 @@ export default function App() {
           </button>
           <button
             type="button"
-            className={`action-button topbar-file-action independent-teaching-action ${isIndependentTeachingSpace ? 'is-active' : ''}`}
-            aria-label="创建独立示教空间"
-            aria-pressed={isIndependentTeachingSpace}
-            data-independent-teaching-action="true"
-            title="选择 PLY 点云，以点云 (0, 0, 0) 创建独立的 virtual_origin 示教空间"
-            onClick={() => independentCloudInputRef.current?.click()}
+            className={`action-button teaching-mode-action ${isIndependentTeachingSpace ? '' : 'independent-teaching-action'}`}
+            aria-label={`切换到${teachingModeLabel(alternateTeachingMode)}`}
+            data-teaching-mode-target={alternateTeachingMode}
+            title={`切换到${teachingModeLabel(alternateTeachingMode)}；尚未打开工程时返回主页面`}
+            onClick={() => continueWorkspace(alternateTeachingMode)}
+            disabled={loadState.loading || sessionState.status !== 'ready'}
           >
-            <ScanLine size={15} />
-            <span>{isIndependentTeachingSpace ? '独立空间' : '独立示教'}</span>
+            {isIndependentTeachingSpace ? <MapIcon size={15} /> : <ScanLine size={15} />}
+            <span>{teachingModeLabel(alternateTeachingMode)}</span>
           </button>
           <RobotPicker
             selectedRobot={selectedRobot}
@@ -4565,7 +4608,7 @@ export default function App() {
     {appPage === APP_PAGE_HOME && (
       <>
         <StartPage
-          initialMode={teachingSpaceMode}
+          initialMode={startPageMode ?? teachingSpaceMode}
           workspaces={workspaceCatalog}
           sessionState={sessionState}
           projectDirectoryState={projectDirectoryState}

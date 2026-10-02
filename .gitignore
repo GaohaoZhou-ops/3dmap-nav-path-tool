@@ -31,13 +31,16 @@ test-results/
 /test-artifacts/
 /screenshots/
 /test-downloads/
-/atlas-*.png
 .playwright/
 .local-browsers/
 ms-playwright/
 playwright/.cache/
 playwright/.auth/
 *.lcov
+
+# UI smoke-test screenshots saved in the repository root
+/atlas-*.png
+/transfer-*.png
 
 # Python bytecode, environments, and test caches
 __pycache__/

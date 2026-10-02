@@ -1,0 +1,88 @@
+.teaching-transfer-modal { --transfer-margin: 8px; position: fixed; inset: 0; z-index: 190; display: grid; place-items: center; padding: var(--transfer-margin); background: #02080cdc; backdrop-filter: blur(9px); }
+.teaching-transfer-dialog { display: flex; flex-direction: column; width: 100%; height: calc(100dvh - var(--transfer-margin) - var(--transfer-margin)); min-height: 0; overflow: hidden; outline: none; border: 1px solid var(--line-strong); border-radius: 8px; background: var(--panel); box-shadow: 0 35px 120px #0009; }
+.teaching-transfer-dialog button { display: inline-flex; gap: 8px; align-items: center; justify-content: center; padding: 9px 13px; border: 1px solid var(--line); border-radius: 5px; background: var(--panel-soft); cursor: pointer; font-size: 12px; }
+.teaching-transfer-dialog button:hover { border-color: var(--cyan); color: var(--cyan); }
+.transfer-header { display: flex; flex: none; align-items: center; gap: 10px; padding: 8px 14px; border-bottom: 1px solid var(--line); }
+.transfer-header__icon { display: grid; place-items: center; width: 30px; height: 30px; color: var(--cyan); border: 1px solid #59dbe83a; border-radius: 5px; background: #59dbe80a; }
+.transfer-header__icon svg { width: 17px; height: 17px; }
+.transfer-header > div { display: flex; flex-direction: row-reverse; align-items: baseline; gap: 12px; }
+.transfer-header small { color: var(--cyan); font: 9px Menlo, monospace; letter-spacing: 1px; }
+.transfer-header h2 { margin: 0; font-size: 16px; font-weight: 600; }
+.transfer-header > button { padding: 5px 8px; }
+.transfer-header__hint { margin-left: auto; color: var(--muted); font-size: 12px; }
+.transfer-form { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
+.transfer-fieldset { display: flex; flex-direction: column; flex: 1; min-height: 0; min-width: 0; padding: 0; margin: 0; border: 0; }
+.transfer-fieldset:disabled .transfer-preview { pointer-events: none; }
+.transfer-route { display: flex; flex: none; align-items: center; gap: 14px; padding: 7px 14px; border-bottom: 1px solid var(--line); background: #071013; }
+.transfer-route > div { display: flex; align-items: baseline; gap: 10px; min-width: 0; flex: 1; }
+.transfer-route small { flex: none; font-size: 10px; color: var(--muted); }
+.transfer-route strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; font-weight: 500; }
+.transfer-route > svg { color: var(--cyan); flex: none; width: 14px; height: 14px; }
+.transfer-heading { display: flex; flex-direction: column; gap: 12px; margin-bottom: 18px; padding-bottom: 14px; border-bottom: 1px solid var(--line); }
+.transfer-heading h3 { font-size: 14px; font-weight: 550; margin: 0 0 7px; }
+.transfer-heading p { font-size: 11px; color: var(--muted); margin: 0; line-height: 1.8; }
+.transfer-operation { display: flex; flex-shrink: 0; gap: 4px; }
+.transfer-operation button { font-size: 11px; padding: 8px 10px; }
+.transfer-operation button.is-selected { color: var(--cyan); background: #143038; border-color: #59dbe863; }
+.transfer-body { flex: 1; min-height: 0; min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr) 288px; grid-template-rows: minmax(0, 1fr); gap: 8px; padding: 8px; overflow: hidden; }
+.transfer-visual { display: flex; min-width: 0; min-height: 0; }
+.transfer-preview { display: flex; flex-direction: column; flex: 1; position: relative; min-height: 0; min-width: 0; border: 1px solid var(--line-strong); background: #050d10; border-radius: 6px; overflow: hidden; }
+.transfer-preview__toolbar { position: absolute; top: 10px; left: 10px; right: 10px; z-index: 2; display: flex; align-items: flex-start; justify-content: space-between; flex-wrap: wrap; gap: 6px; pointer-events: none; }
+.transfer-preview__tools, .transfer-preview__editing { pointer-events: auto; border: 1px solid #315058b3; border-radius: 6px; background: #08161deb; box-shadow: 0 3px 14px #0004; backdrop-filter: blur(8px); }
+.transfer-preview__tools { display: flex; align-items: center; padding: 4px; margin-left: auto; font-size: 12px; }
+.transfer-preview__tools > div { display: flex; gap: 4px; }
+.transfer-preview__tools button { padding: 6px 8px; font-size: 11px; }
+.transfer-preview__tools .transfer-preview__expand { margin-left: 3px; color: var(--cyan); }
+.transfer-preview button[aria-pressed="true"] { color: var(--cyan); border-color: #59dbe85a; background: #123139; }
+.transfer-preview__editing { display: flex; flex-wrap: wrap; gap: 4px; padding: 4px; }
+.transfer-preview__editing button { font-size: 11px; padding: 7px 8px; }
+.transfer-preview__viewport { position: relative; flex: 1; min-height: 0; overflow: hidden; }
+.transfer-preview canvas { position: absolute; inset: 0; display: block; width: 100%; height: 100%; touch-action: none; outline: none; }
+.transfer-preview canvas:focus-visible { outline: 1px solid var(--cyan); outline-offset: -2px; }
+.transfer-preview__orientation { position: absolute; bottom: 12px; right: 12px; padding: 8px; border-radius: 4px; background: #051015b3; color: #94c8cd; font: 11px Menlo, monospace; pointer-events: none; }
+.transfer-preview__orientation span { margin-left: 8px; font: 10px "PingFang SC", sans-serif; color: var(--muted); }
+.transfer-preview__hint { position: absolute; bottom: 12px; left: 12px; width: fit-content; max-width: calc(100% - 150px); padding: 7px 10px; border: 1px solid #24454c90; border-radius: 4px; background: #051015cb; color: #a0b9bc; font-size: 11px; line-height: 1.6; pointer-events: none; }
+.transfer-preview__error { position: absolute; inset: 0; display: grid; place-items: center; padding: 30px; background: #081117ed; color: var(--amber); font-size: 13px; text-align: center; }
+.transfer-preview__legend { display: flex; flex: none; gap: 13px; padding: 7px 10px; flex-wrap: wrap; font-size: 10px; color: var(--muted); border-top: 1px solid var(--line); }
+.transfer-preview__legend span, .transfer-preview__legend label { display: inline-flex; align-items: center; gap: 5px; }
+.transfer-preview__legend label { cursor: pointer; }
+.transfer-preview__legend input { accent-color: var(--cyan); margin: 0; }
+.transfer-preview__legend i { width: 6px; height: 6px; border-radius: 50%; background: #54858d; }
+.transfer-preview__legend .is-local i { background: #b8a0ff; }
+.transfer-preview__legend small { margin-left: auto; font-size: 10px; }
+.transfer-settings { min-height: 0; overflow: auto; overscroll-behavior: contain; padding: 14px; border: 1px solid var(--line); border-radius: 6px; background: #071216; }
+.transfer-form.is-preview-expanded .transfer-route { display: none; }
+.transfer-form.is-preview-expanded .transfer-body { grid-template-columns: minmax(0, 1fr); }
+.transfer-settings section { margin-bottom: 16px; padding-bottom: 15px; border-bottom: 1px solid var(--line); }
+.transfer-settings h4 { display: flex; align-items: center; gap: 7px; font-size: 12px; margin: 0 0 12px; font-weight: 500; }
+.transfer-settings h4 svg { color: var(--cyan); }
+.transfer-settings h4 small { color: var(--muted); font-size: 10px; margin-left: auto; }
+.teaching-transfer-dialog input:not([type="checkbox"]), .teaching-transfer-dialog select { min-width: 0; width: 100%; color: var(--text); border: 1px solid var(--line-strong); border-radius: 4px; background: #050d11; padding: 8px; font: 12px Menlo, "PingFang SC", monospace; }
+.teaching-transfer-dialog input[readonly] { color: var(--muted); }
+.transfer-range-grid { display: grid; grid-template-columns: 22px 1fr 1fr; gap: 6px; align-items: center; }
+.transfer-range-grid > span { font-size: 10px; color: var(--muted); }
+.transfer-range-row { display: contents; }
+.transfer-range-row b { font: 11px Menlo, monospace; color: var(--cyan); }
+.transfer-settings .transfer-text-button { border: 0; background: none; padding: 8px 0 0; color: var(--muted); font-size: 10px; }
+.transfer-select { display: grid; grid-template-columns: 60px 1fr; align-items: center; margin: 9px 0; color: var(--muted); font-size: 11px; }
+.transfer-pose-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px 8px; margin-top: 14px; }
+.transfer-pose-grid label > span { display: flex; justify-content: space-between; font: 11px Menlo, monospace; color: #b8caca; margin-bottom: 5px; }
+.transfer-pose-grid small { font-size: 10px; color: var(--muted); }
+.transfer-name { display: grid; gap: 7px; margin-top: 15px; font-size: 11px; color: var(--muted); }
+.transfer-note { display: flex; align-items: flex-start; gap: 7px; color: #97b4b4; font-size: 11px; line-height: 1.8; }
+.transfer-note svg { flex: none; margin-top: 2px; color: var(--green); }
+.transfer-note p { margin: 0; }
+.transfer-replace { display: flex; align-items: flex-start; gap: 8px; margin-top: 14px; padding: 11px; border: 1px solid #f4c95d42; background: #f4c95d08; color: var(--amber); font-size: 11px; line-height: 1.8; }
+.transfer-replace input { flex: none; accent-color: var(--amber); margin-top: 4px; }
+.transfer-footer { flex: none; display: flex; gap: 10px; align-items: center; border-top: 1px solid var(--line); padding: 8px 14px; background: #0b171c; z-index: 1; }
+.transfer-footer button { padding: 8px 12px; }
+.transfer-footer > div { flex: 1; color: var(--muted); font-size: 11px; line-height: 1.7; }
+.transfer-footer .is-error { color: var(--red); }
+.transfer-footer .transfer-submit { background: #163c42; border-color: #59dbe84f; color: #a9f5f7; }
+.transfer-loading, .transfer-empty { display: flex; flex: 1; flex-direction: column; align-items: center; justify-content: center; gap: 15px; min-height: 0; padding: 24px; color: var(--muted); font-size: 13px; }
+.transfer-empty h3, .transfer-empty p { margin: 0; }
+.transfer-empty > svg { color: var(--cyan); }
+.transfer-spinner { animation: transfer-spin 1s linear infinite; }
+@keyframes transfer-spin { to { transform: rotate(360deg); } }
+@media (min-width: 1800px) { .transfer-body { grid-template-columns: minmax(0, 1fr) 310px; } }
+@media (max-width: 1100px) { .teaching-transfer-modal { --transfer-margin: 4px; } .transfer-body { grid-template-columns: minmax(0, 1fr) 270px; gap: 6px; padding: 6px; } .transfer-settings { padding: 11px; } .transfer-route small { display: none; } .transfer-header__hint { display: none; } .transfer-header > button { margin-left: auto; } }

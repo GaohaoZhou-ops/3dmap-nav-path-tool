@@ -56,6 +56,7 @@ const formatTimestamp = (value) => {
 const sourceLabels = {
   'local-file': '本地文件选择器',
   'independent-teaching-file': '独立示教点云',
+  'teaching-transfer': '示教坐标转换',
   'example-map': 'maps 示例地图',
   'project-metadata': '路径工程元数据',
   'project-archive': '工程文件',

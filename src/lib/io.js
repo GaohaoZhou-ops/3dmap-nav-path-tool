@@ -25,6 +25,20 @@ export const teachingCoordinateFrame = (mode) => (
   normalizeTeachingSpaceMode(mode) === 'independent' ? 'virtual_origin' : 'map'
 );
 
+const normalizeWorkspaceTransfer = (value) => {
+  if (value?.version !== 1 || !['extraction', 'placement'].includes(value.kind)) return null;
+  if (!['x', 'y', 'z'].every((axis) => Number.isFinite(value.localToMap?.position?.[axis]))
+    || !['roll', 'pitch', 'yaw'].every((axis) => Number.isFinite(value.localToMap?.rpy?.[axis]))
+    || typeof value.sourceMap?.sourceHash !== 'string') return null;
+  const validItems = (items) => Array.isArray(items)
+    && items.every((item) => typeof item?.id === 'string' && typeof item?.hash === 'string');
+  if (value.kind === 'extraction' && (!Array.isArray(value.baseline?.tasks)
+    || !value.baseline.tasks.every((task) => typeof task?.id === 'string' && typeof task?.name === 'string' && validItems(task.parkingPoints))
+    || !validItems(value.baseline.waypoints) || !validItems(value.baseline.edges)
+    || (value.baseline.jointPoses != null && !validItems(value.baseline.jointPoses)))) return null;
+  return value;
+};
+
 export const createId = (prefix) =>
   `${prefix}-${
     globalThis.crypto?.randomUUID?.() ||
@@ -683,6 +697,8 @@ export function normalizeProject(payload) {
         ? workspace.collapsedPanel
         : null,
       inspectorCollapsed: workspace.inspectorCollapsed === true,
+      transfer: normalizeWorkspaceTransfer(workspace.transfer),
+      directoryAutosaveSuspended: workspace.directoryAutosaveSuspended === true,
     },
     robot: robot?.relativePath ? robot : null,
     teachingTasks: framedTeachingTasks,
@@ -712,6 +728,8 @@ export function buildExport({
   activeTeachingParkingPointId = null,
   collapsedPanel = null,
   inspectorCollapsed = false,
+  transfer = null,
+  directoryAutosaveSuspended = false,
 }) {
   const pointById = new Map(waypoints.map((point) => [point.id, point]));
   const exportedRobotPose = robotPose || robot?.origin || {};
@@ -752,6 +770,8 @@ export function buildExport({
       activeTeachingParkingPointId: activeTeachingParkingPointId || null,
       collapsedPanel: ['2d', '3d'].includes(collapsedPanel) ? collapsedPanel : null,
       inspectorCollapsed: inspectorCollapsed === true,
+      ...(transfer ? { transfer } : {}),
+      ...(directoryAutosaveSuspended ? { directoryAutosaveSuspended: true } : {}),
     },
     map: {
       teachingSpaceMode: normalizedTeachingSpaceMode,

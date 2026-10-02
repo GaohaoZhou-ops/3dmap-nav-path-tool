@@ -683,6 +683,76 @@ export async function saveWorkspaceConfig(sessionId, mapId, config, mode = null)
   return modes[workspaceMode];
 }
 
+export async function loadWorkspaceSnapshot(sessionId, mode) {
+  const workspaceMode = normalizeWorkspaceMode(mode);
+  const database = await openDatabase();
+  const transaction = database.transaction(STORE_NAME, 'readonly');
+  const completion = transactionComplete(transaction);
+  const store = transaction.objectStore(STORE_NAME);
+  const [meta, map, config] = await Promise.all([
+    requestResult(store.get('meta')),
+    requestResult(store.get(workspaceMapKey(workspaceMode))),
+    requestResult(store.get(workspaceConfigKey(workspaceMode))),
+  ]);
+  await completion;
+  if (!sessionId || meta?.sessionId !== sessionId) throw new Error('工作会话已变化，请刷新页面后重试');
+  if ((map && map.sessionId !== sessionId) || (config && config.sessionId !== sessionId)
+    || (map && config && config.mapId !== map.mapId)) throw new Error('工程缓存不完整，请重新加载工程');
+  return { mode: workspaceMode, map: map || null, config: config || null };
+}
+
+// Geometry, configuration, the reverse link and the active mode commit together.
+// A failed conversion or a concurrent edit leaves both workspaces untouched.
+export async function commitWorkspaceTransfer(sessionId, source, target, result) {
+  const database = await openDatabase();
+  const transaction = database.transaction(STORE_NAME, 'readwrite');
+  const completion = transactionComplete(transaction);
+  const store = transaction.objectStore(STORE_NAME);
+  try {
+    const [meta, index, sourceConfig, targetConfig] = await Promise.all([
+      requestResult(store.get('meta')), requestResult(store.get(WORKSPACE_INDEX_KEY)),
+      requestResult(store.get(workspaceConfigKey(source.mode))),
+      requestResult(store.get(workspaceConfigKey(target.mode))),
+    ]);
+    if (meta?.sessionId !== sessionId || index?.sessionId !== sessionId || index.activeMode !== source.mode) {
+      throw new Error('工作会话已变化，请关闭转换面板后重试');
+    }
+    for (const [actual, expected] of [[sourceConfig, source.config], [targetConfig, target.config]]) {
+      if (actual?.savedAt !== expected?.savedAt || actual?.mapId !== expected?.mapId) {
+        throw new Error('工程在转换期间发生了修改，请关闭转换面板后重试');
+      }
+    }
+    for (const snapshot of [source, target]) {
+      if ((index.modes?.[snapshot.mode]?.mapId ?? null) !== (snapshot.map?.mapId ?? snapshot.config?.mapId ?? null)) {
+        throw new Error('工程地图在转换期间发生了变化，请关闭转换面板后重试');
+      }
+    }
+    if (result.mode !== target.mode || !result.map?.positionBuffer || !result.config?.project) {
+      throw new Error('转换结果不完整');
+    }
+    const savedAt = Date.now();
+    const map = { ...result.map, key: workspaceMapKey(target.mode), sessionId, savedAt };
+    const config = { key: workspaceConfigKey(target.mode), sessionId, savedAt,
+      mapId: map.mapId, teachingSpaceMode: target.mode, config: result.config };
+    store.put(map);
+    store.put(config);
+    const modes = { ...index.modes, [target.mode]: summarizeWorkspace(target.mode, map, config) };
+    if (result.sourceConfig) {
+      const updatedSource = { ...sourceConfig, config: result.sourceConfig, savedAt };
+      store.put(updatedSource);
+      modes[source.mode] = summarizeWorkspace(source.mode, source.map, updatedSource);
+    }
+    store.put({ ...index, modes, activeMode: target.mode, updatedAt: savedAt });
+    store.put({ ...meta, activeMode: target.mode });
+  } catch (error) {
+    transaction.abort();
+    await completion.catch(() => undefined);
+    throw error;
+  }
+  await completion;
+  clearWorkspaceViewState(target.mode);
+}
+
 export async function activateWorkspaceMode(sessionId, mode) {
   if (!sessionId) throw new Error('当前服务会话尚未就绪');
   const workspaceMode = normalizeWorkspaceMode(mode);

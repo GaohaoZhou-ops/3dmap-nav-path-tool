@@ -3,6 +3,7 @@ import * as THREE from 'three';
 import { PLYLoader } from 'three/examples/jsm/loaders/PLYLoader.js';
 import {
   Bot,
+  ArrowLeftRight,
   Check,
   ChevronDown,
   ChevronUp,
@@ -35,6 +36,8 @@ import SpaceMouseControl from './components/SpaceMouseControl.jsx';
 import StartPage from './components/StartPage.jsx';
 import TeachingDataPage from './components/TeachingDataPage.jsx';
 import TeachingPlaybackDock from './components/TeachingPlaybackDock.jsx';
+import TeachingTransferDialog from './components/TeachingTransferDialog.jsx';
+import { extractTeachingWorkspace, placeTeachingWorkspace, writeBackTeachingWorkspace } from './lib/teachingTransfer.js';
 import { inspectConnectivity } from './lib/graph.js';
 import {
   buildExport,
@@ -70,9 +73,11 @@ import {
 import {
   activateWorkspaceMode,
   activateWorkspaceRecovery,
+  commitWorkspaceTransfer,
   fetchServiceSession,
   finalizeWorkspaceRecovery,
   loadWorkspaceViews,
+  loadWorkspaceSnapshot,
   prepareWorkspaceSession,
   resetWorkspaceSession,
   saveWorkspaceConfig,
@@ -438,6 +443,10 @@ export default function App() {
   const main3DCanvasRef = useRef(null);
   const [appPage, setAppPage] = useState(appPageFromLocation);
   const [startPageMode, setStartPageMode] = useState(null);
+  const [workspaceTransfer, setWorkspaceTransfer] = useState(null);
+  const [directoryAutosaveSuspended, setDirectoryAutosaveSuspended] = useState(false);
+  const [teachingTransferDialog, setTeachingTransferDialog] = useState(null);
+  const teachingTransferBusyRef = useRef(false);
   const [mapData, setMapData] = useState(null);
   const [teachingSpaceMode, setTeachingSpaceMode] = useState('map');
   const [heightRange, setHeightRange] = useState([0, 1]);
@@ -519,6 +528,8 @@ export default function App() {
   const coordinateFrameLabel = isIndependentTeachingSpace ? 'VIRTUAL_ORIGIN' : 'MAP';
 
   latestWorkspaceRef.current = {
+    workspaceTransfer,
+    directoryAutosaveSuspended,
     mapData,
     teachingSpaceMode,
     heightRange,
@@ -695,6 +706,8 @@ export default function App() {
 
     const project = current.mapData
       ? buildExport({
+          transfer: current.workspaceTransfer,
+          directoryAutosaveSuspended: current.directoryAutosaveSuspended,
           mapData: current.mapData,
           teachingSpaceMode: current.teachingSpaceMode,
           heightRange: current.heightRange,
@@ -890,6 +903,8 @@ export default function App() {
       setProjectionStats({ selectedCount: 0 });
       setSynchronizedFocus(null);
       if (!preserveGraph) {
+        setWorkspaceTransfer(null);
+        setDirectoryAutosaveSuspended(false);
         setWaypoints([]);
         setEdges([]);
         setSelectedWaypointId(null);
@@ -1061,11 +1076,15 @@ export default function App() {
         let restored = false;
         let repaired = false;
         let restoredTeachingSpaceMode = normalizeTeachingSpaceMode(stored.activeMode);
+        let restoredDirectorySuspended = false;
         try {
           const configMatchesMap =
             !stored.map || (stored.config && stored.config.mapId === stored.map.mapId);
           const snapshot = configMatchesMap ? stored.config?.config : null;
           const project = snapshot?.project ? normalizeProject(snapshot.project) : null;
+          setWorkspaceTransfer(project?.workspace?.transfer || null);
+          restoredDirectorySuspended = project?.workspace?.directoryAutosaveSuspended === true;
+          setDirectoryAutosaveSuspended(restoredDirectorySuspended);
           restoredTeachingSpaceMode = normalizeTeachingSpaceMode(
             project?.workspace?.teachingSpaceMode
             ?? snapshot?.ui?.teachingSpaceMode
@@ -1333,6 +1352,9 @@ export default function App() {
           await resetWorkspaceSession(identity.sessionId);
           if (!isCurrent()) return;
           setMapData(null);
+          setWorkspaceTransfer(null);
+          setDirectoryAutosaveSuspended(false);
+          restoredDirectorySuspended = false;
           setTeachingSpaceMode('map');
           restoredTeachingSpaceMode = 'map';
           setCachedWorkspaces({ map: null, independent: null });
@@ -1375,7 +1397,7 @@ export default function App() {
 
         try {
           const savedDirectory = await loadProjectDirectoryBinding(restoredTeachingSpaceMode);
-          if (savedDirectory?.sessionId === identity.sessionId && savedDirectory.handle) {
+          if (!restoredDirectorySuspended && savedDirectory?.sessionId === identity.sessionId && savedDirectory.handle) {
             const {
               queryProjectDirectoryPermission,
               readProjectDirectoryMetadata,
@@ -1458,6 +1480,8 @@ export default function App() {
   useEffect(() => {
     queueWorkspaceSave();
   }, [
+    workspaceTransfer,
+    directoryAutosaveSuspended,
     collapsedPanel,
     connectionSourceId,
     edges,
@@ -1742,6 +1766,10 @@ export default function App() {
         project.workspace?.teachingSpaceMode,
       );
       assertProjectMode(importedTeachingSpaceMode, requestedMode);
+      const importedDirectorySuspended = !importedFile.directory
+        && project.workspace?.directoryAutosaveSuspended === true;
+      setWorkspaceTransfer(project.workspace?.transfer || null);
+      setDirectoryAutosaveSuspended(importedDirectorySuspended);
       const portableRobotPackage = importedFile.resources?.robot || null;
       if (portableRobotPackage) {
         nextPortableResourceId = registerPortableRobotPackage(portableRobotPackage);
@@ -1927,6 +1955,8 @@ export default function App() {
         const importedSnapshot = {
           schemaVersion: 1,
           project: buildExport({
+            transfer: project.workspace?.transfer || null,
+            directoryAutosaveSuspended: importedDirectorySuspended,
             mapData: effectiveMap,
             teachingSpaceMode: importedTeachingSpaceMode,
             heightRange: importedSlice,
@@ -3310,6 +3340,8 @@ export default function App() {
     notify('正在打包地图、机器人、配置与示教视觉资源…', 'info');
     try {
       const payload = buildExport({
+        transfer: workspaceTransfer,
+        directoryAutosaveSuspended,
         mapData,
         teachingSpaceMode,
         heightRange,
@@ -4105,6 +4137,56 @@ export default function App() {
     pathInputRef.current?.click();
   };
 
+  const openTeachingTransfer = async () => {
+    if (loadState.loading || teachingTransferBusyRef.current || teachingCaptureBusyRef.current) return;
+    const operation = teachingSpaceMode === 'map' ? 'extract'
+      : workspaceTransfer?.kind === 'extraction' ? 'writeback' : 'place';
+    setTeachingTransferDialog({ operation, loading: true, busy: false, error: '' });
+    setRobotControlEnabled(false);
+    stopTeachingTaskPlayback(false);
+    try {
+      await waitForPaint();
+      if (sessionSaveTimerRef.current) window.clearTimeout(sessionSaveTimerRef.current);
+      await persistWorkspaceNow();
+      if (!sessionReadyRef.current) throw new Error('当前工程尚未保存成功，请重试后再转换');
+      const [source, target] = await Promise.all([
+        loadWorkspaceSnapshot(sessionIdRef.current, teachingSpaceMode),
+        loadWorkspaceSnapshot(sessionIdRef.current, alternateTeachingMode),
+      ]);
+      if (!(source.map?.positionBuffer instanceof ArrayBuffer) || !source.config?.config?.project) {
+        throw new Error('请先打开包含完整点云的工程，再进行示教转换');
+      }
+      setTeachingTransferDialog((current) => current ? { ...current, loading: false, source, target } : null);
+    } catch (error) {
+      setTeachingTransferDialog((current) => current ? { ...current, loading: false, error: error.message } : null);
+    }
+  };
+
+  const applyTeachingTransfer = async (options) => {
+    if (teachingTransferBusyRef.current || !teachingTransferDialog?.source) return;
+    teachingTransferBusyRef.current = true;
+    setTeachingTransferDialog((current) => ({ ...current, busy: true, error: '' }));
+    try {
+      if (sessionSaveTimerRef.current) window.clearTimeout(sessionSaveTimerRef.current);
+      await persistWorkspaceNow();
+      if (!sessionReadyRef.current) throw new Error('当前工程尚未保存成功，请重试后再转换');
+      workspaceSwitchingRef.current = true;
+      const source = await loadWorkspaceSnapshot(sessionIdRef.current, teachingSpaceMode);
+      const target = teachingTransferDialog.target;
+      const result = options.operation === 'extract'
+        ? await extractTeachingWorkspace(source, options)
+        : options.operation === 'writeback'
+          ? await writeBackTeachingWorkspace(source, target)
+          : await placeTeachingWorkspace(source, target, options);
+      await commitWorkspaceTransfer(sessionIdRef.current, source, target, result);
+      window.location.assign('/workbench');
+    } catch (error) {
+      workspaceSwitchingRef.current = false;
+      teachingTransferBusyRef.current = false;
+      setTeachingTransferDialog((current) => current ? { ...current, busy: false, error: error.message || '示教转换失败' } : null);
+    }
+  };
+
   const beginNewProject = (requestedMode) => {
     if (loadState.loading || sessionState.status !== 'ready') return;
     if (normalizeTeachingSpaceMode(requestedMode) === 'independent') {
@@ -4217,8 +4299,18 @@ export default function App() {
           <SpaceMouseControl
             inputRef={spaceMouseInputRef}
             onNotify={notify}
-            isActive={appPage === APP_PAGE_WORKBENCH}
+            isActive={appPage === APP_PAGE_WORKBENCH && !teachingTransferDialog}
           />
+          <button
+            type="button"
+            className="action-button teaching-transfer-action"
+            aria-label="打开示教转换"
+            title={isIndependentTeachingSpace ? '整体放入地图或回写精调结果' : '提取地图局部到独立示教'}
+            disabled={!mapData?.geometry || loadState.loading || sessionState.status !== 'ready' || teachingCaptureState.status === 'capturing'}
+            onClick={openTeachingTransfer}
+          >
+            <ArrowLeftRight size={15} /><span>示教转换</span>
+          </button>
           <button
             type="button"
             className="action-button teaching-data-page-link"
@@ -4350,7 +4442,7 @@ export default function App() {
                 onParkingMergePlannerChange={handleParkingMergePlannerChange}
                 onCollisionProtectionChange={handleRobotCollisionProtectionChange}
                 onClearRobotParkingGhost={clearRobotParkingGhost}
-                isActive={appPage === APP_PAGE_WORKBENCH}
+                isActive={appPage === APP_PAGE_WORKBENCH && !teachingTransferDialog}
               />
               <HeightRange
                 bounds={mapData?.bounds}
@@ -4681,6 +4773,15 @@ export default function App() {
         )}
       </div>
     )}
+    {teachingTransferDialog && <TeachingTransferDialog
+      state={teachingTransferDialog}
+      onClose={() => { if (!teachingTransferBusyRef.current) setTeachingTransferDialog(null); }}
+      onApply={applyTeachingTransfer}
+      onLoadMap={() => {
+        setTeachingTransferDialog(null);
+        navigateAppPage(APP_PAGE_HOME, { teachingSpaceMode: 'map' });
+      }}
+    />}
     <ProjectLoadDialog
       open={projectLoadDialog.open}
       teachingSpaceMode={projectLoadDialog.mode}

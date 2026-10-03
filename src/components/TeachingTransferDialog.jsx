@@ -57,6 +57,7 @@ function TransferForm({ source, target, initialOperation, settingsVisible, setSe
   const targetProject = useMemo(() => projectOf(target), [target]);
   const link = sourceProject.workspace.transfer;
   const [operation, setOperation] = useState(initialOperation);
+  const [previewDisplay, setPreviewDisplay] = useState({ colorMode: 'layer', meshQuality: 'performance' });
   const extraction = operation === 'extract';
   const writeback = operation === 'writeback';
   const map = extraction ? source.map : target?.map;
@@ -111,6 +112,7 @@ function TransferForm({ source, target, initialOperation, settingsVisible, setSe
           <div className="transfer-visual">
             <TeachingTransferPreview key={operation} map={map} overlay={!extraction ? source.map : null}
               transform={localToMap} crop={extraction && validBounds ? bounds : null}
+              display={previewDisplay} onDisplayChange={setPreviewDisplay}
               pose={validPose ? writeback ? link.localToMap : pose : null}
               settingsVisible={settingsVisible} onToggleSettings={() => setSettingsVisible((visible) => !visible)}
               onPoseChange={!writeback ? setPose : undefined} disabled={busy}

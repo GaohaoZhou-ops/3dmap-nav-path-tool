@@ -22,6 +22,26 @@ output/
 *.tsbuildinfo
 vite.config.*.timestamp-*
 
+# Xcode / Swift build output and local IDE state
+# Keep project files, shared schemes, asset catalogs, and source artwork tracked.
+DerivedData/
+.build/
+xcuserdata/
+*.xcuserstate
+*.xccheckout
+*.xcscmblueprint
+*.xcarchive/
+*.app/
+*.ipa
+*.dSYM/
+*.dSYM.zip
+
+# Local Apple signing material
+*.mobileprovision
+*.provisionprofile
+*.p12
+*.p8
+
 # Test and coverage output
 coverage/
 .nyc_output/
@@ -37,6 +57,10 @@ ms-playwright/
 playwright/.cache/
 playwright/.auth/
 *.lcov
+*.xcresult/
+*.xctestrun
+*.profraw
+*.profdata
 
 # UI smoke-test screenshots saved in the repository root
 /atlas-*.png
@@ -138,6 +162,13 @@ robots/
 !maps/xian_map.ply
 !tests/fixtures/*.[pP][lL][yY]
 !tests/fixtures/**/*.[pP][lL][yY]
+
+# Local iPad model-transfer payloads; keep deliberate test fixtures trackable.
+*.atls
+!tests/fixtures/*.atls
+!tests/fixtures/**/*.atls
+!ipad/Tests/Fixtures/*.atls
+!ipad/Tests/Fixtures/**/*.atls
 
 # Locally recovered/exported projects may contain hundreds of MB of map data
 recovered-projects/

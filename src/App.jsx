@@ -22,6 +22,7 @@ import {
   Server,
   ShieldAlert,
   ShieldCheck,
+  Tablet,
   X,
   Zap,
 } from 'lucide-react';
@@ -37,6 +38,8 @@ import StartPage from './components/StartPage.jsx';
 import TeachingDataPage from './components/TeachingDataPage.jsx';
 import TeachingPlaybackDock from './components/TeachingPlaybackDock.jsx';
 import TeachingTransferDialog from './components/TeachingTransferDialog.jsx';
+import IPadTeachingDialog from './components/IPadTeachingDialog.jsx';
+import { ipadResultTask } from './lib/ipadTeaching.js';
 import { extractTeachingWorkspace, placeTeachingWorkspace, writeBackTeachingWorkspace } from './lib/teachingTransfer.js';
 import { inspectConnectivity } from './lib/graph.js';
 import {
@@ -446,6 +449,7 @@ export default function App() {
   const [workspaceTransfer, setWorkspaceTransfer] = useState(null);
   const [directoryAutosaveSuspended, setDirectoryAutosaveSuspended] = useState(false);
   const [teachingTransferDialog, setTeachingTransferDialog] = useState(null);
+  const [ipadTeachingOpen, setIPadTeachingOpen] = useState(false);
   const teachingTransferBusyRef = useRef(false);
   const [mapData, setMapData] = useState(null);
   const [teachingSpaceMode, setTeachingSpaceMode] = useState('map');
@@ -4162,6 +4166,19 @@ export default function App() {
     }
   };
 
+  const importIPadTeaching = async (result, ticket) => {
+    const current = latestWorkspaceRef.current;
+    if (current.teachingSpaceMode !== 'independent' || !sessionReadyRef.current) throw new Error('请先打开对应的独立示教工程');
+    const task = ipadResultTask(result, ticket, current.mapData);
+    const next = current.teachingTasks.some((item) => item.mobileCapture?.id === result.id)
+      ? current.teachingTasks : [...current.teachingTasks, task];
+    latestWorkspaceRef.current = { ...current, teachingTasks: next, activeTeachingTaskId: task.id, activeTeachingParkingPointId: null };
+    setTeachingTasks(next); setActiveTeachingTaskId(task.id); setActiveTeachingParkingPointId(null);
+    await persistWorkspaceNow();
+    if (!sessionReadyRef.current) throw new Error('接收结果尚未保存成功，请重试；服务端仍保留结果');
+    notify(`已接收 iPad 示教：${result.samples.length} 个 Pose`, 'success');
+  };
+
   const applyTeachingTransfer = async (options) => {
     if (teachingTransferBusyRef.current || !teachingTransferDialog?.source) return;
     teachingTransferBusyRef.current = true;
@@ -4296,10 +4313,15 @@ export default function App() {
             loadState={robotLoadState}
             onSelect={handleSelectRobot}
           />
+          {isIndependentTeachingSpace && <button type="button" className="action-button ipad-teaching-action"
+            aria-label="移动到 iPad 上运行" disabled={!mapData?.geometry || loadState.loading || sessionState.status !== 'ready'}
+            onClick={() => { stopTeachingTaskPlayback(false); setRobotControlEnabled(false); setIPadTeachingOpen(true); }}>
+            <Tablet size={15}/><span>iPad 运行</span>
+          </button>}
           <SpaceMouseControl
             inputRef={spaceMouseInputRef}
             onNotify={notify}
-            isActive={appPage === APP_PAGE_WORKBENCH && !teachingTransferDialog}
+            isActive={appPage === APP_PAGE_WORKBENCH && !teachingTransferDialog && !ipadTeachingOpen}
           />
           <button
             type="button"
@@ -4442,7 +4464,7 @@ export default function App() {
                 onParkingMergePlannerChange={handleParkingMergePlannerChange}
                 onCollisionProtectionChange={handleRobotCollisionProtectionChange}
                 onClearRobotParkingGhost={clearRobotParkingGhost}
-                isActive={appPage === APP_PAGE_WORKBENCH && !teachingTransferDialog}
+                isActive={appPage === APP_PAGE_WORKBENCH && !teachingTransferDialog && !ipadTeachingOpen}
               />
               <HeightRange
                 bounds={mapData?.bounds}
@@ -4773,6 +4795,7 @@ export default function App() {
         )}
       </div>
     )}
+    {ipadTeachingOpen && <IPadTeachingDialog mapData={mapData} onClose={() => setIPadTeachingOpen(false)} onImport={importIPadTeaching} />}
     {teachingTransferDialog && <TeachingTransferDialog
       state={teachingTransferDialog}
       onClose={() => { if (!teachingTransferBusyRef.current) setTeachingTransferDialog(null); }}

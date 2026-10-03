@@ -529,7 +529,7 @@ export default function TeachingArchiveTree({
           >
             {taskCollapsed ? <Folder size={13} /> : <FolderOpen size={13} />}
             <span>{task.name}</span>
-            <small>{task.parkingPoints?.length || 0} / {poseCountForTask(task)}</small>
+            <small>{task.mobileCapture ? `${task.mobileCapture.samples.length} iPad Pose` : `${task.parkingPoints?.length || 0} / ${poseCountForTask(task)}`}</small>
           </button>
         </div>
 
@@ -602,7 +602,7 @@ export default function TeachingArchiveTree({
               );
             })}
             {!task.parkingPoints?.length && (
-              <div className="teaching-tree-empty-leaf">暂无停车点</div>
+              <div className="teaching-tree-empty-leaf">{task.mobileCapture ? `${task.mobileCapture.samples.length} 个 iPad Pose · 见右侧详情` : '暂无停车点'}</div>
             )}
           </div>
         )}
@@ -702,14 +702,15 @@ export default function TeachingArchiveTree({
                   {selection?.type === 'task' && selectedTask && (
                     <div className="teaching-tree-task-detail">
                       <dl>
-                        <div><dt>停车点</dt><dd>{selectedTask.parkingPoints?.length || 0}</dd></div>
-                        <div><dt>机械臂姿态</dt><dd>{poseCountForTask(selectedTask)}</dd></div>
+                        <div><dt>{selectedTask.mobileCapture ? '校准段数' : '停车点'}</dt><dd>{selectedTask.mobileCapture?.calibrations.length ?? (selectedTask.parkingPoints?.length || 0)}</dd></div>
+                        <div><dt>{selectedTask.mobileCapture ? 'iPad Pose' : '机械臂姿态'}</dt><dd>{selectedTask.mobileCapture?.samples.length ?? poseCountForTask(selectedTask)}</dd></div>
                         <div><dt>{isIndependentTeachingSpace ? '空间点云' : '地图'}</dt><dd>{selectedTask.map?.fileName || '未绑定'}</dd></div>
-                        <div><dt>机器人</dt><dd>{selectedTask.robot?.name || '未绑定'}</dd></div>
+                        <div><dt>{selectedTask.mobileCapture ? '采集设备' : '机器人'}</dt><dd>{selectedTask.mobileCapture?.device.model || selectedTask.robot?.name || '未绑定'}</dd></div>
                         <div><dt>创建时间</dt><dd>{formatCapturedAt(selectedTask.createdAt)}</dd></div>
                         <div><dt>坐标系</dt><dd>{selectedCoordinateFrame}</dd></div>
                       </dl>
                       <div className="teaching-tree-task-actions">
+                        {!selectedTask.mobileCapture && <>
                         <button
                           type="button"
                           className="teaching-tree-play-action"
@@ -768,12 +769,13 @@ export default function TeachingArchiveTree({
                         >
                           <Server size={12} /> 合并停车点-Server
                         </button>
+                        </>}
                         <button
                           type="button"
                           className="teaching-tree-danger"
                           aria-label="删除当前示教任务"
                           onClick={() => {
-                            if (window.confirm(`删除 ${selectedTask.name} 及其全部停车点和机械臂姿态？`)) {
+                            if (window.confirm(`删除 ${selectedTask.name} 及其全部${selectedTask.mobileCapture ? ' iPad Pose' : '停车点和机械臂姿态'}？`)) {
                               onDeleteTask(selectedTask.id);
                             }
                           }}

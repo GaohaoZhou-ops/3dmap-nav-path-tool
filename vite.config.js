@@ -4,6 +4,7 @@ import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
+import { ipadTeachingPlugin } from './src/server/ipadTeachingService.js';
 
 const ROBOT_FILE_PREFIX = '/__atlas/robot-files/';
 const DIRECT_ROBOT_EXTENSIONS = new Set(['.glb', '.gltf', '.stl']);
@@ -254,7 +255,7 @@ function atlasWorkspacePlugin() {
 }
 
 export default defineConfig({
-  plugins: [react(), atlasWorkspacePlugin()],
+  plugins: [react(), atlasWorkspacePlugin(), ipadTeachingPlugin()],
   publicDir: 'maps',
   server: {
     host: '0.0.0.0',

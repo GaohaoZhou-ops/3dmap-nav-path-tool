@@ -1,4 +1,5 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { createIPadCaptureLayer, disposeIPadCaptureLayer } from '../lib/ipadCaptureDisplay.js';
 import * as THREE from 'three';
 import { TrackballControls } from 'three/examples/jsm/controls/TrackballControls.js';
 import { TransformControls } from 'three/examples/jsm/controls/TransformControls.js';
@@ -5110,6 +5111,13 @@ export default function PointCloudViewer({
       if (meshMaterialRef.current === meshMaterial) meshMaterialRef.current = null;
     };
   }, [mapData?.geometry, mapData?.teachingSpaceMode, viewportCanvasRef]);
+
+  useEffect(() => {
+    if (!sceneRef.current) return undefined;
+    const layer = createIPadCaptureLayer(teachingTasks);
+    sceneRef.current.add(layer);
+    return () => disposeIPadCaptureLayer(layer);
+  }, [mapData?.geometry, mapData?.teachingSpaceMode, teachingTasks, viewportCanvasRef]);
 
   useEffect(() => {
     const layer = robotLayerRef.current;

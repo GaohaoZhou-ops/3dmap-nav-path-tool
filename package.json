@@ -8,14 +8,18 @@
     "build": "vite build",
     "test:archive": "node tests/project_archive_smoke.mjs",
     "test:directory": "node tests/project_directory_smoke.mjs",
-    "test:transfer": "node tests/teaching_transfer_smoke.mjs",
+    "test:ipad": "node tests/ipad_teaching_smoke.mjs && node tests/ipad_pairing_codes_smoke.mjs",
+    "test:ipad:native": "node tests/ipad_native_lan_smoke.mjs",
+    "test:transfer": "node tests/teaching_transfer_smoke.mjs && node tests/teaching_transfer_preview_smoke.mjs",
     "preview": "vite preview",
     "service:start": "./scripts/start.sh",
     "service:status": "./scripts/status.sh",
     "service:restart": "./scripts/restart.sh",
-    "service:stop": "./scripts/stop.sh"
+    "service:stop": "./scripts/stop.sh",
+    "test:ipad:discovery": "node tests/ipad_discovery_smoke.mjs"
   },
   "dependencies": {
+    "bonjour-service": "^1.4.4",
     "fflate": "^0.8.3",
     "lucide-react": "^0.468.0",
     "react": "^18.3.1",

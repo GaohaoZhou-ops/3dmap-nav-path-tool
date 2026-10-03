@@ -1,0 +1,12 @@
+Generated with the built-in image_gen tool (imagegen skill).
+Source master: AtlasTeaching-icon-master.png
+Production assets: ../AtlasTeaching/Assets.xcassets/AppIcon.appiconset/
+
+Final prompt:
+Use case: logo-brand.
+Asset type: final iPad app icon for Atlas Teaching, a native augmented-reality app for positioning a 3D object and recording a sequence of spatial poses locally.
+Create one polished, distinctive square 1024 x 1024 icon, ready to use as an iOS app-icon asset. Full-bleed opaque background with square corners; the operating system will apply the rounded mask.
+Composition: a single large, beautifully balanced isometric cube as the central emblem, sculpted from frosted turquoise glass with a pale mint top face and richer teal side faces. The cube should read immediately at very small sizes. One clean, thick cyan spatial trajectory sweeps around the lower front and right side of the cube, with exactly three clearly separated round waypoint beads along it. This is a compact three-dimensional object with a recorded pose path, not an atom or globe. A restrained sense of LiDAR precision and spatial depth. Main emblem occupies roughly 68–74 percent of the canvas with generous safe margin.
+Scene/backdrop: uninterrupted very dark blue-green, closely matching #061015, with a subtle soft teal illumination behind the emblem. Background must fill every pixel to all four edges.
+Style: premium native creative-tool icon, refined sculptural 3D render, simple geometry, strong silhouette, crisp edges, controlled luminous highlights and soft ambient shadow. Calm, precise, tactile. Palette consistent with the app: deep charcoal teal, turquoise #59DBE8, pale icy mint.
+Constraints: one icon only, no text or letters, no robot, no phone or tablet device, no grid, no starfield, no tiny particle cloud, no busy background, no border, no pre-rounded corners, no external drop shadow, no white margins, no watermark, no presentation mockup. Do not make a sheet of variations.

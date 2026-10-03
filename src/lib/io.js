@@ -1,6 +1,7 @@
 import { calculatePathDistances } from './pathMetrics.js';
 import { normalizeRobotJointLocks } from './robotJointLocks.js';
 import { getSliceControlBounds } from './sliceRange.js';
+import { validateIPadResult } from './ipadProtocol.js';
 
 const numberOr = (value, fallback = 0) => {
   const parsed = Number(value);
@@ -475,6 +476,11 @@ export function normalizeTeachingTasks(payload) {
         coordinateFrame: String(map.coordinateFrame || task?.coordinateFrame || 'map'),
       },
       parkingPoints,
+      ...(task.mobileCapture ? {
+        mobileCapture: validateIPadResult(task.mobileCapture, { modelHash: task.mobileCapture.modelHash }, task.mobileCapture.sessionId),
+        mobileTransform: Array.isArray(task.mobileTransform) && task.mobileTransform.length === 16 && task.mobileTransform.every(Number.isFinite)
+          ? [...task.mobileTransform] : [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1],
+      } : {}),
     };
   });
 }

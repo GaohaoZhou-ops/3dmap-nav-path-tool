@@ -1,0 +1,23 @@
+.ipad-modal { position: fixed; inset: 0; z-index: 195; background: #02080dd9; backdrop-filter: blur(9px); display: grid; place-items: center; padding: 28px; }
+.ipad-dialog { width: min(800px, 100%); max-height: calc(100dvh - 56px); display: flex; flex-direction: column; background: var(--panel); border: 1px solid var(--line-strong); border-radius: 12px; box-shadow: 0 40px 100px #0008; outline: none; }
+.ipad-dialog header { display: flex; align-items: center; gap: 14px; padding: 22px 26px; border-bottom: 1px solid var(--line); }
+.ipad-mark { width: 48px; height: 48px; display: grid; place-items: center; color: var(--cyan); background: #59dbe810; border: 1px solid #59dbe833; border-radius: 10px; }
+.ipad-dialog header small { font: 9px Menlo, monospace; letter-spacing: 2px; color: var(--cyan); }
+.ipad-dialog h2 { margin: 5px 0 0; font-size: 20px; font-weight: 500; }
+.ipad-dialog header > button { margin-left: auto; }
+.ipad-dialog button, .ipad-capture button { display: inline-flex; align-items: center; justify-content: center; gap: 6px; border: 1px solid var(--line-strong); border-radius: 5px; padding: 9px 11px; background: var(--panel-soft); cursor: pointer; font-size: 11px; }
+.ipad-dialog button:hover, .ipad-capture button:hover { border-color: var(--cyan); color: var(--cyan); }
+.ipad-dialog__body { overflow: auto; padding: 22px 26px; }
+.ipad-intro { margin: 0; font-size: 22px; font-weight: 500; }
+.ipad-intro > span { display: block; color: var(--muted); font-size: 11px; margin-top: 9px; }
+.ipad-steps { display: grid; grid-template-columns: repeat(3, 1fr); list-style: none; padding: 0; gap: 12px; margin: 25px 0; }
+.ipad-steps li { display: grid; gap: 7px; padding: 16px 12px; background: #0e1a20; border-top: 1px solid #59dbe847; }
+.ipad-steps b { color: var(--cyan); font: 14px Menlo, monospace; margin-bottom: 5px; }
+.ipad-steps strong { font-size: 12px; font-weight: 500; }.ipad-steps span { font-size: 10px; color: var(--muted); }
+.ipad-model { display: flex; gap: 12px; align-items: center; font-size: 11px; padding: 13px 0; border-bottom: 1px solid var(--line); }.ipad-model > span, .ipad-model small { color: var(--muted); }.ipad-model strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }.ipad-model small { margin-left: auto; flex: none; }
+.ipad-connection { display: flex; align-items: center; gap: 15px; margin-top: 18px; color: var(--cyan); }.ipad-connection > div { flex: 1; }.ipad-connection label { display: block; font-size: 11px; color: var(--muted); margin-bottom: 7px; }
+.ipad-dialog select { display: block; width: 100%; padding: 10px; border: 1px solid var(--line-strong); border-radius: 4px; background: #050e13; color: var(--text); font: 12px Menlo, 'PingFang SC', sans-serif; }.ipad-dialog select:focus-visible { outline: 1px solid var(--cyan); }
+.ipad-note { color: var(--muted); font-size: 11px; line-height: 1.9; margin: 15px 0; }.ipad-history { display: grid; gap: 7px; color: var(--muted); font-size: 11px; margin-top: 18px; }
+.ipad-pairing { margin-top: 14px; display: flex; align-items: center; justify-content: space-between; padding: 17px; border: 1px solid #59dbe843; border-radius: 6px; background: #59dbe808; }.ipad-pairing span { display: block; font-size: 12px; color: var(--cyan); }.ipad-pairing small { display: block; color: var(--muted); font-size: 10px; margin-top: 7px; }.ipad-pairing p { font-size: 12px; }.ipad-code { display: block; font: 25px Menlo, monospace; letter-spacing: 1px; margin: 12px 0; }.ipad-error { color: var(--red); font-size: 12px; line-height: 1.7; }
+.ipad-dialog footer { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; padding: 16px 26px; border-top: 1px solid var(--line); }.ipad-dialog footer > span { flex: 1; color: var(--muted); font-size: 10px; }.ipad-dialog footer > div { display: flex; flex-wrap: wrap; gap: 8px; }.ipad-dialog .ipad-primary { background: #14363e; color: #a5f0f6; border-color: #59dbe854; }
+.ipad-capture { min-width: 0; padding: 22px; background: var(--panel); border: 1px solid var(--line); border-radius: 9px; }.ipad-capture h3 { font-size: 16px; }.ipad-capture p { color: var(--muted); font-size: 12px; line-height: 1.8; }.ipad-capture .ipad-samples { overflow: auto; max-height: 460px; margin: 18px 0; }.ipad-capture table { width: 100%; border-collapse: collapse; font: 11px Menlo, monospace; }.ipad-capture td, .ipad-capture th { padding: 9px 6px; border-bottom: 1px solid var(--line); text-align: right; }.ipad-capture th { color: var(--muted); font-weight: 400; }.ipad-capture footer { display: flex; align-items: center; gap: 10px; font-size: 11px; }

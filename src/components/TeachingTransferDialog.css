@@ -43,7 +43,7 @@
 .transfer-preview__orientation span { margin-left: 8px; font: 10px "PingFang SC", sans-serif; color: var(--muted); }
 .transfer-preview__hint { position: absolute; bottom: 12px; left: 12px; width: fit-content; max-width: calc(100% - 150px); padding: 7px 10px; border: 1px solid #24454c90; border-radius: 4px; background: #051015cb; color: #a0b9bc; font-size: 11px; line-height: 1.6; pointer-events: none; }
 .transfer-preview__error { position: absolute; inset: 0; display: grid; place-items: center; padding: 30px; background: #081117ed; color: var(--amber); font-size: 13px; text-align: center; }
-.transfer-preview__legend { display: flex; flex: none; gap: 13px; padding: 7px 10px; flex-wrap: wrap; font-size: 10px; color: var(--muted); border-top: 1px solid var(--line); }
+.transfer-preview__legend { display: flex; flex: none; align-items: center; gap: 8px 13px; padding: 6px 10px; flex-wrap: wrap; font-size: 10px; color: var(--muted); border-top: 1px solid var(--line); }
 .transfer-preview__legend span, .transfer-preview__legend label { display: inline-flex; align-items: center; gap: 5px; }
 .transfer-preview__legend label { cursor: pointer; }
 .transfer-preview__legend input { accent-color: var(--cyan); margin: 0; }
@@ -58,6 +58,12 @@
 .transfer-settings h4 svg { color: var(--cyan); }
 .transfer-settings h4 small { color: var(--muted); font-size: 10px; margin-left: auto; }
 .teaching-transfer-dialog input:not([type="checkbox"]), .teaching-transfer-dialog select { min-width: 0; width: 100%; color: var(--text); border: 1px solid var(--line-strong); border-radius: 4px; background: #050d11; padding: 8px; font: 12px Menlo, "PingFang SC", monospace; }
+.transfer-preview__display { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding-left: 12px; border-left: 1px solid var(--line); }
+.transfer-preview__display label { gap: 6px; }
+.transfer-preview__display svg { color: #94c8cd; }
+.transfer-preview__display select { width: auto; max-width: 110px; padding: 4px 5px; font-size: 11px; cursor: pointer; }
+.transfer-preview__display select:focus-visible { outline: 1px solid var(--cyan); outline-offset: 2px; }
+.transfer-preview__display select:disabled { color: var(--muted); cursor: default; }
 .teaching-transfer-dialog input[readonly] { color: var(--muted); }
 .transfer-range-grid { display: grid; grid-template-columns: 22px 1fr 1fr; gap: 6px; align-items: center; }
 .transfer-range-grid > span { font-size: 10px; color: var(--muted); }

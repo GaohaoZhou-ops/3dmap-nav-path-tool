@@ -2,16 +2,17 @@ import { useEffect, useRef, useState } from 'react';
 import * as THREE from 'three';
 import { TrackballControls } from 'three/examples/jsm/controls/TrackballControls.js';
 import { TransformControls } from 'three/examples/jsm/controls/TransformControls.js';
-import { BoxSelect, Crosshair, Maximize2, MousePointer2, Move3D, PanelRightClose, PanelRightOpen, Rotate3D, Scaling } from 'lucide-react';
+import { Box, BoxSelect, Crosshair, Maximize2, MousePointer2, Move3D, Palette, PanelRightClose, PanelRightOpen, Rotate3D, Scaling } from 'lucide-react';
 import { identityTransferPose, transferMatrix, transformTeachingPose } from '../lib/teachingTransfer.js';
-import { createTransferPreviewLayer, disposeTransferPreview, transferBoundsBox } from '../lib/teachingTransferPreview.js';
+import { MESH_RENDER_QUALITY_OPTIONS } from '../lib/mapGeometry.js';
+import { createTransferPreviewLayer, disposeTransferPreview, TRANSFER_COLOR_MODES, transferBoundsBox } from '../lib/teachingTransferPreview.js';
 
 const DIRECTIONS = { perspective: [1.2, -1.7, 1.2], top: [0, 0, 1], front: [0, -1, 0], side: [1, 0, 0] };
 const objectPose = (object) => transformTeachingPose(identityTransferPose(), new THREE.Matrix4().compose(
   object.position, object.quaternion, new THREE.Vector3(1, 1, 1),
 ));
 
-export default function TeachingTransferPreview({ map, overlay, transform, crop, pose, onPoseChange, onPick, onCrop, disabled = false, settingsVisible = true, onToggleSettings }) {
+export default function TeachingTransferPreview({ map, overlay, transform, crop, pose, onPoseChange, onPick, onCrop, display, onDisplayChange, disabled = false, settingsVisible = true, onToggleSettings }) {
   const viewportRef = useRef(null), canvasRef = useRef(null), contextRef = useRef(null);
   const latestRef = useRef(null);
   const extraction = Boolean(onCrop), editable = Boolean(onPoseChange);
@@ -19,7 +20,9 @@ export default function TeachingTransferPreview({ map, overlay, transform, crop,
   const [view, setView] = useState('perspective');
   const [mapVisible, setMapVisible] = useState(true), [overlayVisible, setOverlayVisible] = useState(true);
   const [error, setError] = useState('');
-  latestRef.current = { transform, crop, pose, onPoseChange, onPick, onCrop, disabled, tool, mapVisible, overlayVisible };
+  const hasMesh = [map, overlay].some((layer) => layer?.indexBuffer?.byteLength >= (layer?.indexComponentType === 'uint16' ? 6 : 12));
+  const colorMode = display.colorMode, meshQuality = hasMesh ? display.meshQuality : 'off';
+  latestRef.current = { transform, crop, pose, onPoseChange, onPick, onCrop, disabled, tool, mapVisible, overlayVisible, colorMode, meshQuality };
 
   useEffect(() => {
     const canvas = canvasRef.current, viewport = viewportRef.current;
@@ -55,7 +58,8 @@ export default function TeachingTransferPreview({ map, overlay, transform, crop,
     const component = new THREE.Group();
     component.name = 'transfer-independent-component';
     scene.add(component);
-    if (overlay) component.add(createTransferPreviewLayer(overlay, { color: 0xbda1ff, pointBudget: 100000, faceBudget: 140000 }));
+    const overlayLayer = overlay ? createTransferPreviewLayer(overlay, { color: 0xbda1ff, pointBudget: 100000 }) : null;
+    if (overlayLayer) component.add(overlayLayer);
     const poseHandle = new THREE.Object3D();
     scene.add(poseHandle);
     const cropHandle = new THREE.Object3D();
@@ -136,6 +140,10 @@ export default function TeachingTransferPreview({ map, overlay, transform, crop,
       cropHandle.visible = Boolean(current.crop);
       mapLayer.userData.setSelection(current.crop);
       componentOutline.box.copy(componentBounds());
+      const displayOptions = { colorMode: current.colorMode, meshQuality: current.meshQuality,
+        heightBounds: mapBox.clone().union(componentOutline.box) };
+      mapLayer.userData.setDisplay(displayOptions);
+      overlayLayer?.userData.setDisplay(displayOptions);
       componentOutline.visible = Boolean(overlay && current.overlayVisible);
       originAxes.visible = Boolean(current.pose);
       originAxes.position.copy(poseHandle.position);
@@ -153,6 +161,10 @@ export default function TeachingTransferPreview({ map, overlay, transform, crop,
       controls.enabled = !current.disabled && !gizmo.dragging;
       canvas.dataset.gizmoMode = gizmo.object ? gizmo.mode : 'none';
       canvas.dataset.previewKind = current.onCrop ? 'crop' : current.onPoseChange ? 'placement' : 'writeback';
+      canvas.dataset.colorMode = current.colorMode;
+      canvas.dataset.meshQuality = current.meshQuality;
+      canvas.dataset.mapPreviewFaces = String(mapLayer.userData.previewFaces);
+      canvas.dataset.componentPreviewFaces = String(overlayLayer?.userData.previewFaces || 0);
       invalidate();
     };
     const changed = () => {
@@ -183,7 +195,7 @@ export default function TeachingTransferPreview({ map, overlay, transform, crop,
       rayAt(event);
       const distance = camera.position.distanceTo(controls.target);
       raycaster.params.Points.threshold = distance * Math.tan(THREE.MathUtils.degToRad(camera.fov / 2)) * 10 / canvas.clientHeight;
-      const hit = latestRef.current.mapVisible ? raycaster.intersectObjects(mapLayer.children, false)[0] : null;
+      const hit = latestRef.current.mapVisible ? raycaster.intersectObjects(mapLayer.children.filter((object) => object.visible), false)[0] : null;
       if (hit) return hit.point;
       // Empty-space clicks keep the current height; mesh/point hits use real Z.
       const height = latestRef.current.pose?.position.z ?? map.bounds.min.z;
@@ -278,7 +290,7 @@ export default function TeachingTransferPreview({ map, overlay, transform, crop,
     };
   }, [map, overlay]);
 
-  useEffect(() => { contextRef.current?.sync(); }, [transform, crop, pose, tool, disabled, mapVisible, overlayVisible, editable]);
+  useEffect(() => { contextRef.current?.sync(); }, [transform, crop, pose, tool, disabled, mapVisible, overlayVisible, editable, colorMode, meshQuality]);
   const changeView = (direction) => { setView(direction); contextRef.current?.fit(false, direction); };
   const chooseTool = (value) => {
     setTool(value);
@@ -323,6 +335,21 @@ export default function TeachingTransferPreview({ map, overlay, transform, crop,
       <label><input type="checkbox" checked={mapVisible} onChange={(event) => setMapVisible(event.target.checked)} /> <i /> 地图</label>
       {overlay && <label className="is-local"><input type="checkbox" checked={overlayVisible} onChange={(event) => setOverlayVisible(event.target.checked)} /> <i /> 独立组件</label>}
       {extraction && <span className="is-local"><i /> 选中区域</span>}
+      <div className="transfer-preview__display" role="group" aria-label="转换预览显示设置">
+        <label title="地图与独立组件同步切换颜色；没有原始颜色的图层使用分层色">
+          <Palette size={13} /><span>颜色</span>
+          <select aria-label="转换预览颜色" value={colorMode} onChange={(event) => onDisplayChange({ ...display, colorMode: event.target.value })}>
+            {TRANSFER_COLOR_MODES.map(({ id, label }) => <option key={id} value={id}>{label}</option>)}
+          </select>
+        </label>
+        <label title={hasMesh ? '关闭 Mesh 可查看点云；质量档位与主视图一致' : '当前数据没有三角面，以点云显示'}>
+          <Box size={13} /><span>Mesh</span>
+          <select aria-label="转换预览 Mesh" value={meshQuality} disabled={!hasMesh} onChange={(event) => onDisplayChange({ ...display, meshQuality: event.target.value })}>
+            <option value="off">关闭 · 点云</option>
+            {MESH_RENDER_QUALITY_OPTIONS.map(({ id, label }) => <option key={id} value={id}>{label}</option>)}
+          </select>
+        </label>
+      </div>
       <small>右键 / Shift 平移 · 滚轮缩放</small>
     </div>
   </div>;

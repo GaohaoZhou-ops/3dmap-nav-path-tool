@@ -66,6 +66,7 @@ export function transformTeachingTasks(tasks, matrix, mode, map) {
   const pose = (value) => transformTeachingPose(value, matrix, frame);
   return tasks.map((task) => ({
     ...task, coordinateFrame: frame,
+    ...(task.mobileCapture ? { mobileTransform: matrix.clone().multiply(new Matrix4().fromArray(task.mobileTransform)).toArray() } : {}),
     map: { id: map.mapId, fileName: map.name, sourceHash: map.sourceHash, teachingSpaceMode: mode, coordinateFrame: frame },
     parkingPoints: task.parkingPoints.map((parking) => ({
       ...parking, mapPose: pose(parking.mapPose),
@@ -215,6 +216,7 @@ async function createBaseline(project) {
   return {
     tasks: await Promise.all(project.teachingTasks.map(async (task) => ({
       id: task.id, name: task.name,
+      ...(task.mobileCapture ? { mobileHash: await hashObject({ capture: task.mobileCapture, transform: task.mobileTransform }) } : {}),
       parkingPoints: await Promise.all(task.parkingPoints.map(async (point) => ({ id: point.id, hash: await hashObject(point) }))),
     }))),
     waypoints: await Promise.all(project.waypoints.map(async (point) => ({ id: point.id, hash: await hashObject(point) }))),
@@ -231,7 +233,10 @@ export async function extractTeachingWorkspace(source, { bounds, localToMap, nam
     ...project,
     teachingTasks: project.teachingTasks.map((task) => ({ ...task,
       parkingPoints: task.parkingPoints.filter((point) => insideTransferBounds(point.mapPose.position, bounds)),
-    })).filter((task) => task.parkingPoints.length),
+    })).filter((task) => task.parkingPoints.length || task.mobileCapture?.samples.some((sample) => {
+      const p = sample.cameraPose.position;
+      return insideTransferBounds(new Vector3(p.x, p.y, p.z).applyMatrix4(new Matrix4().fromArray(task.mobileTransform)), bounds);
+    })),
     waypoints: project.waypoints.filter((point) => insideTransferBounds(point.pose, bounds)),
   };
   const ids = new Set(selected.waypoints.map((point) => point.id));
@@ -301,6 +306,8 @@ async function verifyBaseline(baseline, project) {
   for (const saved of baseline.tasks) {
     const task = project.teachingTasks.find((item) => item.id === saved.id);
     requireValue(task, '原地图中的来源任务已删除，请重新提取局部');
+    if (saved.mobileHash) requireValue(await hashObject({ capture: task.mobileCapture, transform: task.mobileTransform }) === saved.mobileHash,
+      '原地图中的 iPad 示教已修改，请重新提取局部');
     await verifyItems(saved.parkingPoints, task.parkingPoints);
   }
   await verifyItems(baseline.waypoints, project.waypoints);
@@ -337,6 +344,7 @@ export async function writeBackTeachingWorkspace(source, target) {
       ? edits.has(point.id) ? [edits.get(point.id)] : [] : [point]);
     parkingPoints.push(...(edited?.parkingPoints || []).filter((point) => !selected.has(point.id)));
     return { ...task, name: edited && edited.name !== saved.name ? edited.name : task.name,
+      ...(saved.mobileHash ? { mobileCapture: edited?.mobileCapture, mobileTransform: edited?.mobileTransform } : {}),
       parkingPoints, updatedAt: new Date().toISOString() };
   }).filter((task) => !selectedTaskIds.has(task.id) || task.parkingPoints.length || tasks.some((edited) => edited.id === task.id));
   mergedTasks.push(...tasks.filter((task) => !selectedTaskIds.has(task.id)));

@@ -9,6 +9,7 @@ import {
 } from 'lucide-react';
 import TeachingArchiveTree from './TeachingArchiveTree.jsx';
 import TeachingPoseRobotPreview from './TeachingPoseRobotPreview.jsx';
+import IPadCaptureDetails from './IPadCaptureDetails.jsx';
 
 const formatBytes = (value) => {
   const bytes = Math.max(0, Number(value) || 0);
@@ -57,6 +58,7 @@ export default function TeachingDataPage({
     ? 'VIRTUAL_ORIGIN'
     : 'MAP';
   const activeTask = tasks.find((task) => task.id === activeTaskId) || tasks[0] || null;
+  const ipadPoseCount = tasks.reduce((count, task) => count + (task.mobileCapture?.samples.length || 0), 0);
   const parkingPointCount = tasks.reduce(
     (total, task) => total + (task.parkingPoints?.length || 0),
     0,
@@ -199,7 +201,7 @@ export default function TeachingDataPage({
             <dl aria-label="示教数据统计">
               <div><dt>TASKS</dt><dd>{String(tasks.length).padStart(2, '0')}</dd><span>示教任务</span></div>
               <div><dt>STOPS</dt><dd>{String(parkingPointCount).padStart(2, '0')}</dd><span>停车点</span></div>
-              <div><dt>POSES</dt><dd>{String(pointCount).padStart(2, '0')}</dd><span>全身姿态</span></div>
+              <div><dt>{ipadPoseCount ? 'ROBOT / IPAD' : 'POSES'}</dt><dd>{String(pointCount).padStart(2, '0')}{ipadPoseCount ? ` / ${ipadPoseCount}` : ''}</dd><span>{ipadPoseCount ? '机器人姿态 / iPad Pose' : '全身姿态'}</span></div>
               <div><dt>ARCHIVE</dt><dd>{formatBytes(archiveBytes)}</dd><span>视觉数据</span></div>
             </dl>
           </section>
@@ -236,13 +238,13 @@ export default function TeachingDataPage({
               />
             </section>
 
-            <TeachingPoseRobotPreview
+            {(archiveSelection?.task || activeTask)?.mobileCapture ? <IPadCaptureDetails key={(archiveSelection?.task || activeTask).id} task={archiveSelection?.task || activeTask} /> : <TeachingPoseRobotPreview
               task={archiveSelection?.task || activeTask}
               parkingPoint={archiveSelection?.parkingPoint || null}
               pose={archiveSelection?.pose || null}
               robot={previewRobot}
               teachingSpaceMode={teachingSpaceMode}
-            />
+            />}
           </div>
         </div>
       </main>

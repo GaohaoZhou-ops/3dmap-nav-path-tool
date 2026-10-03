@@ -93,3 +93,22 @@ export function teachingTransfer3DFixture(mode = 'map') {
   fixture.config.config.project.virtualTeaching.tasks.forEach((task) => { task.map.sourceHash = fixture.map.sourceHash; });
   return fixture;
 }
+
+export function teachingTransferColored3DFixture(mode = 'map') {
+  const fixture = teachingTransfer3DFixture(mode);
+  const positions = new Float32Array(fixture.map.positionBuffer);
+  const colors = new Uint8Array(positions.length);
+  for (let offset = 0; offset < positions.length; offset += 3) {
+    colors.set(mode === 'map' ? [190, 80 + Math.round(positions[offset + 2] * 30), 25] : [30, 160, 60], offset);
+  }
+  fixture.map.colorBuffer = colors.buffer;
+  return fixture;
+}
+
+export function teachingTransferPointCloudFixture(mode = 'map') {
+  const fixture = teachingTransfer3DFixture(mode);
+  fixture.map.indexBuffer = null;
+  fixture.map.faceCount = 0;
+  fixture.config.config.project.map.faceCount = 0;
+  return fixture;
+}

@@ -1,7 +1,7 @@
 import math
 import re
 
-from playwright.sync_api import sync_playwright
+from playwright.sync_api import expect, sync_playwright
 from teaching_transfer_ui_smoke import CHROME, seed, ready, snapshot, open_transfer
 
 
@@ -30,6 +30,50 @@ def drag_axis(page, dialog, axis, dx=35, dy=-20):
     raise AssertionError(f"No {axis} gizmo handle found")
 
 
+def check_display(page, dialog, prefix, colored=False):
+    canvas = dialog.get_by_label("地图转换三维预览", exact=True)
+    color = dialog.get_by_label("转换预览颜色", exact=True)
+    mesh = dialog.get_by_label("转换预览 Mesh", exact=True)
+    before = values(dialog, prefix)
+    color.hover()
+    layer_image = canvas.screenshot()
+    images = {}
+    for mode in ["source", "height", "white", "layer"]:
+        color.select_option(mode)
+        expect(canvas).to_have_attribute("data-color-mode", mode)
+        images[mode] = canvas.screenshot()
+        assert values(dialog, prefix) == before
+    assert images["layer"] == layer_image, "Changing display must preserve the camera"
+    assert images["height"] != layer_image and images["white"] != layer_image
+    if colored:
+        assert len(set(images.values())) == 4, "All color modes must affect the rendered scene"
+    face_counts = [canvas.get_attribute(f"data-{layer}-preview-faces") for layer in ["map", "component"]]
+    mesh.select_option("off")
+    expect(canvas).to_have_attribute("data-map-preview-faces", "0")
+    expect(canvas).to_have_attribute("data-component-preview-faces", "0")
+    assert canvas.screenshot() != layer_image
+    for quality in ["full", "detail", "balanced", "auto", "performance"]:
+        mesh.select_option(quality)
+        expect(canvas).to_have_attribute("data-mesh-quality", quality)
+        assert [canvas.get_attribute(f"data-{layer}-preview-faces") for layer in ["map", "component"]] == face_counts
+        assert values(dialog, prefix) == before
+    assert canvas.screenshot() == layer_image
+    color.select_option("source")
+    mesh.select_option("full")
+    canvas.evaluate("element => { window.transferDisplayCanvas = element; }")
+    dialog.get_by_role("button", name="展开3D视口", exact=True).click()
+    assert color.is_visible() and mesh.is_visible()
+    color.select_option("height")
+    mesh.select_option("off")
+    expect(canvas).to_have_attribute("data-mesh-quality", "off")
+    dialog.get_by_role("button", name="显示转换参数", exact=True).click()
+    assert canvas.evaluate("element => element === window.transferDisplayCanvas")
+    assert values(dialog, prefix) == before
+    assert color.input_value() == "height" and mesh.input_value() == "off"
+    color.select_option("layer")
+    mesh.select_option("performance")
+
+
 def run():
     errors, shader_errors = [], []
     with sync_playwright() as p:
@@ -38,7 +82,7 @@ def run():
             page = browser.new_page(viewport={"width": 1440, "height": 1000})
             page.on("pageerror", lambda error: errors.append(str(error)))
             page.on("console", lambda message: shader_errors.append(message.text) if message.type == "error" and "THREE" in message.text else None)
-            seed(page, ["map", "independent"], "independent", fixture_name="teachingTransfer3DFixture")
+            seed(page, ["map", "independent"], "independent", fixture_name="teachingTransferColored3DFixture")
             original = snapshot(page, "independent")
             dialog = open_transfer(page)
             assert dialog.locator('[data-preview-dimension="3d"]').count() == 1
@@ -67,6 +111,7 @@ def run():
             assert abs(rotated[5] - before[5]) > 1
             assert all(abs(rotated[i] - before[i]) < 1e-5 for i in range(3))
             page.screenshot(path="/tmp/transfer-3d-rotation.png", full_page=True)
+            check_display(page, dialog, "放置", colored=True)
 
             # Changing viewpoint and layer visibility must not move the component.
             canvas = dialog.get_by_label("地图转换三维预览", exact=True)
@@ -129,6 +174,7 @@ def run():
             drag_axis(page, dialog, "X", dx=20, dy=15)
             assert abs(values(dialog, "局部原点")[0] - before[0]) > 0.01
             page.screenshot(path="/tmp/transfer-3d-crop.png", full_page=True)
+            check_display(page, dialog, "局部原点")
             dialog.get_by_role("checkbox", name=re.compile("用本次提取")).check()
             dialog.get_by_role("button", name="提取并进入独立示教", exact=True).click()
             ready(page, "independent")
@@ -137,18 +183,44 @@ def run():
             dialog = open_transfer(page)
             assert dialog.get_by_role("group", name="三维编辑工具").count() == 0
             assert dialog.get_by_role("checkbox", name="独立组件", exact=True).is_checked()
+            dialog.get_by_label("转换预览颜色", exact=True).select_option("source")
+            dialog.get_by_label("转换预览 Mesh", exact=True).select_option("off")
             dialog.get_by_role("button", name="作为新工位放置", exact=True).click()
             assert dialog.get_by_role("button", name="移动组件", exact=True).is_visible()
+            assert dialog.get_by_label("转换预览颜色", exact=True).input_value() == "source"
+            assert dialog.get_by_label("转换预览 Mesh", exact=True).input_value() == "off"
             dialog.get_by_role("button", name="回写原地图", exact=True).click()
+            expect(dialog.locator("canvas")).to_have_attribute("data-color-mode", "source")
+            expect(dialog.locator("canvas")).to_have_attribute("data-mesh-quality", "off")
             dialog.get_by_role("button", name="回写并进入地图", exact=True).click()
             ready(page, "map")
             assert snapshot(page, "map")["positions"] == original["positions"]
+            page.close()
+
+            page = browser.new_page(viewport={"width": 1366, "height": 768})
+            page.on("pageerror", lambda error: errors.append(str(error)))
+            page.on("console", lambda message: shader_errors.append(message.text) if message.type == "error" and "THREE" in message.text else None)
+            seed(page, ["map"], "map", fixture_name="teachingTransferPointCloudFixture")
+            dialog = open_transfer(page)
+            canvas = dialog.get_by_label("地图转换三维预览", exact=True)
+            mesh = dialog.get_by_label("转换预览 Mesh", exact=True)
+            expect(mesh).to_be_disabled()
+            assert mesh.input_value() == "off"
+            expect(canvas).to_have_attribute("data-map-preview-faces", "0")
+            for mode in ["source", "height", "white", "layer"]:
+                dialog.get_by_label("转换预览颜色", exact=True).select_option(mode)
+                expect(canvas).to_have_attribute("data-color-mode", mode)
+            assert canvas.bounding_box()["height"] > 550
+            page.screenshot(path="/tmp/transfer-3d-point-cloud.png", full_page=True)
             assert not errors, errors
             assert not shader_errors, shader_errors
             print("3d_axis_translation_and_rotation=ok")
             print("3d_surface_pick_and_camera_isolation=ok")
             print("3d_crop_box_and_origin_editing=ok")
             print("hidden_robot_pose_and_writeback=ok")
+            print("transfer_color_mesh_switching_and_camera_preservation=ok")
+            print("transfer_expanded_display_controls_and_operation_persistence=ok")
+            print("transfer_uncolored_point_cloud_and_compact_layout=ok")
             print("page_and_shader_errors=[]")
         finally:
             browser.close()

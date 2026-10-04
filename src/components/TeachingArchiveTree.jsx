@@ -116,6 +116,7 @@ export default function TeachingArchiveTree({
   onAnalyzeParkingPointMerge,
   onMergeParkingPoints,
   onExportProject,
+  onExportAbxTeaching,
   onOpenCapturePage,
   onSelectionChange,
 }) {
@@ -634,6 +635,9 @@ export default function TeachingArchiveTree({
           </div>
           <span>{tasks.length} 任务 · {totalParkingPoints} 停车点 · {totalPoses} 姿态</span>
           <button type="button" onClick={onOpenCapturePage}>继续示教</button>
+          {onExportAbxTeaching && <button type="button" onClick={onExportAbxTeaching}
+            disabled={!tasks.length || exportPacking} aria-label="导出机器人示教"
+            title="生成大脑可直接导入的 Pose ZIP，并附带自由导航目标清单">机器人导出</button>}
           <button
             type="button"
             aria-label={exportPacking ? '正在打包示教工程 ZIP' : '导出示教工程 ZIP'}

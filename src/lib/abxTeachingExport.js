@@ -1,8 +1,8 @@
 import { sha256Bytes } from './hash.js';
-import { pathExists } from './graph.js';
+import { zipSync } from 'fflate';
 
-// v11 is the first ABX task format supporting poses without measured SLAM data.
-const VERSION = 11;
+// Match the current native importer, including automatic component selection.
+const VERSION = 15;
 const MAX_LINE_BYTES = 12000;
 const POSITION_TOLERANCE_M = 1e-6;
 const YAW_TOLERANCE_RAD = 1e-6;
@@ -84,58 +84,20 @@ const targetPose = (pose, unit, label) => {
   return { x, y, yaw: wrapYaw(radians(rpy.yaw, unit, `${label} yaw`)) };
 };
 
-const buildGraph = (payload, angleUnit) => {
-  const waypoints = ordered(payload.waypoints || [], '导航点');
-  const paths = ordered(payload.paths || [], '路径');
-  requireExport(waypoints.length <= 512 && paths.length <= 4096, 'ABX 路网最多支持 512 个导航点、4096 条路径');
-  const nodes = waypoints.map((point, id) => ({
-    id, sourceId: point.id, name: point.name, ...targetPose(point.pose, angleUnit, `导航点 ${point.name || point.id}`),
-  }));
-  const bySourceId = new Map(nodes.map((node) => [node.sourceId, node]));
-  const adjacency = new Map(nodes.map((node) => [node.id, []]));
-  const features = nodes.map((node) => ({
-    type: 'Feature', properties: { id: node.id, frame: 'map' },
-    geometry: { type: 'Point', coordinates: [node.x, node.y] },
-  }));
-  const edges = paths.map((path, index) => {
-    const from = bySourceId.get(path.from);
-    const to = bySourceId.get(path.to);
-    requireExport(from && to && from !== to, `路径 ${path.id}引用了无效导航点`);
-    requireExport(path.directed !== false, `路径 ${path.id}需要显式有向连线`);
-    requireExport(!path.motion?.direction || path.motion.direction === 'forward',
-      `路径 ${path.id}配置了倒车，当前 ABX 路网任务格式不能表达此运动设置`);
-    requireExport(path.motion?.enable3DObstacleAvoidance !== false,
-      `路径 ${path.id}关闭了 3D 避障，当前 ABX 路网任务格式不能表达此运动设置`);
-    adjacency.get(from.id).push(to.id);
-    const id = nodes.length + index;
-    features.push({
-      type: 'Feature',
-      properties: { id, startid: from.id, endid: to.id, cost: 0, overridable: true },
-      geometry: { type: 'MultiLineString', coordinates: [[[from.x, from.y], [to.x, to.y]]] },
-    });
-    return { id, sourceId: path.id, from: from.id, to: to.id, limits: path.limits, motion: path.motion };
-  });
-  const route = { type: 'FeatureCollection', features };
-  const yaw = { features: nodes.map((node) => ({ id: node.id, pos: [node.x, node.y, node.yaw] })) };
-  const routeBytes = jsonBytes(route);
-  const yawBytes = jsonBytes(yaw);
-  requireExport(routeBytes.length <= 512 * 1024 && yawBytes.length <= 512 * 1024, 'ABX 路网文件超过 512 KiB');
-  return { nodes, edges, adjacency, routeBytes, yawBytes };
+const freeTarget = (pose, unit, label) => {
+  const { x, y, yaw } = targetPose(pose, unit, label);
+  return { x_m: x, y_m: y, yaw_rad: yaw };
 };
 
-const matchNode = (graph, pose, angleUnit, label) => {
-  const target = targetPose(pose, angleUnit, label);
-  const matches = graph.nodes.filter((node) => Math.hypot(node.x - target.x, node.y - target.y) <= POSITION_TOLERANCE_M
-    && yawDistance(node.yaw, target.yaw) <= YAW_TOLERANCE_RAD);
-  requireExport(matches.length === 1, matches.length
-    ? `${label}对应多个导航点，无法唯一匹配`
-    : `${label}无法匹配已有导航点的 X/Y/yaw，请在现有导航图中核对坐标和朝向`);
-  return matches[0];
-};
+const sameTarget = (a, b) => a && b
+  && Math.hypot(a.x_m - b.x_m, a.y_m - b.y_m) <= POSITION_TOLERANCE_M
+  && yawDistance(a.yaw_rad, b.yaw_rad) <= YAW_TOLERANCE_RAD;
+
+const navigationNotice = '当前大脑仅支持导入站点导航步骤；本包只导入 Pose，自由导航目标保存在 free-navigation.json，导入后不会自动执行导航。';
 
 const robotModel = (robotPackage) => {
   requireExport(robotPackage?.format === 'urdf', 'ABX 示教导出需要完整 URDF 机器人资源');
-  const primary = robotPackage.files.find((file) => file.path === robotPackage.relativePath);
+  const primary = robotPackage.files?.find((file) => file.path === robotPackage.relativePath);
   requireExport(primary, 'ABX 示教导出缺少机器人 URDF');
   const source = new TextDecoder().decode(primary.bytes).replace(/<!--[\s\S]*?-->/g, '');
   const tag = /<robot\b[^>]*>/.exec(source)?.[0];
@@ -160,23 +122,28 @@ const line = (value) => {
 };
 
 const instructions = [
-  'ABX 地图示教导出',
+  'ABX 机器人 Pose 与自由导航目标',
   '',
-  '1. manifest.json 使用 abx-teaching-export v1；tasks/*.abxteach.ndjson 使用 abx-teaching-task v11。',
-  '2. 在对应机器人/实例的 ABX Web「示教任务」中逐个导入 tasks/ 下的文件。不要将整个工程 ZIP 当作 NDJSON 导入。',
-  '   大脑的存储服务会写入当前 abxpipeline 分支配置的任务库：',
-  '   真机通常为 teaching/<robot_id>.sqlite3；Mock 为 simulation/<deployment_id>/teaching.sqlite3。',
-  '   不覆盖现有 SQLite，也不向 workflows/ 写入不受支持的运动步骤。导入会分配新的任务 ID。',
-  '3. graph_route.geojson / graph_yaw.geojson 仅转换工程中已有的导航图，不自动创建停车点连线。',
-  '   使用前由部署方核对地图，并将两文件放到 ABXBrainSystem 同级目录及对应 RouteServer 中；本导出不会安装或上传路网。',
-  '   X/Y 单位 m、yaw 单位 rad；匹配容差为 1e-6 m / 1e-6 rad，不将附近但不同的停车姿态吸附到路网。',
-  '4. 每个有姿态的停车点先执行显式 route_navigation；同组姿态的底盘目标变化时也插入导航。',
-  '   导航只控制 X/Y/yaw。原始 Z/roll/pitch、完整关节和视觉参考仍保存在原工程及 source-mapping.json 中。',
-  '   速度、加速度由大脑/RouteServer 的实例配置决定；本地路径 limits 留作对照，不宣称这些字段会被大脑执行。',
-  '5. 关节按 head、torso、left_arm、right_arm 的固定顺序转为 rad；轮子转角由导航控制，不作为全身姿态执行。',
-  '   虚拟姿态没有实测定位：parking.location 为 null，姿态不伪造 SLAM/里程计。robot_received_ns=1 是格式占位，robot_sequence 是导出序号。',
-  '   RGB/XYZ 是虚拟参考快照，继续位于工程 teaching-data/，不伪造真实采集记录，也不自动添加真机拍照动作。',
-  '6. 本目录是点击「导出 ZIP」时的快照。工程目录自动保存不更新 ABX 文件；修改示教后须重新导出 ZIP。',
+  '1. robot-teaching-*.zip 可直接在大脑 Web「示教任务 → 导入」选择；不用解压。',
+  '   完整工程 ZIP 中的 abx/ 是同一份数据目录，也可逐个导入 tasks/*.abxteach.ndjson。',
+  '   原生任务使用 abx-teaching-task v15，导出清单使用 abx-teaching-export v1。',
+  '2. ' + navigationNotice,
+  '   执行导入任务只执行上身 Pose，不会移动到底盘目标。导航接入前请按所需位置分别使用自由导航与对应 Pose。',
+  '   free-navigation.json 的 waypoints 保存原导航点，tasks[].sequence 保存导航与 Pose 的对应顺序。',
+  '   自由导航接口使用 mode=free、x_m、y_m、yaw_rad；run_id 和现场控制权限须由调用端当次取得。',
+  '   本导出不调用导航接口、不创建站点路网、不写入大脑目录或数据库。',
+  '3. 坐标使用机器人 map 坐标系，X/Y 单位 m，yaw 单位 rad，范围 [-π, π]，逆时针为正。',
+  '   现场地图须与虚拟工程地图对齐；原始 Z/roll/pitch、路径及逐边速度约束保存在 source-mapping.json。',
+  '   自由导航无需匹配站点或连线；路径及速度约束不是大脑已接受的执行配置。',
+  '4. 20 个关节按实际 URDF 名称匹配，head、torso、left_arm、right_arm 转为 rad。',
+  '   component=auto 由大脑根据实况判断执行部位；轮组不作为上身关节执行，缺失关节不会补零。',
+  '   虚拟 Pose 没有实测定位，parking.location=null，不伪造 SLAM 或里程计。',
+  '   robot_received_ns=1 为原生格式占位，robot_sequence 为导出序号，不代表硬件反馈。',
+  '5. 基础姿态库不额外新增模板；任务、停车点与 Pose 的名称、顺序以及关节目标保留。',
+  '   导入由大脑分配新任务 ID，source-mapping.json 记录源项目到包内任务和 Pose 的对应关系。',
+  '   RGB/XYZ 视觉参考仍在完整工程中，不作为真机拍摄记录，也不自动触发相机。',
+  '   iPad 相机 Pose 须先求解为机器人关节姿态，独立示教须先转换到地图坐标后再导出。',
+  '6. 导出为当前快照；修改示教数据后请重新导出。原工程 ZIP 继续用于完整备份和恢复。',
   '',
 ];
 
@@ -184,18 +151,21 @@ const compileExport = async (payload, robotPackage) => {
   const angleUnit = payload.coordinateSystem?.angleUnit || payload.virtualTeaching?.angularUnit || 'degree';
   requireExport(['meter', 'm'].includes(payload.coordinateSystem?.distanceUnit || 'meter'), 'ABX 导出需要米制地图坐标');
   requireExport((payload.coordinateSystem?.frameId || 'map') === 'map', 'ABX 导出需要 map 坐标系');
-  const graph = buildGraph(payload, angleUnit);
+  const waypoints = ordered(payload.waypoints || [], '导航点').map((point, index) => ({
+    sourceId: point.id, name: point.name || point.id, sequence: index + 1,
+    target: freeTarget(point.pose, angleUnit, `导航点 ${point.name || point.id}`),
+    sourcePose: point.pose,
+  }));
   const files = {};
-  if (graph.nodes.length) {
-    files['abx/graph_route.geojson'] = graph.routeBytes;
-    files['abx/graph_yaw.geojson'] = graph.yawBytes;
-  }
   const exportedAt = payload.exportedAt || new Date().toISOString();
   const tasks = [];
   const taskMappings = [];
   let navigationCount = 0;
+  let poseCount = 0;
+  const navigationTasks = [];
   for (const task of ordered(payload.virtualTeaching?.tasks || [], '任务')) {
     const name = text(task.name, '任务名称');
+    requireExport(!task.mobileCapture?.samples?.length, `任务 ${name}包含 iPad 相机 Pose，尚未转换成机器人关节姿态`);
     requireExport((task.coordinateFrame || 'map') === 'map' && task.map?.teachingSpaceMode !== 'independent', `任务 ${name}不是地图示教`);
     requireExport(!task.map?.sourceHash || !payload.map?.sourceHash || task.map.sourceHash === payload.map.sourceHash,
       `任务 ${name}与当前地图摘要不一致`);
@@ -205,16 +175,16 @@ const compileExport = async (payload, robotPackage) => {
     const parkings = [];
     const points = [];
     const parkingMappings = [];
-    let previousNode = null;
+    const navigationSequence = [];
     let model = null;
     for (const parking of ordered(task.parkingPoints || [], `任务 ${name}的停车点`)) {
       const parkingName = text(parking.name, '停车点名称');
       const label = `${name} / ${parkingName}`;
-      const node = matchNode(graph, parking.mapPose, angleUnit, label);
+      const parkingTarget = freeTarget(parking.mapPose, angleUnit, label);
       const parkingId = await stableId('atlas-abx-parking', task.id, parking.id);
       const parkingPoints = [];
       const poseMappings = [];
-      let parkingNode = null;
+      let previousTarget = null;
       const append = (record, pointLabel) => {
         const point = { type: 'point', seq: String(points.length + 1), label: pointLabel, record,
           parking_id: parkingId, parking_seq: String(parkingPoints.length + 1) };
@@ -225,18 +195,17 @@ const compileExport = async (payload, robotPackage) => {
       for (const pose of ordered(parking.poses || [], `${label}的姿态`)) {
         const poseName = text(pose.name, '姿态名称');
         const poseLabel = `${label} / ${poseName}`;
-        const target = matchNode(graph, pose.mapPose, angleUnit, poseLabel);
+        const target = freeTarget(pose.mapPose, angleUnit, poseLabel);
         if (!model) {
           const sourceRobot = task.robot?.relativePath || task.robot?.id;
           requireExport(sourceRobot && sourceRobot === robotPackage?.relativePath, `任务 ${name}的机器人与当前 URDF 不一致`);
           model = robotModel(robotPackage);
         }
         const joints = bodyJoints(pose, poseLabel);
-        if (parkingNode !== target.id) {
-          requireExport(previousNode === null || pathExists(graph.adjacency, previousNode, target.id),
-            `${poseLabel}在已有单向路网中无法从 N${previousNode}到达 N${target.id}`);
-          append({ type: 'route_navigation', node_id: `N${target.id}` }, `导航至 N${target.id}`);
-          previousNode = parkingNode = target.id;
+        if (!sameTarget(previousTarget, target)) {
+          navigationSequence.push({ type: 'free_navigation', mode: 'free', parkingId,
+            beforePoseSeq: String(points.length + 1), target });
+          previousTarget = target;
           navigationCount += 1;
         }
         const point = append({
@@ -245,17 +214,20 @@ const compileExport = async (payload, robotPackage) => {
           robot_sequence: String(points.length + 1),
           robot_received_ns: '1',
           joints_rad: joints,
+          component: 'auto',
         }, poseName);
-        poseMappings.push({ sourceId: pose.id, seq: point.seq, nodeId: target.id, mapPose: pose.mapPose });
+        poseCount += 1;
+        navigationSequence.push({ type: 'pose', parkingId, seq: point.seq, name: poseName, sourceId: pose.id });
+        poseMappings.push({ sourceId: pose.id, name: poseName, seq: point.seq, target, mapPose: pose.mapPose });
       }
       parkings.push({ type: 'parking', id: parkingId, seq: String(parkings.length + 1), name: parkingName,
         created_ns: timestamp(parking.createdAt, task.createdAt || exportedAt, label),
         point_count: String(parkingPoints.length), location: null });
-      parkingMappings.push({ sourceId: parking.id, id: parkingId, nodeId: node.id, mapPose: parking.mapPose, poses: poseMappings });
+      parkingMappings.push({ sourceId: parking.id, id: parkingId, name: parkingName, target: parkingTarget, mapPose: parking.mapPose, poses: poseMappings });
     }
     requireExport(points.length <= 2000 && parkings.filter((parking) => parking.point_count !== '0').length <= 128,
       `任务 ${name}超过 ABX 单次执行的 2000 步骤或 128 个非空停车点上限`);
-    const counts = { point_count: String(points.length), parking_count: String(parkings.length) };
+    const counts = { point_count: String(points.length), parking_count: String(parkings.length), basic_pose_count: '0' };
     const created = timestamp(task.createdAt, exportedAt, name);
     const body = [...parkings, ...points].map(line).join('');
     const header = { type: 'abx-teaching-task', version: VERSION, name, created_ns: created,
@@ -266,15 +238,21 @@ const compileExport = async (payload, robotPackage) => {
     tasks.push({ id, name, created_ns: created, updated_ns: timestamp(task.updatedAt, task.createdAt || exportedAt, name),
       ...counts, file, image_count: 0 });
     taskMappings.push({ sourceId: task.id, id, file, robotModel: model, parkings: parkingMappings });
+    navigationTasks.push({ sourceId: task.id, id, name, file, sequence: navigationSequence, parkings: parkingMappings });
   }
   files['abx/manifest.json'] = jsonBytes({ schema: 'abx-teaching-export', version: 1, exported_utc: exportedAt,
     include_images: false, tasks, images: [], pending_captures: 0 });
-  files['abx/source-mapping.json'] = jsonBytes({ schema: 'atlas-abx-export-mapping', version: 1,
+  files['abx/free-navigation.json'] = jsonBytes({ schema: 'atlas-abx-free-navigation-targets', version: 1,
+    exportedAt, mode: 'free', coordinateFrame: 'map', units: { position: 'm', yaw: 'rad' },
+    nativeTaskNavigationSupported: false, notice: navigationNotice,
+    map: payload.map, waypoints, tasks: navigationTasks });
+  files['abx/source-mapping.json'] = jsonBytes({ schema: 'atlas-abx-export-mapping', version: 2,
     exportedAt, sourceProject: 'config/project.json', map: payload.map,
-    matching: { positionToleranceM: POSITION_TOLERANCE_M, yawToleranceRad: YAW_TOLERANCE_RAD },
-    nodes: graph.nodes, paths: graph.edges, tasks: taskMappings });
+    navigationMode: 'free', waypoints, paths: payload.paths || [], tasks: taskMappings });
   files['abx/README.txt'] = bytes(instructions.join('\n'));
-  return { files, summary: { status: 'ready', taskCount: tasks.length, navigationCount, manifestFile: 'abx/manifest.json' } };
+  return { files, summary: { status: 'ready', navigationMode: 'free', navigationImportSupported: false,
+    taskCount: tasks.length, poseCount, waypointCount: waypoints.length, navigationCount,
+    notice: navigationNotice, manifestFile: 'abx/manifest.json', navigationFile: 'abx/free-navigation.json' } };
 };
 
 // Conversion is atomic: an incompatible task never leaves a partial native
@@ -292,4 +270,32 @@ export async function buildAbxTeachingExport(payload, { robotPackage = null } = 
       'abx/README.txt': bytes(`ABX 任务文件未生成：${error.message}\n\n原始工程备份完整保留。修正数据后重新点击「导出 ZIP」。\n`),
     } };
   }
+}
+
+// The Brain ZIP reader expects its own manifest at the root. An Atlas project
+// archive has a different manifest and must never be presented as this bundle.
+export async function buildAbxTeachingArchive(payload, options = {}) {
+  const result = await buildAbxTeachingExport(payload, options);
+  requireExport(result, '请先将独立示教转换到地图示教，再导出机器人示教数据');
+  requireExport(result.summary.status === 'ready', result.summary.message);
+  requireExport(result.summary.taskCount >= 1 && result.summary.taskCount <= 100, '机器人示教导入包需要包含 1–100 个任务');
+  const files = Object.fromEntries(Object.entries(result.files).map(([name, data]) => [name.slice('abx/'.length), data]));
+  const archiveBytes = zipSync(files, { level: 0 });
+  return { ...result, files, bytes: archiveBytes, byteLength: archiveBytes.length,
+    blob: new Blob([archiveBytes], { type: 'application/zip' }) };
+}
+
+// Only the primary URDF is needed for the model identity; meshes are not part
+// of a native teaching bundle and need not be fetched again.
+export async function readAbxRobotPackage(robot, existingPackage, { signal } = {}) {
+  if (!robot) return null;
+  const relativePath = robot.relativePath || robot.id;
+  requireExport(robot.format === 'urdf', '机器人示教导出需要 URDF 机器人描述');
+  const primary = existingPackage?.relativePath === relativePath
+    && existingPackage.files?.find((file) => file.path === relativePath);
+  if (primary) return { relativePath, format: 'urdf', files: [primary] };
+  requireExport(robot.url, '缺少机器人 URDF 地址，请重新加载机器人后导出');
+  const response = await fetch(robot.url, { signal });
+  requireExport(response.ok, `无法读取机器人 URDF（HTTP ${response.status}）`);
+  return { relativePath, format: 'urdf', files: [{ path: relativePath, bytes: new Uint8Array(await response.arrayBuffer()) }] };
 }

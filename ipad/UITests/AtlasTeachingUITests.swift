@@ -260,6 +260,68 @@ final class AtlasTeachingUITests: XCTestCase {
         XCUIDevice.shared.orientation = .landscapeLeft
     }
 
+    func testGroundAssistanceControlsAndLifecycle() throws {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        XCUIDevice.shared.orientation = .landscapeLeft
+        defer { XCUIDevice.shared.orientation = .landscapeLeft }
+        app.launch()
+        let project = ProcessInfo.processInfo.environment["ATLAS_HARDWARE_SESSION"].map {
+            app.buttons["local-project-\($0)"]
+        } ?? app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "local-project-")).firstMatch
+        guard project.waitForExistence(timeout: 15) else { throw XCTSkip("Requires a locally received model on a LiDAR iPad") }
+        project.tap()
+        let aid = app.switches["ground-assistance"], status = app.staticTexts["ground-status"]
+        guard aid.waitForExistence(timeout: 60) else { throw XCTSkip("Requires an unfinished project on a LiDAR iPad") }
+        XCTAssertEqual(aid.value as? String, "1")
+        XCTAssertTrue(status.exists)
+        XCTAssertFalse(app.buttons["capture-pose"].isEnabled, "floor detection never calibrates or records automatically")
+        aid.tap()
+        XCTAssertEqual(aid.value as? String, "0")
+        XCTAssertTrue(status.label.contains("已关闭"))
+        aid.tap()
+        for orientation in [UIDeviceOrientation.landscapeLeft, .portrait] {
+            XCUIDevice.shared.orientation = orientation
+            let rotated = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+                let window = app.windows.firstMatch.frame
+                return orientation.isLandscape ? window.width > window.height : window.height > window.width
+            }, object: nil)
+            XCTAssertEqual(XCTWaiter.wait(for: [rotated], timeout: 10), .completed)
+            XCTAssertTrue(app.windows.firstMatch.frame.contains(aid.frame))
+            XCTAssertTrue(app.windows.firstMatch.frame.contains(status.frame))
+            let screenshot = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+            screenshot.name = orientation.isLandscape ? "Ground assistance landscape" : "Ground assistance portrait"
+            screenshot.lifetime = .keepAlways; add(screenshot)
+        }
+        XCUIDevice.shared.orientation = .landscapeLeft
+        let place = app.buttons["place-model"]
+        let groundReady = XCTNSPredicateExpectation(predicate: NSPredicate(format: "enabled == true"), object: place)
+        if XCTWaiter.wait(for: [groundReady], timeout: 20) == .completed {
+            XCTAssertTrue(status.label.contains("准星已对准地面"))
+            app.buttons["model-tilt-controls"].tap()
+            app.sliders["model-pitch"].adjust(toNormalizedSliderPosition: 0.58)
+            let tilt = app.staticTexts["model-pitch-value"].label
+            XCTAssertNotEqual(tilt, "0.0°")
+            place.tap()
+            let confirm = app.buttons["confirm-model-calibration"]
+            let placed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "enabled == true"), object: confirm)
+            XCTAssertEqual(XCTWaiter.wait(for: [placed], timeout: 10), .completed)
+            XCTAssertEqual(app.staticTexts["model-pitch-value"].label, tilt, "floor placement preserves the requested tilt")
+            XCTAssertFalse(app.buttons["capture-pose"].isEnabled, "a ground hit still requires explicit calibration")
+            let screenshot = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+            screenshot.name = "Live LiDAR floor placement with free tilt"; screenshot.lifetime = .keepAlways; add(screenshot)
+            print("Live classified ground target, placement and free tilt verified")
+        } else {
+            print("Ground controls verified; no classified floor at the center for the live placement check")
+        }
+        XCUIDevice.shared.press(.home); app.activate()
+        XCTAssertTrue(aid.waitForExistence(timeout: 15))
+        XCTAssertEqual(aid.value as? String, "1")
+        XCTAssertFalse(app.buttons["capture-pose"].isEnabled)
+        XCTAssertFalse(app.buttons["confirm-model-calibration"].isEnabled, "resuming must not reuse a placement from the old AR session")
+        app.buttons["本地项目"].tap()
+    }
+
     func testSpatialLevelReferenceAndFreePlacement() throws {
         continueAfterFailure = false
         let app = XCUIApplication()
@@ -273,6 +335,8 @@ final class AtlasTeachingUITests: XCTestCase {
         project.tap()
         let capture = app.buttons["capture-pose"]
         XCTAssertTrue(capture.waitForExistence(timeout: 60), app.debugDescription)
+        let groundAid = app.switches["ground-assistance"]
+        if groundAid.exists, groundAid.value as? String == "1" { groundAid.tap() }
         let angle = app.staticTexts["spatial-level-angle"]
         XCTAssertTrue(angle.waitForExistence(timeout: 15))
         XCTAssertEqual(angle.label, "—", "No angle is invented before the model is placed")

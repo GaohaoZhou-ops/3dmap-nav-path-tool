@@ -14,6 +14,14 @@ final class ARController: NSObject, ObservableObject, @preconcurrency ARSessionD
     @Published var roll: Float = 0
     @Published var pitch: Float = 0
     @Published private(set) var levelReading: SpatialLevelReading?
+    @Published var groundAssistance = true {
+        didSet {
+            updateGroundPreview()
+            if !calibrated { message = groundAssistance ? "缓慢移动 iPad 扫描水平地面，再点击青色网格放置物体" : "对准现场基准点，点击或拖动放置物体；可自由调整倾斜" }
+        }
+    }
+    @Published private(set) var groundCount = 0
+    @Published private(set) var groundTargetAvailable = false
     @Published var referenceX: Float = 0
     @Published var referenceY: Float = 0
     @Published var referenceZ: Float = 0
@@ -22,6 +30,9 @@ final class ARController: NSObject, ObservableObject, @preconcurrency ARSessionD
     private let objectRoot = SCNNode()
     private let modelNode = SCNNode()
     private let markers = SCNNode()
+    private let groundRoot = SCNNode()
+    private var groundPlanes: [UUID: GroundPlane] = [:]
+    private var groundNodes: [UUID: SCNNode] = [:]
     private var hitPoint: SIMD3<Float>?
     private var segmentID: String?
     private var anchorID: UUID?
@@ -42,6 +53,8 @@ final class ARController: NSObject, ObservableObject, @preconcurrency ARSessionD
         view.automaticallyUpdatesLighting = false; view.preferredFramesPerSecond = 60
         view.scene.rootNode.addChildNode(objectRoot); objectRoot.addChildNode(markers)
         modelNode.name = "independent-teaching-object"; objectRoot.addChildNode(modelNode)
+        groundRoot.name = "lidar-floor-reference"; view.scene.rootNode.addChildNode(groundRoot)
+        groundRoot.isHidden = true
         objectRoot.isHidden = true
         view.addGestureRecognizer(UITapGestureRecognizer(target: self, action: #selector(tapToPlace(_:))))
         let drag = UIPanGestureRecognizer(target: self, action: #selector(dragToPlace(_:)))
@@ -57,6 +70,7 @@ final class ARController: NSObject, ObservableObject, @preconcurrency ARSessionD
             referenceX = (bounds.min.x + bounds.max.x) / 2; referenceY = (bounds.min.y + bounds.max.y) / 2; referenceZ = bounds.min.z
         }
         yaw = 0; roll = 0; pitch = 0; hitPoint = nil; placed = false; calibrated = false; segmentID = nil; anchorID = nil
+        groundAssistance = true
         objectRoot.isHidden = true
         // Keep manual waypoints visible without constructing thousands of SceneKit nodes.
         refreshMarkers(samples)
@@ -65,30 +79,42 @@ final class ARController: NSObject, ObservableObject, @preconcurrency ARSessionD
     // Only replace draw geometry: placement, tracking, anchors and Pose markers stay intact.
     func display(_ geometry: SCNGeometry?) { modelNode.geometry = geometry }
     func start() async {
+        guard !running else { return }
         guard Self.supported else { tracking = "需要配备 LiDAR 的 iPad Pro 真机"; return }
         let allowed = await AVCaptureDevice.requestAccess(for: .video)
         guard allowed else { tracking = "相机权限未开启"; message = "请在系统设置中允许 Atlas 示教访问相机"; return }
+        guard !running else { return }
         let config = ARWorldTrackingConfiguration()
         config.worldAlignment = .gravity
-        config.planeDetection = [.horizontal, .vertical]
-        config.sceneReconstruction = .mesh
+        config.planeDetection = [.horizontal]
+        config.sceneReconstruction = ARWorldTrackingConfiguration.supportsSceneReconstruction(.meshWithClassification) ? .meshWithClassification : .mesh
         config.frameSemantics = .sceneDepth
         if ARWorldTrackingConfiguration.supportsFrameSemantics(.smoothedSceneDepth) { config.frameSemantics.insert(.smoothedSceneDepth) }
-        running = true
+        clearGround(); running = true
         view.session.run(config, options: [.resetTracking, .removeExistingAnchors])
         beginCalibration(); tracking = "正在建立空间定位"
     }
-    func stop() { running = false; view.session.pause(); trackingNormal = false; levelReading = nil; lastLevelTime = 0 }
+    func stop() {
+        running = false; view.session.pause(); trackingNormal = false; depthAvailable = false
+        levelReading = nil; lastLevelTime = 0; lastStatusTime = 0; clearGround()
+    }
     func suspend() { stop(); calibrated = false; objectRoot.isHidden = true; placed = false; hitPoint = nil; segmentID = nil }
     func beginCalibration() {
         calibrated = false; segmentID = nil
         if let id = anchorID, let anchor = view.session.currentFrame?.anchors.first(where: { $0.identifier == id }) { view.session.remove(anchor: anchor) }
         anchorID = nil
-        message = "将屏幕中心对准现实中的物体基准点，再点击「放置物体」"
+        updateGroundPreview()
+        message = groundAssistance ? "缓慢移动 iPad 扫描水平地面，再点击青色网格放置物体" : "将屏幕中心对准现实中的物体基准点，再点击「放置物体」"
     }
     private var reference: SIMD3<Float> { SIMD3(referenceX, referenceY, referenceZ) }
     func placeObject(at point: CGPoint? = nil) {
-        guard trackingNormal, !calibrated, let hit = surfaceWorldPoint(at: point) else { message = "尚未测到可靠表面，请缓慢移动或靠近后重试"; return }
+        guard trackingNormal, !calibrated, let frame = view.session.currentFrame,
+              case .normal = frame.camera.trackingState else { return }
+        let target = groundAssistance ? groundWorldPoint(at: point) : surfaceWorldPoint(at: point)
+        guard let hit = target else {
+            message = groundAssistance ? "请扫描并点击青色地面区域；需要在其他表面放置时可关闭「地面辅助」" : "尚未测到可靠表面，请缓慢移动或靠近后重试"
+            return
+        }
         hitPoint = hit; placed = true; updatePlacement()
         message = "调整物体的方向与倾斜，使模型与现场一致；水平仪仅供参考"
     }
@@ -123,6 +149,7 @@ final class ARController: NSObject, ObservableObject, @preconcurrency ARSessionD
         let anchor = ARAnchor(name: "Atlas independent object", transform: objectRoot.simdTransform)
         anchorID = anchor.identifier; view.session.add(anchor: anchor)
         calibrated = true; onCalibration?(calibration)
+        updateGroundPreview()
         message = "校准已锁定。移动 iPad，将相机置于目标视角后记录示教点"
     }
     func recordKeyframe() { capture(kind: "keyframe") }
@@ -154,6 +181,77 @@ final class ARController: NSObject, ObservableObject, @preconcurrency ARSessionD
             center.addChildNode(SCNNode(geometry: line))
         }
         objectRoot.addChildNode(center)
+    }
+    var groundStatus: String {
+        if !groundAssistance { return "已关闭 · 可在实测表面自由放置" }
+        if !trackingNormal { return "等待空间定位，缓慢移动 iPad" }
+        if groundCount == 0 { return "扫描水平地面，识别后显示青色网格" }
+        return groundTargetAvailable ? "准星已对准地面 · 可放置" : "已识别 \(groundCount) 处地面 · 点击网格或移动准星"
+    }
+    private func clearGround() {
+        groundNodes.values.forEach { $0.removeFromParentNode() }
+        groundNodes.removeAll(); groundPlanes.removeAll()
+        groundCount = 0; groundTargetAvailable = false; groundRoot.isHidden = true
+    }
+    private func updateGroundPreview() {
+        let visible = running && groundAssistance && !calibrated && trackingNormal
+        groundRoot.isHidden = !visible
+        let available = visible && groundWorldPoint() != nil
+        if groundTargetAvailable != available { groundTargetAvailable = available }
+    }
+    private func groundWorldPoint(at point: CGPoint? = nil) -> SIMD3<Float>? {
+        guard view.bounds.width > 0, view.bounds.height > 0,
+              let query = view.raycastQuery(from: point ?? CGPoint(x: view.bounds.midX, y: view.bounds.midY),
+                allowing: .existingPlaneGeometry, alignment: .horizontal) else { return nil }
+        // Intersect the visible, gravity-horizontal footprint itself; never
+        // extend a detected floor infinitely or fall back to a wall/depth pixel.
+        return groundPlanes.values.compactMap { $0.intersection(origin: query.origin, direction: query.direction) }
+            .min { simd_distance($0, query.origin) < simd_distance($1, query.origin) }
+    }
+    private func updateGround(_ anchors: [ARAnchor]) {
+        let planes = anchors.compactMap { $0 as? ARPlaneAnchor }
+        guard !planes.isEmpty else { return }
+        for anchor in planes {
+            guard anchor.alignment == .horizontal, anchor.classification == .floor,
+                  let plane = GroundPlane(worldFromPlane: anchor.transform, boundary: anchor.geometry.boundaryVertices) else {
+                groundPlanes.removeValue(forKey: anchor.identifier)
+                groundNodes.removeValue(forKey: anchor.identifier)?.removeFromParentNode()
+                continue
+            }
+            groundPlanes[anchor.identifier] = plane
+            let node = SCNNode(); node.name = "observed-horizontal-floor"
+            // Small visual offsets prevent z-fighting; placement keeps the measured height.
+            let vertices = plane.vertices.map { SCNVector3($0.x, $0.y, $0.z) }
+            let triangles = (1..<(vertices.count - 1)).flatMap { [Int32(0), Int32($0), Int32($0 + 1)] }
+            let fill = groundGeometry(vertices: vertices, indices: triangles, type: .triangles, alpha: 0.35)
+            fill.position.y = 0.002; node.addChildNode(fill)
+            let outline = vertices.indices.flatMap { [Int32($0), Int32(($0 + 1) % vertices.count)] }
+            let border = groundGeometry(vertices: vertices, indices: outline, type: .line, alpha: 0.85)
+            border.position.y = 0.004; node.addChildNode(border)
+            let grid = plane.gridLines().map { SCNVector3($0.x, $0.y, $0.z) }
+            if !grid.isEmpty {
+                let lines = groundGeometry(vertices: grid, indices: grid.indices.map(Int32.init), type: .line, alpha: 0.40)
+                lines.position.y = 0.004; node.addChildNode(lines)
+            }
+            groundNodes.removeValue(forKey: anchor.identifier)?.removeFromParentNode()
+            groundNodes[anchor.identifier] = node; groundRoot.addChildNode(node)
+        }
+        if groundCount != groundPlanes.count { groundCount = groundPlanes.count }
+        updateGroundPreview()
+    }
+    private func groundGeometry(vertices: [SCNVector3], indices: [Int32], type: SCNGeometryPrimitiveType, alpha: CGFloat) -> SCNNode {
+        let geometry = SCNGeometry(sources: [SCNGeometrySource(vertices: vertices)],
+            elements: [SCNGeometryElement(indices: indices, primitiveType: type)])
+        let material = SCNMaterial()
+        material.diffuse.contents = UIColor(red: 0.20, green: 0.88, blue: 0.85, alpha: 1)
+        // Apply opacity once, so the floor stays visible over the live camera
+        // while preserving the real surface detail underneath.
+        material.transparency = alpha; material.transparencyMode = .aOne; material.blendMode = .alpha
+        material.lightingModel = .constant; material.isDoubleSided = true
+        material.readsFromDepthBuffer = true; material.writesToDepthBuffer = false
+        geometry.materials = [material]
+        let node = SCNNode(geometry: geometry); node.castsShadow = false
+        return node
     }
     // Depth is sampled in the camera's image coordinates, after undoing the UI rotation/crop.
     private func surfaceWorldPoint(at point: CGPoint? = nil) -> SIMD3<Float>? {
@@ -207,6 +305,7 @@ final class ARController: NSObject, ObservableObject, @preconcurrency ARSessionD
         }
         if frame.timestamp - lastStatusTime > 0.2 {
             lastStatusTime = frame.timestamp; trackingNormal = normal; depthAvailable = frame.sceneDepth != nil
+            updateGroundPreview()
             switch frame.camera.trackingState {
             case .normal: tracking = "空间定位正常"
             case .notAvailable: tracking = "空间定位不可用"
@@ -220,8 +319,23 @@ final class ARController: NSObject, ObservableObject, @preconcurrency ARSessionD
             }
         }
     }
+    func session(_ session: ARSession, didAdd anchors: [ARAnchor]) {
+        guard running else { return }
+        updateGround(anchors)
+    }
     func session(_ session: ARSession, didUpdate anchors: [ARAnchor]) {
+        guard running else { return }
+        updateGround(anchors)
         if let anchor = anchors.first(where: { $0.identifier == anchorID }) { objectRoot.simdTransform = anchor.transform }
+    }
+    func session(_ session: ARSession, didRemove anchors: [ARAnchor]) {
+        guard running else { return }
+        for anchor in anchors {
+            groundPlanes.removeValue(forKey: anchor.identifier)
+            groundNodes.removeValue(forKey: anchor.identifier)?.removeFromParentNode()
+        }
+        if groundCount != groundPlanes.count { groundCount = groundPlanes.count }
+        updateGroundPreview()
     }
     private func updateLevel(_ frame: ARFrame) {
         guard running, placed, case .normal = frame.camera.trackingState,

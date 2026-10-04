@@ -52,6 +52,7 @@ export default function TeachingDataPage({
   onAnalyzeParkingPointMerge,
   onMergeParkingPoints,
   onExportProject,
+  onExportAbxTeaching,
 }) {
   const [archiveSelection, setArchiveSelection] = useState(null);
   const coordinateFrameLabel = teachingSpaceMode === 'independent'
@@ -233,6 +234,7 @@ export default function TeachingDataPage({
                 onAnalyzeParkingPointMerge={onAnalyzeParkingPointMerge}
                 onMergeParkingPoints={onMergeParkingPoints}
                 onExportProject={onExportProject}
+                onExportAbxTeaching={onExportAbxTeaching}
                 onOpenCapturePage={onBack}
                 onSelectionChange={handleArchiveSelection}
               />

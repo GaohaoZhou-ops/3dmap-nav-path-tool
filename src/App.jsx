@@ -39,6 +39,7 @@ import TeachingDataPage from './components/TeachingDataPage.jsx';
 import TeachingPlaybackDock from './components/TeachingPlaybackDock.jsx';
 import TeachingTransferDialog from './components/TeachingTransferDialog.jsx';
 import IPadTeachingDialog from './components/IPadTeachingDialog.jsx';
+import AbxTeachingExportDialog from './components/AbxTeachingExportDialog.jsx';
 import { ipadResultTask } from './lib/ipadTeaching.js';
 import { extractTeachingWorkspace, placeTeachingWorkspace, writeBackTeachingWorkspace } from './lib/teachingTransfer.js';
 import { inspectConnectivity } from './lib/graph.js';
@@ -433,6 +434,7 @@ export default function App() {
   const parkingMergePlannerRef = useRef(null);
   const teachingCaptureBusyRef = useRef(false);
   const projectExportBusyRef = useRef(false);
+  const [abxExportSnapshot, setAbxExportSnapshot] = useState(null);
   const projectDirectoryRef = useRef(null);
   const projectDirectoryWriteChainRef = useRef(Promise.resolve());
   const projectDirectoryFailureNotifiedRef = useRef(false);
@@ -3317,6 +3319,41 @@ export default function App() {
     [jointPoses, notify, robotLoadState.movableJoints, robotLoadState.status, selectedRobot],
   );
 
+  const currentExportPayload = () => buildExport({
+    transfer: workspaceTransfer,
+    directoryAutosaveSuspended,
+    mapData,
+    teachingSpaceMode,
+    heightRange,
+    waypoints,
+    edges,
+    view2d: view2dRef.current,
+    view3d: view3dRef.current,
+    robot: selectedRobot,
+    robotPose,
+    robotJointValues,
+    lockedRobotJointNames,
+    robotHeightLocked,
+    teachingTasks,
+    jointPoses,
+    meshRenderQuality,
+    pointColorMode,
+    showWaypoints3D,
+    activeTeachingTaskId,
+    activeTeachingParkingPointId,
+    collapsedPanel,
+    inspectorCollapsed,
+  });
+
+  const openAbxTeachingExport = () => {
+    if (teachingSpaceMode !== 'map') {
+      notify('请先将独立示教转换到地图示教，再导出机器人示教数据', 'warning');
+      return;
+    }
+    setAbxExportSnapshot({ payload: currentExportPayload(), robot: selectedRobot,
+      robotPackage: portableRobotPackageRef.current });
+  };
+
   const exportProject = async () => {
     if (!mapData?.geometry) {
       notify('请先加载完整地图；仅有配置元数据时无法生成便携工程包', 'error');
@@ -3343,31 +3380,7 @@ export default function App() {
     });
     notify('正在打包地图、机器人、配置与示教视觉资源…', 'info');
     try {
-      const payload = buildExport({
-        transfer: workspaceTransfer,
-        directoryAutosaveSuspended,
-        mapData,
-        teachingSpaceMode,
-        heightRange,
-        waypoints,
-        edges,
-        view2d: view2dRef.current,
-        view3d: view3dRef.current,
-        robot: selectedRobot,
-        robotPose,
-        robotJointValues,
-        lockedRobotJointNames,
-        robotHeightLocked,
-        teachingTasks,
-        jointPoses,
-        meshRenderQuality,
-        pointColorMode,
-        showWaypoints3D,
-        activeTeachingTaskId,
-        activeTeachingParkingPointId,
-        collapsedPanel,
-        inspectorCollapsed,
-      });
+      const payload = currentExportPayload();
       const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
       const { downloadProjectArchive } = await import('./lib/projectArchive.js');
       const mapResource = createGeometryCache(
@@ -4780,6 +4793,7 @@ export default function App() {
           onAnalyzeParkingPointMerge={analyzeTeachingParkingPointMerge}
           onMergeParkingPoints={mergeTeachingParkingPoints}
           onExportProject={exportProject}
+          onExportAbxTeaching={teachingSpaceMode === 'map' ? openAbxTeachingExport : undefined}
         />
 
         {loadState.loading && (
@@ -4800,6 +4814,7 @@ export default function App() {
         )}
       </div>
     )}
+    {abxExportSnapshot && <AbxTeachingExportDialog snapshot={abxExportSnapshot} onClose={() => setAbxExportSnapshot(null)} />}
     {ipadTeachingOpen && <IPadTeachingDialog mapData={mapData} onClose={() => setIPadTeachingOpen(false)} onImport={importIPadTeaching} />}
     {teachingTransferDialog && <TeachingTransferDialog
       state={teachingTransferDialog}

@@ -37,6 +37,10 @@ iPad 将电脑地址拆为 **IPv4 地址**和**端口**，无需输入 `http://`
 
 模型放置窗口提供可隐藏的**空间水平仪**：圆点表示模型基准面法线在屏幕上的倾斜方向，同时显示模型 XY 基准面与 iPad 屏幕的夹角（0° 为平行，90° 为垂直）及左右、上下角度分量。读数来自实际模型变换与相机姿态，在 iPad 本机约 10 Hz 更新，并适配横竖屏。该提示仅作参考，不自动摆正、不吸附重力方向，也不影响确认校准或记录 Pose；任意倾斜均可继续示教。尚未放置、定位不可用或会话暂停时不显示有效角度。已完成项目的纯三维回看不显示现场水平仪。
 
+放置前默认开启**地面辅助**：缓慢移动 iPad 扫描地面，LiDAR 与 ARKit 在本机识别水平地面，按检测边界显示青色半透明表面与网格。仅使用被分类为地面的水平平面，墙面、桌面、天花板及尚未分类的平面不会成为地面放置目标；倾斜面不在本次支持范围。网格通常为 25 cm，较大区域自动放宽间隔。点击或单指拖动网格，或将中心准星对准网格后点击“放置物体 / 更新位置”，将模型基准点放到该处；不会把平面无限延伸到检测边界外，放置距离限制为 0.15–6 m。未识别到地面时继续扫描，也可关闭辅助，使用原有实测表面定位。地面只辅助选取位置，不修改模型的方向和倾斜角；确认校准后自动隐藏网格，重新校准时恢复，会话暂停或重启时清除旧地面。环境构面不保存或上传，不改变已记录的 Pose。
+
+地面几何回归包含在 `npm run test:ipad:native`，真机 UI 回归为 `testGroundAssistanceControlsAndLifecycle`。已在连接的 iPad Pro 上验证地面识别、网格放置、自由倾斜、辅助开关、横竖屏布局及后台恢复；测试不确认校准、不新增 Pose。实现参考 [Apple 的 LiDAR 场景重建说明](https://developer.apple.com/documentation/arkit/visualizing-and-interacting-with-a-reconstructed-scene)与 [ARPlaneGeometry 检测边界](https://developer.apple.com/documentation/arkit/arplanegeometry)。
+
 同步前，iPad 会重新读取本地模型文件，通过局域网发送 SHA-256 与文件大小；服务端重新读取该配对任务的模型文件进行核对，一致后才上传 Pose。文件同名、大小相同也不能代替内容校验。模型缺失或内容不一致时停止同步，iPad 已有 Pose 保留，可恢复原模型后重试。电脑接收时还会核对当前独立示教物体的实际几何内容，避免导入同名的其他模型。校验只包含模型坐标、颜色与三角面，不比较两端的 Pose、文件名、工程信息或显示质量设置；电脑原有示教与 iPad 示教作为独立任务保留。
 
 电脑端把结果保存为独立 iPad 示教任务，包含每个 Pose 的名称、时间、相机位置与四元数、校准段、可用的 LiDAR 表面参考点和回看投影参数。黄色点表示 Pose，青色连线只表示记录顺序，绿色点表示表面参考点。结果随工程自动保存、JSON/ZIP 导出；示教数据页支持查看与单独导出 JSON。它们是相机参考位姿，**本阶段不求解机器人姿态或关节值**。
@@ -156,10 +160,12 @@ Server manifest 使用 SHA-256 同时绑定任务计算字段、原始地图来�
 
 导出的导航点同时包含通用的 `pose` 对象，以及兼容字段 `xzy`（`[x, z, y]`）和 `rpy`（`[roll, pitch, yaw]`）。
 
-地图示教的“导出 ZIP”还会在原有完整工程包中附加 `abx/`：`manifest.json` 使用 ABX 的 `abx-teaching-export` v1，各任务为 `tasks/*.abxteach.ndjson`（`abx-teaching-task` v11，包含正文 SHA-256 校验），并提供已有导航图的 `graph_route.geojson`、`graph_yaw.geojson` 和来源映射。解压后，在对应机器人/实例的大脑 Web“示教任务”中逐个导入 NDJSON；存储服务负责写入当前 abxpipeline 分支的真机 `teaching/<robot_id>.sqlite3` 或 Mock `simulation/<deployment_id>/teaching.sqlite3`。导出本身不修改这些工程、数据库或运行服务，不生成运动 workflow，也不安装路网。路网部署位置与限制见包内 `abx/README.txt`。
+地图示教的“示教数据 → 机器人导出”提供单独的 `robot-teaching-*.zip`，可在对应机器人/实例的大脑 Web“示教任务 → 导入”中直接选择，无需解压。包根目录的 `manifest.json` 使用 `abx-teaching-export` v1，任务为 `tasks/*.abxteach.ndjson`（`abx-teaching-task` v15），包含正文 SHA-256、停车点和 Pose 顺序、20 轴弧度关节以及 `component=auto`。ZIP 使用存储模式，兼容不提供 Deflate 解压的 WebView。导出只需读取主 URDF，不重新打包地图、mesh 或视觉资源。“导出 ZIP”仍生成完整虚拟工程备份，并附加同样的 `abx/` 数据目录；完整工程 ZIP 的根清单不同，不能直接作为大脑示教 ZIP 导入。
 
-ABX 执行依赖显式导航动作，因此导出只匹配已有导航点的 X/Y/yaw（容差 `1e-6 m` / `1e-6 rad`，允许整圈等效朝向），在停车点首个姿态和同组底盘目标变化处插入导航步骤，并检查有向可达性。不会自动连线、补反向边或将近邻停车点吸附到导航图。不能唯一匹配、型号不一致、关节缺失或存在不能表达的运动设置时，整批 ABX 任务停止生成，现有提示显示原因，ZIP 内 `abx/export-status.json` 记录原因；完整虚拟工程仍正常备份、恢复。20 个全身关节按实际 URDF 名称匹配并转成弧度，不补零；轮组由导航控制，灵巧手等超出 ABX 20 关节记录格式的关节会明确报错。
+**当前大脑的接口边界：Pose 可以直接导入；自由导航目标暂时只能随包保留，不能导入为任务内导航步骤。** 当前大脑的 `teaching_store.py` v15 仅接受 `{type: "route_navigation", node_id: "N…"}`，自由导航只提供独立的 `base-navigation/start` 接口。导入后的任务只执行 Pose，不会按导出的目标自动移动底盘。当前工程不会伪造站点、SLAM 实测定位或其他动作来绕过此限制，也不写入大脑工程或数据库。大脑侧支持自由导航示教步骤后，才能接通导航与 Pose 的任务内连续执行。
 
-ABX 导航使用平面的 X/Y/yaw；原始 Z/roll/pitch、视觉快照和路径参数保留在完整工程中。大脑/RouteServer 使用自身实例的速度、加速度配置，不能将源工程的逐边 `limits` 当作已生效的执行约束。导出的虚拟姿态不伪造实测 SLAM/里程计，参考 RGB/XYZ 不变成真实采集记录或自动拍照动作。`abx/` 仅为手动导出时的快照；修改示教后须重新导出，工程目录自动保存不会刷新 ABX 文件。独立示教导出、目录保存和原有恢复流程保持原样。
+本次仅导出自由导航目标，不依赖已有站点或连线。`free-navigation.json` 使用 `atlas-abx-free-navigation-targets` v1，明确标注 `nativeTaskNavigationSupported=false`：`waypoints` 保留全部原导航点；`tasks[].sequence` 记录停车点首个 Pose 和底盘目标变化处的 `free_navigation` 目标及后续 Pose 序号，`tasks[].parkings` 保留停车点、每个 Pose 及坐标的对应关系。目标使用 `map` 坐标系的 `x_m`、`y_m`、`yaw_rad`，yaw 归一到 `[-π, π]`；可在导出窗口预览或单独下载 `robot-free-navigation-*.json`。坐标须与机器人现场地图对齐；原始 Z/roll/pitch、路径、逐边速度约束保存在清单与 `source-mapping.json` 中，不作为已经生效的底盘执行约束。此清单是当前工程的交换格式，大脑的 ZIP 读取器目前只导入包内原生任务文件。
 
-导出适配回归：`node tests/abx_teaching_export_smoke.mjs`。该测试还会只读加载同级 ABXBrainSystem 的现有导入器和执行计划代码，在临时目录内验证导入、再导出和计划生成；可用 `ABX_BRAIN_ROOT` 指定其位置，不向运行中的大脑提交任务。
+机器人型号由实际 URDF 名称确定；20 个全身关节按名称映射并转为弧度，不补零。缺失关节、超出格式的额外关节、地图或机器人不一致、非地图坐标，以及尚未求解为机器人关节的 iPad 相机 Pose 会阻止整批机器人数据生成；完整虚拟工程备份仍可正常保存。轮组不作为上身关节执行，`parking.location=null`，不伪造实测定位；RGB/XYZ 仍为虚拟工程中的参考快照，不新增真机拍照动作。单独的机器人导入包支持 1–100 个任务；导出为当前快照，目录自动保存不会更新已经下载的文件。独立示教应先用“示教转换”放入地图坐标，再导出机器人数据。
+
+导出适配回归：`npm run test:abx`。默认只读参考 `../workspace/ABXBrainSystem`，也可用 `ABX_BRAIN_ROOT` 指定路径。测试将大脑 Python 源码原样复制到临时目录，在临时数据库验证 v15 导入、再导出、执行计划与自由导航参数校验，并用大脑原生 Web ZIP 读取器验证实际导入包。禁止临时目录外写入、服务连接及子进程，关闭 Python 字节码写入，并核对参考源码摘要；不修改 `workspace` 或向运行中的大脑提交任务。界面回归为 `tests/abx_teaching_export_ui_smoke.py`（需要 Python Playwright 与 Chrome），使用独立浏览器会话验证下载、坐标、错误处理和布局。

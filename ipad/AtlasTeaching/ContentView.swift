@@ -283,10 +283,15 @@ struct TeachingView: View {
                 if !ar.placed && ARController.supported && !completed {
                     VStack(spacing: 14) {
                         Image(systemName: "viewfinder").font(.system(size: 48, weight: .ultraLight))
-                        Text(completed ? "已完成示教，可查看已有 Pose 或同步" : "对准现场基准点，放置独立示教物体")
+                            .foregroundStyle(ar.groundAssistance && ar.groundTargetAvailable ? accent : .white)
+                        Text(ar.groundAssistance ? "扫描地面，在青色网格上放置物体" : "对准现场基准点，放置独立示教物体")
                             .font(.callout).padding(10).background(.black.opacity(0.65), in: Capsule())
                     }.allowsHitTesting(false)
-                } else if ar.placed && !completed { Image(systemName: "plus").font(.title2.weight(.ultraLight)).shadow(color: .black, radius: 2).allowsHitTesting(false) }
+                } else if ar.placed && !completed {
+                    Image(systemName: "plus").font(.title2.weight(.ultraLight))
+                        .foregroundStyle(ar.groundAssistance && ar.groundTargetAvailable ? accent : .white)
+                        .shadow(color: .black, radius: 2).allowsHitTesting(false)
+                }
                 VStack {
                     HStack {
                         Label(ar.tracking, systemImage: ar.trackingNormal ? "location.fill" : "location.slash")
@@ -302,11 +307,16 @@ struct TeachingView: View {
                         Button { displaySettingsOpen = true } label: { Label("显示设置", systemImage: "slider.horizontal.3") }
                             .buttonStyle(.bordered).accessibilityIdentifier("display-settings")
                     }.font(.caption).padding(16).background(.black.opacity(0.75))
-                    if levelVisible && ARController.supported && !completed {
+                    if ARController.supported && !completed {
                         HStack {
-                            SpatialLevelView(reading: ar.levelReading, placed: ar.placed).frame(width: 232)
+                            VStack(alignment: .leading, spacing: 10) {
+                                if !ar.calibrated { groundAssistancePanel }
+                                if levelVisible {
+                                    SpatialLevelView(reading: ar.levelReading, placed: ar.placed).allowsHitTesting(false)
+                                }
+                            }.frame(width: 232)
                             Spacer(minLength: 0)
-                        }.padding(.horizontal, 16).padding(.top, 10).allowsHitTesting(false)
+                        }.padding(.horizontal, 16).padding(.top, 10)
                     }
                     Spacer()
                     Text(!ARController.supported || completed ? "三维物体预览 · 拖动旋转 / 双指缩放视图" : ar.message).font(.callout).padding(14).background(.black.opacity(0.75), in: RoundedRectangle(cornerRadius: 10)).padding(20)
@@ -373,6 +383,24 @@ struct TeachingView: View {
             Button("继续示教", role: .cancel) {}
         }
     }
+    private var groundAssistancePanel: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Button { ar.groundAssistance.toggle() } label: {
+                    Label("地面辅助", systemImage: "square.3.layers.3d").font(.caption.weight(.semibold))
+                        .frame(minHeight: 44).contentShape(Rectangle())
+                }.buttonStyle(.plain).accessibilityHidden(true)
+                Spacer(minLength: 4)
+                Toggle("地面辅助", isOn: $ar.groundAssistance).labelsHidden().fixedSize()
+                    .tint(accent).accessibilityIdentifier("ground-assistance")
+            }
+            Text(ar.groundStatus).font(.caption).foregroundStyle(ar.groundTargetAvailable ? accent : .secondary)
+                .fixedSize(horizontal: false, vertical: true).accessibilityIdentifier("ground-status")
+            if ar.groundAssistance {
+                Text("仅水平地面 · 模型仍可自由倾斜").font(.caption2).foregroundStyle(.secondary)
+            }
+        }.padding(12).background(.black.opacity(0.75), in: RoundedRectangle(cornerRadius: 12))
+    }
     private var calibrationPanel: some View {
         VStack(alignment: .leading, spacing: 14) {
             Label(ar.calibrated ? "物体已校准" : "先校准物体", systemImage: ar.calibrated ? "checkmark.seal" : "scope").foregroundStyle(accent)
@@ -384,8 +412,10 @@ struct TeachingView: View {
                     coordinate("X", $ar.referenceX); coordinate("Y", $ar.referenceY); coordinate("Z", $ar.referenceZ)
                 }.onChange(of: ar.referenceX) { _, _ in ar.updatePlacement() }
                     .onChange(of: ar.referenceY) { _, _ in ar.updatePlacement() }.onChange(of: ar.referenceZ) { _, _ in ar.updatePlacement() }
-                Text("点击或单指拖动放置物体，双指旋转调整方向。尺寸固定为 1:1；可按现场需要倾斜放置，水平仪仅供参考。").font(.caption).foregroundStyle(.secondary)
-                Button("放置物体 / 更新位置") { ar.placeObject() }.buttonStyle(.bordered).disabled(!ar.trackingNormal)
+                Text(ar.groundAssistance ? "点击或单指拖动青色地面网格放置物体，双指旋转调整方向。尺寸固定为 1:1，模型可自由倾斜。" : "点击或单指拖动放置物体，双指旋转调整方向。尺寸固定为 1:1；可按现场需要倾斜放置，水平仪仅供参考。")
+                    .font(.caption).foregroundStyle(.secondary)
+                Button("放置物体 / 更新位置") { ar.placeObject() }.buttonStyle(.bordered)
+                    .disabled(!ar.trackingNormal || (ar.groundAssistance && !ar.groundTargetAvailable))
                     .accessibilityIdentifier("place-model")
                 HStack { Text("方向"); Spacer(); Text("\(ar.yaw, specifier: "%.1f")°").monospacedDigit() }.font(.caption)
                 Slider(value: $ar.yaw, in: -180...180).onChange(of: ar.yaw) { _, _ in ar.updatePlacement() }

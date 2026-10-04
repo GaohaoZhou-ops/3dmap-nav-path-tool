@@ -87,6 +87,10 @@ playwright/.auth/
 /ipad/atlas-ipad-*-shots/
 /ipad/atlas-ipad-*-shots-[0-9]*/
 
+# ABX contract-test source copies, temporary imports and UI captures
+/atlas-abx-export-*/
+/atlas-abx-ui-*/
+
 # Python bytecode, environments, and test caches
 __pycache__/
 *.py[cod]
@@ -202,6 +206,12 @@ recovered-projects/
 # Exported teaching archives and parking-merge jobs/results
 virtual-teaching-*.zip
 virtual-teaching-*.json
+robot-teaching-*.zip
+robot-free-navigation-*.json
+/robot-teaching-*/
+*.abxteach.ndjson
+!tests/fixtures/**/*.abxteach.ndjson
+!ipad/Tests/Fixtures/**/*.abxteach.ndjson
 /virtual-teaching-*/
 parking-merge-server-*.zip
 parking-merge-server-*/

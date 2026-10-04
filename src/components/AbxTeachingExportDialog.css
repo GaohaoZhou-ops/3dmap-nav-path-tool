@@ -1,0 +1,32 @@
+.abx-export-modal { position: fixed; inset: 0; z-index: 560; display: grid; place-items: center; padding: 20px; background: #02080bd9; backdrop-filter: blur(8px); }
+.abx-export-dialog { width: min(780px, 100%); max-height: calc(100dvh - 40px); display: flex; flex-direction: column; color: var(--text); background: #0b161c; border: 1px solid var(--line-strong); border-radius: 12px; box-shadow: 0 24px 90px #0008; outline: none; }
+.abx-export-dialog > header { display: flex; align-items: center; gap: 16px; padding: 22px 26px; border-bottom: 1px solid var(--line); color: var(--cyan); }
+.abx-export-dialog > header > div { flex: 1; }
+.abx-export-dialog h2 { font-size: 20px; font-weight: 500; margin: 5px 0 0; color: var(--text); }
+.abx-export-dialog header small { font: 9px Menlo, monospace; letter-spacing: 1.5px; }
+.abx-export-dialog button { display: inline-flex; align-items: center; justify-content: center; gap: 7px; padding: 9px 12px; border: 1px solid var(--line-strong); border-radius: 5px; background: #102129; color: var(--text); font-size: 12px; cursor: pointer; }
+.abx-export-dialog button:focus-visible { outline: 2px solid var(--cyan); outline-offset: 3px; }
+.abx-export-dialog button:disabled { opacity: .4; cursor: default; }
+.abx-export-body { overflow: auto; padding: 0 26px 24px; }
+.abx-export-map { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; padding: 17px 0; font-size: 12px; color: var(--muted); }
+.abx-export-map strong { color: var(--text); overflow-wrap: anywhere; }
+.abx-export-map span { margin-left: auto; font: 10px Menlo, monospace; }
+.abx-export-notice { padding: 15px 18px; border: 1px solid #c49b4e55; border-radius: 7px; background: #a87c1710; font-size: 12px; line-height: 1.85; }
+.abx-export-notice strong { color: var(--amber); font-weight: 500; }
+.abx-export-notice p { margin: 6px 0 0; color: var(--muted); }
+.abx-export-counts { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin: 24px 0 16px; }
+.abx-export-counts dt { font-size: 11px; color: var(--muted); }
+.abx-export-counts dd { margin: 6px 0 0; font: 28px Menlo, monospace; }
+.abx-export-description, .abx-export-targets p { font-size: 11px; color: var(--muted); line-height: 1.8; }
+.abx-export-targets { overflow-x: auto; margin-top: 15px; }
+.abx-export-targets table { width: 100%; border-collapse: collapse; font-size: 11px; }
+.abx-export-targets th, .abx-export-targets td { padding: 10px 7px; border-bottom: 1px solid var(--line); text-align: right; font-family: Menlo, monospace; }
+.abx-export-targets th { font-weight: 400; color: var(--muted); }
+.abx-export-targets th:first-child, .abx-export-targets td:first-child { text-align: left; max-width: 230px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-family: inherit; }
+.abx-export-loading { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 12px; padding: 24px 0 0; }
+.abx-export-error { color: var(--red); font-size: 12px; line-height: 1.8; margin: 20px 0 0; }
+.abx-export-dialog footer { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; padding: 16px 26px; border-top: 1px solid var(--line); }
+.abx-export-dialog footer > span { flex: 1; color: var(--muted); font-size: 10px; }
+.abx-export-dialog footer > div { display: flex; flex-wrap: wrap; gap: 8px; }
+.abx-export-dialog .abx-export-primary { background: #14363e; border-color: #59dbe854; color: #a5f0f6; }
+@media (max-width: 580px) { .abx-export-modal { padding: 10px; }.abx-export-counts { grid-template-columns: repeat(2, 1fr); }.abx-export-dialog header small { font-size: 8px; letter-spacing: 0; }.abx-export-dialog > header, .abx-export-body, .abx-export-dialog footer { padding-left: 16px; padding-right: 16px; } }

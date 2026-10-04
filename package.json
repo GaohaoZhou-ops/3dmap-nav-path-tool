@@ -8,6 +8,7 @@
     "build": "vite build",
     "test:archive": "node tests/project_archive_smoke.mjs",
     "test:directory": "node tests/project_directory_smoke.mjs",
+    "test:abx": "node tests/abx_teaching_export_smoke.mjs",
     "test:ipad": "node tests/ipad_teaching_smoke.mjs && node tests/ipad_pairing_codes_smoke.mjs",
     "test:ipad:native": "node tests/ipad_native_lan_smoke.mjs",
     "test:ipad:qr": "node tests/ipad_qr_pairing_smoke.mjs",

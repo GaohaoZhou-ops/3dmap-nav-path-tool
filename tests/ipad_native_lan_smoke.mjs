@@ -1,11 +1,12 @@
 import { createServer } from 'node:http';
 import assert from 'node:assert/strict';
-import { mkdtemp, writeFile, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { BufferGeometry, Float32BufferAttribute } from 'three';
 import { packIPadModel } from '../src/lib/ipadTeaching.js';
+import { validateIPadResult } from '../src/lib/ipadProtocol.js';
 import { createIPadTeachingService } from '../src/server/ipadTeachingService.js';
 
 const directory = await mkdtemp(path.join(tmpdir(), 'atlas-native-ipad-'));
@@ -24,6 +25,13 @@ const run = (cmd, args) => new Promise((resolve, reject) => {
   child.on('error', reject); child.on('exit', (code) => code === 0 ? resolve() : reject(new Error(`Exit ${code}`)));
 });
 try {
+  const coordinatesBinary = path.join(directory, 'coordinates-test');
+  const coordinatesResult = path.join(directory, 'coordinates-result.json');
+  await run('xcrun', ['swiftc', 'ipad/AtlasTeaching/TeachingModels.swift', 'ipad/Tests/main.swift', '-o', coordinatesBinary]);
+  await run(coordinatesBinary, [coordinatesResult]);
+  const tiltedResult = JSON.parse(await readFile(coordinatesResult, 'utf8'));
+  assert.doesNotThrow(() => validateIPadResult(tiltedResult, { modelHash: tiltedResult.modelHash }, tiltedResult.sessionId),
+    'the server accepts native Pose data with arbitrary model tilt');
   const geometryBinary = path.join(directory, 'geometry-test');
   await run('xcrun', ['swiftc', '-parse-as-library', 'ipad/AtlasTeaching/TeachingModels.swift',
     'ipad/AtlasTeaching/ModelGeometry.swift', 'ipad/Tests/GeometryTests.swift', '-o', geometryBinary]);

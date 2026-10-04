@@ -11,6 +11,9 @@ final class ARController: NSObject, ObservableObject, @preconcurrency ARSessionD
     @Published var placed = false
     @Published var calibrated = false
     @Published var yaw: Float = 0
+    @Published var roll: Float = 0
+    @Published var pitch: Float = 0
+    @Published private(set) var levelReading: SpatialLevelReading?
     @Published var referenceX: Float = 0
     @Published var referenceY: Float = 0
     @Published var referenceZ: Float = 0
@@ -24,6 +27,8 @@ final class ARController: NSObject, ObservableObject, @preconcurrency ARSessionD
     private var anchorID: UUID?
     private var gestureYaw: Float = 0
     private var lastStatusTime: TimeInterval = 0
+    private var lastLevelTime: TimeInterval = 0
+    private var running = false
     var onSample: ((TeachingSample) -> Void)?
     var onCalibration: ((Calibration) -> Void)?
     static var supported: Bool {
@@ -51,7 +56,7 @@ final class ARController: NSObject, ObservableObject, @preconcurrency ARSessionD
         if let bounds = manifest.bounds {
             referenceX = (bounds.min.x + bounds.max.x) / 2; referenceY = (bounds.min.y + bounds.max.y) / 2; referenceZ = bounds.min.z
         }
-        yaw = 0; hitPoint = nil; placed = false; calibrated = false; segmentID = nil; anchorID = nil
+        yaw = 0; roll = 0; pitch = 0; hitPoint = nil; placed = false; calibrated = false; segmentID = nil; anchorID = nil
         objectRoot.isHidden = true
         // Keep manual waypoints visible without constructing thousands of SceneKit nodes.
         refreshMarkers(samples)
@@ -69,10 +74,11 @@ final class ARController: NSObject, ObservableObject, @preconcurrency ARSessionD
         config.sceneReconstruction = .mesh
         config.frameSemantics = .sceneDepth
         if ARWorldTrackingConfiguration.supportsFrameSemantics(.smoothedSceneDepth) { config.frameSemantics.insert(.smoothedSceneDepth) }
+        running = true
         view.session.run(config, options: [.resetTracking, .removeExistingAnchors])
         beginCalibration(); tracking = "正在建立空间定位"
     }
-    func stop() { view.session.pause(); trackingNormal = false }
+    func stop() { running = false; view.session.pause(); trackingNormal = false; levelReading = nil; lastLevelTime = 0 }
     func suspend() { stop(); calibrated = false; objectRoot.isHidden = true; placed = false; hitPoint = nil; segmentID = nil }
     func beginCalibration() {
         calibrated = false; segmentID = nil
@@ -84,7 +90,7 @@ final class ARController: NSObject, ObservableObject, @preconcurrency ARSessionD
     func placeObject(at point: CGPoint? = nil) {
         guard trackingNormal, !calibrated, let hit = surfaceWorldPoint(at: point) else { message = "尚未测到可靠表面，请缓慢移动或靠近后重试"; return }
         hitPoint = hit; placed = true; updatePlacement()
-        message = "旋转物体，让模型与现场方向一致；检查实际尺寸后确认校准"
+        message = "调整物体的方向与倾斜，使模型与现场一致；水平仪仅供参考"
     }
     @objc private func tapToPlace(_ gesture: UITapGestureRecognizer) { if !calibrated { placeObject(at: gesture.location(in: view)) } }
     @objc private func dragToPlace(_ gesture: UIPanGestureRecognizer) {
@@ -102,14 +108,17 @@ final class ARController: NSObject, ObservableObject, @preconcurrency ARSessionD
     }
     func updatePlacement() {
         guard !calibrated, let hitPoint else { return }
-        guard referenceX.isFinite, referenceY.isFinite, referenceZ.isFinite, yaw.isFinite else { return }
-        objectRoot.simdTransform = TeachingCoordinates.placement(hit: hitPoint, reference: reference, yaw: yaw)
+        guard referenceX.isFinite, referenceY.isFinite, referenceZ.isFinite, yaw.isFinite, roll.isFinite, pitch.isFinite else { return }
+        objectRoot.simdTransform = TeachingCoordinates.placement(hit: hitPoint, reference: reference, yaw: yaw, roll: roll, pitch: pitch)
         objectRoot.isHidden = false
+        if let frame = view.session.currentFrame { updateLevel(frame) }
     }
     func confirmCalibration() {
-        guard placed, trackingNormal, !calibrated, referenceX.isFinite, referenceY.isFinite, referenceZ.isFinite else { return }
+        guard placed, trackingNormal, !calibrated, referenceX.isFinite, referenceY.isFinite, referenceZ.isFinite,
+              yaw.isFinite, roll.isFinite, pitch.isFinite else { return }
         updatePlacement()
-        let calibration = Calibration(worldFromModel: objectRoot.simdTransform.elements, referencePoint: Point3(reference), yawDegrees: yaw)
+        let calibration = Calibration(worldFromModel: objectRoot.simdTransform.elements, referencePoint: Point3(reference),
+            yawDegrees: yaw, rollDegrees: roll, pitchDegrees: pitch)
         segmentID = calibration.id
         let anchor = ARAnchor(name: "Atlas independent object", transform: objectRoot.simdTransform)
         anchorID = anchor.identifier; view.session.add(anchor: anchor)
@@ -186,10 +195,15 @@ final class ARController: NSObject, ObservableObject, @preconcurrency ARSessionD
         return nil
     }
     func session(_ session: ARSession, didUpdate frame: ARFrame) {
+        guard running else { return }
         let normal: Bool
         switch frame.camera.trackingState {
         case .normal: normal = true
         default: normal = false
+        }
+        if !normal { levelReading = nil }
+        else if frame.timestamp - lastLevelTime >= 0.1 {
+            lastLevelTime = frame.timestamp; updateLevel(frame)
         }
         if frame.timestamp - lastStatusTime > 0.2 {
             lastStatusTime = frame.timestamp; trackingNormal = normal; depthAvailable = frame.sceneDepth != nil
@@ -208,6 +222,16 @@ final class ARController: NSObject, ObservableObject, @preconcurrency ARSessionD
     }
     func session(_ session: ARSession, didUpdate anchors: [ARAnchor]) {
         if let anchor = anchors.first(where: { $0.identifier == anchorID }) { objectRoot.simdTransform = anchor.transform }
+    }
+    private func updateLevel(_ frame: ARFrame) {
+        guard running, placed, case .normal = frame.camera.trackingState,
+              let orientation = view.window?.windowScene?.interfaceOrientation, orientation != .unknown else {
+            levelReading = nil; return
+        }
+        // viewMatrix(for:) includes portrait/landscape rotation, so the dial's
+        // left/right and up/down follow the visible screen rather than the camera sensor.
+        levelReading = SpatialLevelReading.measure(worldFromModel: objectRoot.simdTransform,
+            screenFromWorld: frame.camera.viewMatrix(for: orientation))
     }
     func sessionWasInterrupted(_ session: ARSession) {
         suspend(); message = "相机会话已中断。返回现场后重新校准，已有示教点保留"

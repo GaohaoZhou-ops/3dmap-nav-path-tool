@@ -32,6 +32,7 @@ xcuserdata/
 *.xcscmblueprint
 *.xcarchive/
 *.app/
+*.xctest/
 *.ipa
 *.dSYM/
 *.dSYM.zip
@@ -80,8 +81,11 @@ playwright/.auth/
 /atlas-ipad-*.mp4
 
 # xcresulttool exports UUID-named images, recordings, snapshots and a manifest.
+# Include numbered retry folders such as atlas-ipad-level-shots-2.
 /atlas-ipad-*-shots/
+/atlas-ipad-*-shots-[0-9]*/
 /ipad/atlas-ipad-*-shots/
+/ipad/atlas-ipad-*-shots-[0-9]*/
 
 # Python bytecode, environments, and test caches
 __pycache__/

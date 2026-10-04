@@ -260,6 +260,81 @@ final class AtlasTeachingUITests: XCTestCase {
         XCUIDevice.shared.orientation = .landscapeLeft
     }
 
+    func testSpatialLevelReferenceAndFreePlacement() throws {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        XCUIDevice.shared.orientation = .landscapeLeft
+        defer { XCUIDevice.shared.orientation = .landscapeLeft }
+        app.launch()
+        let project = ProcessInfo.processInfo.environment["ATLAS_HARDWARE_SESSION"].map {
+            app.buttons["local-project-\($0)"]
+        } ?? app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "local-project-")).firstMatch
+        guard project.waitForExistence(timeout: 15) else { throw XCTSkip("Requires a locally received model on a LiDAR iPad") }
+        project.tap()
+        let capture = app.buttons["capture-pose"]
+        XCTAssertTrue(capture.waitForExistence(timeout: 60), app.debugDescription)
+        let angle = app.staticTexts["spatial-level-angle"]
+        XCTAssertTrue(angle.waitForExistence(timeout: 15))
+        XCTAssertEqual(angle.label, "—", "No angle is invented before the model is placed")
+        XCTAssertFalse(capture.isEnabled)
+        let toggle = app.buttons["toggle-spatial-level"]
+        for orientation in [UIDeviceOrientation.landscapeLeft, .portrait] {
+            XCUIDevice.shared.orientation = orientation
+            let rotated = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+                let window = app.windows.firstMatch.frame
+                return orientation.isLandscape ? window.width > window.height : window.height > window.width
+            }, object: nil)
+            XCTAssertEqual(XCTWaiter.wait(for: [rotated], timeout: 10), .completed)
+            let window = app.windows.firstMatch.frame
+            XCTAssertTrue(window.contains(app.otherElements["spatial-level"].frame))
+            XCTAssertTrue(window.contains(toggle.frame))
+            toggle.tap(); XCTAssertFalse(angle.exists)
+            toggle.tap(); XCTAssertTrue(angle.waitForExistence(timeout: 5))
+            let screenshot = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+            screenshot.name = orientation.isLandscape ? "Spatial level landscape" : "Spatial level portrait"
+            screenshot.lifetime = .keepAlways; add(screenshot)
+        }
+        XCUIDevice.shared.orientation = .landscapeLeft
+        app.buttons["model-tilt-controls"].tap()
+        let pitch = app.sliders["model-pitch"], roll = app.sliders["model-roll"]
+        XCTAssertTrue(pitch.waitForExistence(timeout: 5), app.debugDescription)
+        pitch.adjust(toNormalizedSliderPosition: 0.6)
+        roll.adjust(toNormalizedSliderPosition: 0.4)
+        XCTAssertNotEqual(app.staticTexts["model-pitch-value"].label, "0.0°")
+        XCTAssertNotEqual(app.staticTexts["model-roll-value"].label, "0.0°")
+        XCTAssertFalse(capture.isEnabled, "The reference aid never calibrates or records automatically")
+        let place = app.buttons["place-model"]
+        let tracked = XCTNSPredicateExpectation(predicate: NSPredicate(format: "enabled == true"), object: place)
+        guard XCTWaiter.wait(for: [tracked], timeout: 30) == .completed else {
+            app.buttons["本地项目"].tap()
+            throw XCTSkip("Reference UI passed; live placement requires normal AR tracking")
+        }
+        place.tap()
+        let measured = XCTNSPredicateExpectation(predicate: NSPredicate(format: "label != %@", "—"), object: angle)
+        guard XCTWaiter.wait(for: [measured], timeout: 10) == .completed else {
+            app.buttons["本地项目"].tap()
+            throw XCTSkip("Reference UI passed; live placement requires an observed surface within LiDAR range")
+        }
+        let confirm = app.buttons["confirm-model-calibration"]
+        let ready = XCTNSPredicateExpectation(predicate: NSPredicate(format: "enabled == true"), object: confirm)
+        XCTAssertEqual(XCTWaiter.wait(for: [ready], timeout: 30), .completed,
+            "Tilted placement can be confirmed without seeking a level angle")
+        let value = Float(angle.label.replacingOccurrences(of: "°", with: ""))
+        XCTAssertNotNil(value); XCTAssertTrue((0...90).contains(value ?? -1))
+        toggle.tap(); XCTAssertTrue(confirm.isEnabled, "Hiding the reference does not change calibration eligibility")
+        toggle.tap()
+        let screenshot = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+        screenshot.name = "Live spatial level with freely tilted model"; screenshot.lifetime = .keepAlways; add(screenshot)
+        XCUIDevice.shared.press(.home); app.activate()
+        let reset = XCTNSPredicateExpectation(predicate: NSPredicate(format: "label == %@", "—"), object: angle)
+        XCTAssertEqual(XCTWaiter.wait(for: [reset], timeout: 10), .completed,
+            "Returning from a paused session must not show an old angle")
+        XCTAssertFalse(capture.isEnabled)
+        XCTAssertFalse(confirm.isEnabled)
+        // Exit without confirming calibration or creating a Pose in the user's draft.
+        app.buttons["本地项目"].tap()
+    }
+
     func testHardwareLANAndLiDAR() throws {
         let environment = ProcessInfo.processInfo.environment
         guard let address = environment["ATLAS_HARDWARE_ADDRESS"],

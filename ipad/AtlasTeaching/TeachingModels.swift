@@ -107,6 +107,8 @@ struct Calibration: Codable, Identifiable {
     var worldFromModel: [Float]
     var referencePoint: Point3
     var yawDegrees: Float
+    var rollDegrees: Float? = nil
+    var pitchDegrees: Float? = nil
 }
 struct TeachingSample: Codable, Identifiable {
     var id = UUID().uuidString
@@ -180,14 +182,34 @@ extension simd_float4x4 {
     var translation: SIMD3<Float> { SIMD3(columns.3.x, columns.3.y, columns.3.z) }
 }
 
+// A read-only comparison of the model's XY reference plane and the iPad screen.
+// It uses the displayed camera basis, never gravity or a required target angle.
+struct SpatialLevelReading: Equatable {
+    let normalInScreen: SIMD3<Float>
+    var planeDegrees: Float { atan2(simd_length(SIMD2(normalInScreen.x, normalInScreen.y)), abs(normalInScreen.z)) * 180 / .pi }
+    var horizontalDegrees: Float { atan2(normalInScreen.x, simd_length(SIMD2(normalInScreen.y, normalInScreen.z))) * 180 / .pi }
+    var verticalDegrees: Float { atan2(normalInScreen.y, simd_length(SIMD2(normalInScreen.x, normalInScreen.z))) * 180 / .pi }
+
+    static func measure(worldFromModel: simd_float4x4, screenFromWorld: simd_float4x4) -> SpatialLevelReading? {
+        let modelZ = worldFromModel.columns.2
+        let vector = screenFromWorld * SIMD4(modelZ.x, modelZ.y, modelZ.z, 0)
+        let normal = SIMD3(vector.x, vector.y, vector.z), length = simd_length(normal)
+        guard normal.x.isFinite, normal.y.isFinite, normal.z.isFinite, length.isFinite, length > 0.000001 else { return nil }
+        return SpatialLevelReading(normalInScreen: normal / length)
+    }
+}
+
 enum TeachingCoordinates {
     // Model: right-handed Z up. ARKit world: right-handed Y up.
     static let zUpToAR = simd_float4x4(columns: (
         SIMD4(1, 0, 0, 0), SIMD4(0, 0, -1, 0), SIMD4(0, 1, 0, 0), SIMD4(0, 0, 0, 1)))
     // AR camera looks along -Z with +Y up. Optical camera looks along +Z with +Y down.
     static let opticalToARCamera = simd_float4x4(diagonal: SIMD4(1, -1, -1, 1))
-    static func placement(hit: SIMD3<Float>, reference: SIMD3<Float>, yaw: Float) -> simd_float4x4 {
-        var worldFromModel = zUpToAR * simd_float4x4(simd_quatf(angle: yaw * .pi / 180, axis: SIMD3(0, 0, 1)))
+    static func placement(hit: SIMD3<Float>, reference: SIMD3<Float>, yaw: Float, roll: Float = 0, pitch: Float = 0) -> simd_float4x4 {
+        let rotation = simd_quatf(angle: yaw * .pi / 180, axis: SIMD3<Float>(0, 0, 1))
+            * simd_quatf(angle: pitch * .pi / 180, axis: SIMD3<Float>(0, 1, 0))
+            * simd_quatf(angle: roll * .pi / 180, axis: SIMD3<Float>(1, 0, 0))
+        var worldFromModel = zUpToAR * simd_float4x4(rotation)
         let offset = worldFromModel * SIMD4(reference, 0)
         worldFromModel.columns.3 = SIMD4(hit, 1) - offset
         return worldFromModel

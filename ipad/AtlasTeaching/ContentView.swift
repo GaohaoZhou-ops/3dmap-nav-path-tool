@@ -266,6 +266,8 @@ struct TeachingView: View {
     @State private var review = false
     @State private var finishing = false
     @State private var displaySettingsOpen = false
+    @State private var levelVisible = true
+    @State private var tiltControlsOpen = false
     let projectID: String
     let geometry: ModelGeometry
     private var completed: Bool { session.current?.result.completedAt != nil }
@@ -291,9 +293,21 @@ struct TeachingView: View {
                             .foregroundStyle(ar.trackingNormal ? accent : .orange)
                         Spacer()
                         Text(ar.depthAvailable ? "LiDAR 已就绪" : "等待 LiDAR").foregroundStyle(.secondary)
+                        if ARController.supported && !completed {
+                            Button { levelVisible.toggle() } label: { Image(systemName: "scope") }
+                                .buttonStyle(.bordered).tint(levelVisible ? accent : .secondary)
+                                .accessibilityLabel(levelVisible ? "隐藏水平仪" : "显示水平仪")
+                                .accessibilityIdentifier("toggle-spatial-level")
+                        }
                         Button { displaySettingsOpen = true } label: { Label("显示设置", systemImage: "slider.horizontal.3") }
                             .buttonStyle(.bordered).accessibilityIdentifier("display-settings")
                     }.font(.caption).padding(16).background(.black.opacity(0.75))
+                    if levelVisible && ARController.supported && !completed {
+                        HStack {
+                            SpatialLevelView(reading: ar.levelReading, placed: ar.placed).frame(width: 232)
+                            Spacer(minLength: 0)
+                        }.padding(.horizontal, 16).padding(.top, 10).allowsHitTesting(false)
+                    }
                     Spacer()
                     Text(!ARController.supported || completed ? "三维物体预览 · 拖动旋转 / 双指缩放视图" : ar.message).font(.callout).padding(14).background(.black.opacity(0.75), in: RoundedRectangle(cornerRadius: 10)).padding(20)
                 }
@@ -370,12 +384,35 @@ struct TeachingView: View {
                     coordinate("X", $ar.referenceX); coordinate("Y", $ar.referenceY); coordinate("Z", $ar.referenceZ)
                 }.onChange(of: ar.referenceX) { _, _ in ar.updatePlacement() }
                     .onChange(of: ar.referenceY) { _, _ in ar.updatePlacement() }.onChange(of: ar.referenceZ) { _, _ in ar.updatePlacement() }
-                Text("点击或单指拖动放置物体，双指旋转调整方向。尺寸固定为 1:1。基准点应对应现场同一点，模型 Z 轴向上。").font(.caption).foregroundStyle(.secondary)
+                Text("点击或单指拖动放置物体，双指旋转调整方向。尺寸固定为 1:1；可按现场需要倾斜放置，水平仪仅供参考。").font(.caption).foregroundStyle(.secondary)
                 Button("放置物体 / 更新位置") { ar.placeObject() }.buttonStyle(.bordered).disabled(!ar.trackingNormal)
+                    .accessibilityIdentifier("place-model")
                 HStack { Text("方向"); Spacer(); Text("\(ar.yaw, specifier: "%.1f")°").monospacedDigit() }.font(.caption)
                 Slider(value: $ar.yaw, in: -180...180).onChange(of: ar.yaw) { _, _ in ar.updatePlacement() }
+                Button { withAnimation { tiltControlsOpen.toggle() } } label: {
+                    HStack {
+                        Text("调整物体倾斜"); Spacer()
+                        Image(systemName: tiltControlsOpen ? "chevron.down" : "chevron.right")
+                    }.frame(minHeight: 44).contentShape(Rectangle())
+                }.buttonStyle(.plain).font(.caption).foregroundStyle(accent)
+                    .accessibilityIdentifier("model-tilt-controls")
+                    .accessibilityValue(tiltControlsOpen ? "已展开" : "已折叠")
+                if tiltControlsOpen {
+                    VStack(spacing: 10) {
+                        tiltControl("左右倾斜", angle: $ar.pitch, id: "model-pitch")
+                        tiltControl("前后倾斜", angle: $ar.roll, id: "model-roll")
+                    }.font(.caption)
+                }
                 Button("确认物体位置与方向") { ar.confirmCalibration() }.buttonStyle(.bordered).disabled(!ar.placed || !ar.trackingNormal || renderer.geometry == nil)
+                    .accessibilityIdentifier("confirm-model-calibration")
             }
+        }
+    }
+    private func tiltControl(_ label: String, angle: Binding<Float>, id: String) -> some View {
+        VStack(spacing: 4) {
+            HStack { Text(label); Spacer(); Text("\(angle.wrappedValue, specifier: "%.1f")°").monospacedDigit().accessibilityIdentifier("\(id)-value") }
+            Slider(value: angle, in: -180...180).accessibilityLabel(label).accessibilityIdentifier(id)
+                .onChange(of: angle.wrappedValue) { _, _ in ar.updatePlacement() }
         }
     }
     private func coordinate(_ name: String, _ value: Binding<Float>) -> some View {

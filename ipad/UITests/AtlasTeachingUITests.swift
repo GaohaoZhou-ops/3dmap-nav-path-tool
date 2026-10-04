@@ -260,6 +260,197 @@ final class AtlasTeachingUITests: XCTestCase {
         XCUIDevice.shared.orientation = .landscapeLeft
     }
 
+    func testCollapsibleTeachingPanelAndFloatingPose() throws {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launch()
+        XCUIDevice.shared.orientation = .landscapeLeft
+        defer { XCUIDevice.shared.orientation = .landscapeLeft }
+        let project = ProcessInfo.processInfo.environment["ATLAS_HARDWARE_SESSION"].map {
+            app.buttons["local-project-\($0)"]
+        } ?? app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "local-project-")).firstMatch
+        guard project.waitForExistence(timeout: 15) else { throw XCTSkip("Requires a locally received model on a LiDAR iPad") }
+        project.tap()
+        let collapse = app.buttons["collapse-teaching-panel"], expand = app.buttons["expand-teaching-panel"]
+        XCTAssertTrue(collapse.waitForExistence(timeout: 15))
+        let scene = app.otherElements["teaching-viewport"], capture = app.buttons["capture-pose"]
+        guard capture.exists else { throw XCTSkip("Requires an unfinished project") }
+        let originalWidth = scene.frame.width
+        XCTAssertFalse(expand.exists)
+        XCTAssertFalse(app.otherElements["floating-pose-controls"].exists)
+        XCTAssertFalse(capture.isEnabled)
+        let maskToggle = app.switches["zivid-fov-toggle"]
+        maskToggle.tap()
+        let aperture = app.otherElements["zivid-fov-aperture"]
+        XCTAssertTrue(aperture.waitForExistence(timeout: 10))
+        let originalApertureWidth = aperture.frame.width
+
+        // Place without confirming calibration or writing a Pose. This catches
+        // accidental AR/view recreation during the layout change.
+        var placed = false, tilt = ""
+        let place = app.buttons["place-model"]
+        let floorReady = XCTNSPredicateExpectation(predicate: NSPredicate(format: "enabled == true"), object: place)
+        if XCTWaiter.wait(for: [floorReady], timeout: 10) == .completed {
+            app.buttons["model-tilt-controls"].tap()
+            app.sliders["model-pitch"].adjust(toNormalizedSliderPosition: 0.54)
+            tilt = app.staticTexts["model-pitch-value"].label
+            place.tap()
+            let ready = XCTNSPredicateExpectation(predicate: NSPredicate(format: "enabled == true"), object: app.buttons["confirm-model-calibration"])
+            placed = XCTWaiter.wait(for: [ready], timeout: 10) == .completed
+        }
+        XCTAssertTrue(collapse.isHittable, "the fixed header stays available when the panel is scrolled")
+        collapse.tap()
+        XCTAssertTrue(expand.waitForExistence(timeout: 5))
+        XCTAssertFalse(collapse.isHittable, "the retained sidebar cannot receive touches while folded")
+        XCTAssertEqual(app.buttons.matching(identifier: "capture-pose").count, 1)
+        XCTAssertTrue(app.otherElements["floating-pose-controls"].exists)
+        XCTAssertEqual(scene.frame.width, originalWidth + 340, accuracy: 2)
+        XCTAssertGreaterThan(aperture.frame.width, originalApertureWidth)
+        let count = app.staticTexts["floating-pose-count"].label
+        for orientation in [UIDeviceOrientation.landscapeLeft, .portrait] {
+            XCUIDevice.shared.orientation = orientation
+            let rotated = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+                let window = app.windows.firstMatch.frame
+                return orientation.isLandscape ? window.width > window.height : window.height > window.width
+            }, object: nil)
+            XCTAssertEqual(XCTWaiter.wait(for: [rotated], timeout: 10), .completed)
+            let window = app.windows.firstMatch.frame
+            XCTAssertEqual(scene.frame.width, window.width, accuracy: 2)
+            XCTAssertTrue(window.contains(capture.frame))
+            XCTAssertGreaterThan(capture.frame.midX, window.midX)
+            XCTAssertGreaterThan(capture.frame.midY, window.height * 0.75)
+            XCTAssertLessThan(window.maxX - capture.frame.maxX, 55)
+            XCTAssertFalse(capture.isEnabled, "collapsing cannot bypass calibration")
+            XCTAssertTrue(expand.isHittable)
+            XCTAssertEqual(app.staticTexts["floating-pose-count"].label, count)
+            XCTAssertEqual(aperture.value as? String, "完整视野")
+            let screenshot = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+            screenshot.name = "Collapsed teaching panel \(orientation.rawValue)"; screenshot.lifetime = .keepAlways; add(screenshot)
+        }
+        XCUIDevice.shared.orientation = .landscapeLeft
+        expand.tap()
+        XCTAssertTrue(collapse.waitForExistence(timeout: 5))
+        XCTAssertEqual(scene.frame.width, originalWidth, accuracy: 2)
+        XCTAssertFalse(app.otherElements["floating-pose-controls"].exists)
+        XCTAssertEqual(maskToggle.value as? String, "1", "panel visibility preserves viewfinder settings")
+        if placed {
+            let ready = XCTNSPredicateExpectation(predicate: NSPredicate(format: "enabled == true"), object: app.buttons["confirm-model-calibration"])
+            XCTAssertEqual(XCTWaiter.wait(for: [ready], timeout: 10), .completed, "placement survives collapsing and rotating")
+            XCTAssertEqual(app.staticTexts["model-pitch-value"].label, tilt)
+        }
+        collapse.tap()
+        XCUIDevice.shared.press(.home); app.activate()
+        XCTAssertTrue(expand.waitForExistence(timeout: 15))
+        XCTAssertFalse(capture.isEnabled, "resuming must still require calibration")
+        expand.tap()
+        app.buttons["本地项目"].tap()
+    }
+
+    func testLightweightOpeningAndManualQuality() throws {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launch()
+        XCUIDevice.shared.orientation = .landscapeLeft
+        let project = ProcessInfo.processInfo.environment["ATLAS_HARDWARE_SESSION"].map {
+            app.buttons["local-project-\($0)"]
+        } ?? app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "local-project-")).firstMatch
+        guard project.waitForExistence(timeout: 15) else { throw XCTSkip("Requires a locally received model") }
+        let projectID = project.identifier
+        let started = Date()
+        project.tap()
+        XCTAssertTrue(app.buttons["display-settings"].waitForExistence(timeout: 10))
+        print("Model page opened in \(Date().timeIntervalSince(started)) seconds including XCTest tap/idle overhead")
+        app.buttons["display-settings"].tap()
+        let summary = app.staticTexts["model-render-summary"]
+        XCTAssertTrue(summary.waitForExistence(timeout: 10))
+        let originalMode = app.buttons["display-mode-points"].isSelected ? "points" : "mesh"
+        XCTAssertTrue(app.buttons["point-density"].label.contains("轻量"))
+        XCTAssertTrue(app.buttons["mesh-quality"].label.contains("轻量"))
+        let mesh = app.buttons["display-mode-mesh"]
+        if mesh.isEnabled {
+            mesh.tap()
+            let ready = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+                summary.label.hasPrefix("Mesh") && !app.progressIndicators["model-render-progress"].exists
+            }, object: nil)
+            XCTAssertEqual(XCTWaiter.wait(for: [ready], timeout: 15), .completed)
+            let light = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+            light.name = "Lightweight initial Mesh"; light.lifetime = .keepAlways; add(light)
+            let total = summary.label.components(separatedBy: " / ").last!.components(separatedBy: " ").first!
+            app.buttons["mesh-quality"].tap(); app.buttons["全量"].tap()
+            waitForRenderSummary(app, label: "Mesh · \(total) / \(total) 面")
+            let full = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+            full.name = "Explicit full-quality Mesh"; full.lifetime = .keepAlways; add(full)
+        }
+        app.buttons["display-mode-points"].tap()
+        app.buttons["point-density"].tap(); app.buttons["25%"].tap()
+        let dense = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            summary.label.hasPrefix("点云") && !app.progressIndicators["model-render-progress"].exists
+        }, object: nil)
+        XCTAssertEqual(XCTWaiter.wait(for: [dense], timeout: 30), .completed)
+        app.buttons["close-display-settings"].tap()
+        XCTAssertFalse(app.buttons["capture-pose"].isEnabled, "display upgrades cannot calibrate or create poses")
+        app.buttons["本地项目"].tap()
+        let reopened = app.buttons[projectID]
+        XCTAssertTrue(reopened.waitForExistence(timeout: 10)); reopened.tap()
+        XCTAssertTrue(app.buttons["display-settings"].waitForExistence(timeout: 10))
+        app.buttons["display-settings"].tap()
+        XCTAssertTrue(app.buttons["display-mode-points"].isSelected, "opening retains the last display mode")
+        XCTAssertTrue(app.buttons["point-density"].label.contains("轻量"), "reopening must not automatically restore dense points")
+        XCTAssertTrue(app.buttons["mesh-quality"].label.contains("轻量"), "reopening must not automatically restore full Mesh")
+        app.buttons["display-mode-\(originalMode)"].tap()
+        app.buttons["close-display-settings"].tap()
+        app.buttons["本地项目"].tap()
+    }
+
+    func testZividFieldOfViewMaskAndRotation() throws {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        XCUIDevice.shared.orientation = .landscapeLeft
+        defer { XCUIDevice.shared.orientation = .landscapeLeft }
+        app.launch()
+        let project = ProcessInfo.processInfo.environment["ATLAS_HARDWARE_SESSION"].map {
+            app.buttons["local-project-\($0)"]
+        } ?? app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "local-project-")).firstMatch
+        guard project.waitForExistence(timeout: 15) else { throw XCTSkip("Requires a locally received model on a LiDAR iPad") }
+        project.tap()
+        let toggle = app.switches["zivid-fov-toggle"]
+        XCTAssertTrue(toggle.waitForExistence(timeout: 60))
+        XCTAssertEqual(toggle.value as? String, "0")
+        let aperture = app.otherElements["zivid-fov-aperture"]
+        XCTAssertFalse(aperture.exists)
+        toggle.tap()
+        XCTAssertEqual(toggle.value as? String, "1")
+        XCTAssertTrue(aperture.waitForExistence(timeout: 15))
+        let capture = app.buttons["capture-pose"]
+        XCTAssertFalse(capture.isEnabled, "a viewfinder cannot confirm calibration or create poses")
+        for orientation in [UIDeviceOrientation.landscapeLeft, .portrait, .landscapeRight] {
+            XCUIDevice.shared.orientation = orientation
+            let rotated = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+                let frame = aperture.frame
+                return frame.width > 0 && (orientation.isLandscape ? frame.width > frame.height : frame.height > frame.width)
+            }, object: nil)
+            XCTAssertEqual(XCTWaiter.wait(for: [rotated], timeout: 10), .completed)
+            XCTAssertEqual(aperture.value as? String, "完整视野", "the connected iPad camera must cover the full nominal M70 aperture")
+            XCTAssertTrue(app.windows.firstMatch.frame.contains(aperture.frame))
+            XCTAssertTrue(app.windows.firstMatch.frame.contains(toggle.frame))
+            let status = app.staticTexts["zivid-fov-status"]
+            XCTAssertTrue(status.label.contains("标称视野参考"))
+            let screenshot = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+            screenshot.name = "M70 field of view \(orientation.rawValue)"; screenshot.lifetime = .keepAlways; add(screenshot)
+        }
+        XCUIDevice.shared.orientation = .landscapeLeft
+        toggle.tap()
+        XCTAssertFalse(aperture.exists)
+        toggle.tap()
+        XCTAssertTrue(aperture.waitForExistence(timeout: 10))
+        XCUIDevice.shared.press(.home); app.activate()
+        XCTAssertTrue(toggle.waitForExistence(timeout: 15))
+        XCTAssertEqual(toggle.value as? String, "1")
+        XCTAssertTrue(aperture.waitForExistence(timeout: 15), "camera intrinsics must be refreshed after resuming")
+        XCTAssertFalse(capture.isEnabled)
+        app.buttons["本地项目"].tap()
+    }
+
     func testGroundAssistanceControlsAndLifecycle() throws {
         continueAfterFailure = false
         let app = XCUIApplication()
@@ -466,10 +657,10 @@ final class AtlasTeachingUITests: XCTestCase {
         if let vertices = environment["ATLAS_DISPLAY_VERTICES"].flatMap(Int.init),
            let faces = environment["ATLAS_DISPLAY_FACES"].flatMap(Int.init) {
             app.buttons["display-settings"].tap()
-            waitForRenderSummary(app, label: "点云 · \(Int(ceil(Double(vertices) * 0.25)).formatted()) / \(vertices.formatted()) 点")
-            XCTAssertTrue(app.buttons["point-density"].label.contains("25%"), "local display settings persist after termination")
+            waitForRenderSummary(app, label: "点云 · \(min(vertices, 50_000).formatted()) / \(vertices.formatted()) 点")
+            XCTAssertTrue(app.buttons["point-density"].label.contains("轻量"), "opening preserves point mode with a lightweight budget")
             app.buttons["display-mode-mesh"].tap()
-            waitForRenderSummary(app, label: "Mesh · \(faces.formatted()) / \(faces.formatted()) 面")
+            waitForRenderSummary(app, label: "Mesh · \(min(faces, 40_000).formatted()) / \(faces.formatted()) 面")
             app.buttons["mesh-quality"].tap(); app.buttons["自动"].tap()
             app.buttons["close-display-settings"].tap()
             XCTAssertFalse(capture.isEnabled, "display changes never calibrate or record a Pose")

@@ -34,10 +34,11 @@ enum ModelDisplayMode: String, Codable, CaseIterable, Identifiable {
     var label: String { self == .mesh ? "Mesh" : "点云" }
 }
 enum PointDensity: String, Codable, CaseIterable, Identifiable {
-    case automatic, five, ten, quarter, half, full
+    case preview, automatic, five, ten, quarter, half, full
     var id: String { rawValue }
     var label: String {
         switch self {
+        case .preview: return "轻量"
         case .automatic: return "自动"
         case .five: return "5%"
         case .ten: return "10%"
@@ -49,6 +50,7 @@ enum PointDensity: String, Codable, CaseIterable, Identifiable {
     func count(for vertices: Int) -> Int {
         let ratio: Double
         switch self {
+        case .preview: return min(vertices, 50_000)
         case .automatic: return min(vertices, 250_000)
         case .five: ratio = 0.05
         case .ten: ratio = 0.1
@@ -60,10 +62,11 @@ enum PointDensity: String, Codable, CaseIterable, Identifiable {
     }
 }
 enum MeshQuality: String, Codable, CaseIterable, Identifiable {
-    case automatic, performance, balanced, detail, full
+    case preview, automatic, performance, balanced, detail, full
     var id: String { rawValue }
     var label: String {
         switch self {
+        case .preview: return "轻量"
         case .automatic: return "自动"
         case .performance: return "流畅"
         case .balanced: return "均衡"
@@ -73,6 +76,7 @@ enum MeshQuality: String, Codable, CaseIterable, Identifiable {
     }
     func count(for faces: Int) -> Int {
         switch self {
+        case .preview: return min(faces, 40_000)
         case .automatic: return faces <= 1_500_000 ? faces : min(faces, 650_000)
         case .performance: return min(faces, 180_000)
         case .balanced: return min(faces, 650_000)
@@ -85,6 +89,9 @@ struct ModelDisplaySettings: Codable, Equatable {
     var mode = ModelDisplayMode.mesh
     var pointDensity = PointDensity.automatic
     var meshQuality = MeshQuality.automatic
+    func forOpening() -> Self {
+        Self(mode: mode, pointDensity: .preview, meshQuality: .preview)
+    }
 }
 
 struct Point3: Codable {

@@ -36,6 +36,10 @@ try {
   await run('xcrun', ['swiftc', '-parse-as-library', 'ipad/AtlasTeaching/TeachingModels.swift',
     'ipad/AtlasTeaching/GroundPlane.swift', 'ipad/Tests/GroundPlaneTests.swift', '-o', groundBinary]);
   await run(groundBinary, []);
+  const fieldOfViewBinary = path.join(directory, 'field-of-view-test');
+  await run('xcrun', ['swiftc', '-parse-as-library', 'ipad/AtlasTeaching/ZividFieldOfView.swift',
+    'ipad/Tests/ZividFieldOfViewTests.swift', '-o', fieldOfViewBinary]);
+  await run(fieldOfViewBinary, []);
   const geometryBinary = path.join(directory, 'geometry-test');
   await run('xcrun', ['swiftc', '-parse-as-library', 'ipad/AtlasTeaching/TeachingModels.swift',
     'ipad/AtlasTeaching/ModelGeometry.swift', 'ipad/Tests/GeometryTests.swift', '-o', geometryBinary]);

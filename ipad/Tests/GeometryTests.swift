@@ -24,8 +24,26 @@ import CryptoKit
         let digest = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
         let manifest = ModelManifest(protocol: teachingProtocol, modelHash: digest, name: "grid.ply", sourceHash: digest,
             sourceMapId: "grid", coordinateFrame: "virtual_origin", distanceUnit: "meter", verticalAxis: "Z",
-            vertices: vertices, indices: faces * 3, sampled: false, originalVertices: vertices, byteLength: data.count)
+            vertices: vertices, indices: faces * 3, sampled: false, originalVertices: vertices, byteLength: data.count,
+            bounds: ModelBounds(min: Point3(SIMD3(0, 0, -2)), max: Point3(SIMD3(449, 449, -2))))
         let model = try ModelGeometry(data: data, manifest: manifest)
+        func drawnVertexIDs(_ geometry: SCNGeometry) -> [UInt32] {
+            let positions = geometry.sources(for: .vertex)[0]
+            let ids = positions.data.withUnsafeBytes { raw in
+                (0..<positions.vectorCount).map { vertex -> UInt32 in
+                    let offset = positions.dataOffset + vertex * positions.dataStride
+                    let x = raw.loadUnaligned(fromByteOffset: offset, as: Float.self)
+                    let y = raw.loadUnaligned(fromByteOffset: offset + 4, as: Float.self)
+                    let z = raw.loadUnaligned(fromByteOffset: offset + 8, as: Float.self)
+                    precondition(x.rounded() == x && y.rounded() == y && (0...449).contains(x) && (0...449).contains(y) && z == -2,
+                        "every uploaded position is an unchanged original vertex")
+                    return UInt32(y) * UInt32(side) + UInt32(x)
+                }
+            }
+            return geometry.elements[0].data.withUnsafeBytes { raw in
+                raw.bindMemory(to: UInt32.self).map { ids[Int(UInt32(littleEndian: $0))] }
+            }
+        }
         let thumbnail = try model.makeThumbnailGeometry()
         let thumbnailPositions = thumbnail.sources(for: .vertex)[0]
         precondition(thumbnailPositions.vectorCount <= 80_000 && thumbnailPositions.data.count < data.count,
@@ -48,25 +66,51 @@ import CryptoKit
         precondition(full.elements[0].data == data.subdata(in: (32 + vertices * 16)..<data.count), "full quality retains exact source triangles")
         let reduced = try model.makeGeometry(settings: ModelDisplaySettings(meshQuality: .performance))
         precondition(reduced.elements[0].primitiveCount == 180_000, "quality changes the actual draw count")
-        func triangles(_ bytes: Data) -> [SIMD3<UInt32>] {
-            bytes.withUnsafeBytes { raw in
-                let values = raw.bindMemory(to: UInt32.self)
-                return stride(from: 0, to: values.count, by: 3).map { SIMD3(values[$0], values[$0 + 1], values[$0 + 2]) }
-            }
+        func triangles(_ geometry: SCNGeometry) -> Set<SIMD3<UInt32>> {
+            let values = drawnVertexIDs(geometry)
+            return Set(stride(from: 0, to: values.count, by: 3).map { SIMD3(values[$0], values[$0 + 1], values[$0 + 2]) })
         }
-        let allFaces = Set(triangles(full.elements[0].data)), shownFaces = Set(triangles(reduced.elements[0].data))
+        let allFaces = triangles(full), shownFaces = triangles(reduced)
         precondition(shownFaces.count == 180_000 && shownFaces.isSubset(of: allFaces), "reduced quality uses distinct original triangles")
+        let opening = ModelDisplaySettings(pointDensity: .full, meshQuality: .full).forOpening()
+        let light = try model.makeGeometry(settings: opening)
+        precondition(light.elements[0].primitiveCount == 40_000)
+        precondition(light.sources(for: .vertex)[0].vectorCount <= 120_000 && light.sources(for: .vertex)[0].data.count <= 3_360_000,
+                     "light Mesh uploads only its bounded selected vertex buffer")
+        precondition(light.elements.count == 2 && light.elements[1].primitiveType == .point
+                     && light.elements[1].data == light.elements[0].data && light.elements[1].primitiveCount == 120_000,
+                     "light Mesh remains recognizable by splatting the same selected corners, without additional source decoding")
+        precondition(full.elements.count == 1 && reduced.elements.count == 1, "higher quality uses only original faces")
+        let lightFaces = triangles(light)
+        precondition(lightFaces.count == 40_000 && lightFaces.isSubset(of: shownFaces), "quality upgrades retain the original triangles, winding and selection")
         let sparseSettings = ModelDisplaySettings(mode: .points, pointDensity: .five)
         let denseSettings = ModelDisplaySettings(mode: .points, pointDensity: .quarter)
         let sparse = try model.makeGeometry(settings: sparseSettings), dense = try model.makeGeometry(settings: denseSettings)
         precondition(sparse.elements[0].primitiveType == .point && sparse.elements[0].primitiveCount == 10_125)
         precondition(dense.elements[0].primitiveCount == 50_625)
-        precondition(dense.elements[0].data.starts(with: sparse.elements[0].data), "density increments keep existing points")
-        for geometry in [full, reduced, sparse, dense] {
-            let positions = geometry.sources(for: .vertex)[0]
-            precondition(positions.data == data && positions.vectorCount == vertices, "display never changes model coordinates")
+        precondition(drawnVertexIDs(dense).starts(with: drawnVertexIDs(sparse)), "density increments keep existing points after buffer compaction")
+        for geometry in [full, reduced, sparse, dense, light] {
+            _ = drawnVertexIDs(geometry)
             precondition(geometry.boundingBox.min.z == -2 && geometry.boundingBox.max.x == 449, "stable framing at every quality")
+            let colors = geometry.sources(for: .color)[0]
+            colors.data.withUnsafeBytes { raw in
+                let expectedColor: [Float] = [1, 64 / 255, 128 / 255, 1]
+                for i in 0..<colors.vectorCount {
+                    let offset = colors.dataOffset + i * colors.dataStride
+                    for (channel, expected) in expectedColor.enumerated() {
+                        let actual = raw.loadUnaligned(fromByteOffset: offset + channel * 4, as: Float.self)
+                        precondition(abs(actual - expected) < 0.00001,
+                                     "compaction must preserve each source color and alpha")
+                    }
+                }
+            }
         }
+        let pointOpening = denseSettings.forOpening()
+        precondition(pointOpening.mode == .points && pointOpening.pointDensity == .preview && pointOpening.meshQuality == .preview,
+                     "reopening retains display mode while resetting both expensive quality choices")
+        let lightPoints = try model.makeGeometry(settings: pointOpening)
+        precondition(lightPoints.elements[0].primitiveCount == 50_000 && lightPoints.sources(for: .vertex)[0].data.count <= 1_400_000,
+                     "light point clouds prepare at most 50k vertices")
         let allPoints = try model.makeGeometry(settings: ModelDisplaySettings(mode: .points, pointDensity: .full))
         let pointIDs = allPoints.elements[0].data.withUnsafeBytes { Array($0.bindMemory(to: UInt32.self)) }
         precondition(Set(pointIDs).count == vertices && pointIDs.allSatisfy { $0 < vertices }, "100% draws every point exactly once")
@@ -90,6 +134,7 @@ import CryptoKit
             words[20] = 2; words[21] = 0; words[22] = 1
         }
         var triangleManifest = manifest
+        triangleManifest.bounds = nil
         triangleManifest.vertices = 3; triangleManifest.indices = 3; triangleManifest.byteLength = triangleData.count
         triangleManifest.modelHash = SHA256.hash(data: triangleData).map { String(format: "%02x", $0) }.joined()
         let triangleThumbnail = try ModelGeometry(data: triangleData, manifest: triangleManifest).makeThumbnailGeometry()
@@ -103,6 +148,29 @@ import CryptoKit
                 "compacted preview preserves the source vertex color")
         }
 
+        var legacyManifest = manifest; legacyManifest.bounds = nil
+        let legacy = try ModelGeometry(data: data, manifest: legacyManifest)
+        precondition(legacy.minimum.z == -2 && legacy.maximum.x == 449, "files without supplied bounds still compute exact extents")
+        func rejects(_ message: String, _ operation: () throws -> Void) {
+            do { try operation(); preconditionFailure(message) } catch is TeachingError {} catch { preconditionFailure("unexpected error: \(error)") }
+        }
+        var changed = data; changed[changed.count - 1] ^= 1
+        rejects("light opening must still verify the whole file, including unrendered bytes") {
+            _ = try ModelGeometry(data: changed, manifest: manifest)
+        }
+        var invalidBounds = manifest; invalidBounds.bounds?.min.x = .infinity
+        rejects("invalid supplied bounds must be rejected") { _ = try ModelGeometry(data: data, manifest: invalidBounds) }
+        for (offset, value) in [(32, Float.nan.bitPattern), (32 + vertices * 16, UInt32(vertices))] {
+            var malformed = data
+            malformed.withUnsafeMutableBytes { $0.storeBytes(of: value.littleEndian, toByteOffset: offset, as: UInt32.self) }
+            var malformedManifest = manifest
+            malformedManifest.modelHash = SHA256.hash(data: malformed).map { String(format: "%02x", $0) }.joined()
+            let malformedModel = try ModelGeometry(data: malformed, manifest: malformedManifest)
+            for settings in [opening, ModelDisplaySettings(meshQuality: .full)] {
+                rejects("selected invalid coordinates/indices must never reach SceneKit") { _ = try malformedModel.makeGeometry(settings: settings) }
+            }
+        }
+
         let renderer = ModelRenderer()
         renderer.update(model, settings: ModelDisplaySettings(meshQuality: .full))
         renderer.update(model, settings: denseSettings)
@@ -112,6 +180,6 @@ import CryptoKit
         }
         precondition(renderer.appliedSettings == denseSettings && renderer.geometry?.elements[0].primitiveCount == 50_625, "latest selection wins over cancelled rendering")
         precondition(model.data == data && manifest.modelHash == digest, "source data remain intact")
-        print("Mesh quality, point density, compact thumbnails, original topology/coordinates, point-only compatibility and render cancellation passed.")
+        print("Lightweight opening budgets, compact GPU buffers, source topology/colors, full-file integrity, lazy validation, legacy bounds and render cancellation passed.")
     }
 }

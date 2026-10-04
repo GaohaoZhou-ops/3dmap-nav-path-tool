@@ -186,6 +186,10 @@ struct ContentView: View {
                                 Text(project.session.manifest.name).font(.headline).multilineTextAlignment(.leading).lineLimit(3)
                                 Text("\(project.result.samples.count) 个 Pose · \(project.syncedAt != nil ? "已同步" : project.result.completedAt != nil ? "已完成，待同步" : "本地草稿")")
                                     .font(.caption).foregroundStyle(.secondary)
+                                if session.openingProjectID == project.id {
+                                    ProgressView("轻量加载…").font(.caption).controlSize(.small)
+                                        .accessibilityIdentifier("opening-model-progress")
+                                }
                             }
                             Spacer(minLength: 4)
                             ProjectThumbnailView(project: project)
@@ -264,19 +268,34 @@ struct TeachingView: View {
     @State private var finishing = false
     @State private var displaySettingsOpen = false
     @State private var levelVisible = true
+    @State private var zividFieldOfViewEnabled = false
     @State private var tiltControlsOpen = false
+    @State private var sidebarCollapsed = false
     let projectID: String
     let geometry: ModelGeometry
     private var completed: Bool { session.current?.result.completedAt != nil }
     private var count: Int { session.current?.result.samples.count ?? 0 }
+    private var liveCamera: Bool { ARController.supported && !completed }
+    private var fieldOfView: ZividFieldOfView? { liveCamera ? ar.cameraFieldOfView : .modelPreview }
+    private var canRecordPose: Bool {
+        !completed && ar.calibrated && ar.trackingNormal && renderer.geometry != nil
+            && !session.busy && count < maximumSamples && session.error.isEmpty
+    }
+    private var viewportMessage: String {
+        if sidebarCollapsed && !session.error.isEmpty { return session.error }
+        if !liveCamera { return "三维物体预览 · 拖动旋转 / 双指缩放视图" }
+        if sidebarCollapsed && !ar.calibrated { return "展开面板，确认物体位置与方向后即可记录 Pose" }
+        return ar.message
+    }
 
     var body: some View {
         GeometryReader { viewport in
+        let sidebarWidth: CGFloat = sidebarCollapsed ? 0 : 340
+        let sceneWidth = max(0, viewport.size.width - sidebarWidth)
         HStack(spacing: 0) {
             ZStack {
-                if !ARController.supported || completed {
-                    ObjectPreviewView(geometry: geometry, rendered: renderer.geometry)
-                } else { ARSceneView(controller: ar) }
+                Color.black
+                modelViewport(in: CGSize(width: sceneWidth, height: viewport.size.height))
                 if !ar.placed && ARController.supported && !completed {
                     VStack(spacing: 14) {
                         Image(systemName: "viewfinder").font(.system(size: 48, weight: .ultraLight))
@@ -296,13 +315,22 @@ struct TeachingView: View {
                         Spacer()
                         Text(ar.depthAvailable ? "LiDAR 已就绪" : "等待 LiDAR").foregroundStyle(.secondary)
                         if ARController.supported && !completed {
-                            Button { levelVisible.toggle() } label: { Image(systemName: "scope") }
+                            Button { levelVisible.toggle() } label: {
+                                Image(systemName: "scope").frame(minWidth: 20, minHeight: 32)
+                            }
                                 .buttonStyle(.bordered).tint(levelVisible ? accent : .secondary)
                                 .accessibilityLabel(levelVisible ? "隐藏水平仪" : "显示水平仪")
                                 .accessibilityIdentifier("toggle-spatial-level")
                         }
-                        Button { displaySettingsOpen = true } label: { Label("显示设置", systemImage: "slider.horizontal.3") }
+                        Button { displaySettingsOpen = true } label: {
+                            Label("显示设置", systemImage: "slider.horizontal.3").frame(minWidth: 88, minHeight: 32)
+                        }
                             .buttonStyle(.bordered).accessibilityIdentifier("display-settings")
+                        if sidebarCollapsed {
+                            Button { setSidebarCollapsed(false) } label: {
+                                Label("展开面板", systemImage: "sidebar.right").frame(minWidth: 88, minHeight: 32)
+                            }.buttonStyle(.bordered).accessibilityIdentifier("expand-teaching-panel")
+                        }
                     }.font(.caption).padding(16).background(.black.opacity(0.75))
                     if ARController.supported && !completed {
                         HStack {
@@ -316,26 +344,48 @@ struct TeachingView: View {
                         }.padding(.horizontal, 16).padding(.top, 10)
                     }
                     Spacer()
-                    Text(!ARController.supported || completed ? "三维物体预览 · 拖动旋转 / 双指缩放视图" : ar.message).font(.callout).padding(14).background(.black.opacity(0.75), in: RoundedRectangle(cornerRadius: 10)).padding(20)
+                    HStack(alignment: .bottom, spacing: 16) {
+                        Text(viewportMessage).font(.callout).padding(14)
+                            .background(.black.opacity(0.75), in: RoundedRectangle(cornerRadius: 10))
+                            .frame(maxWidth: .infinity)
+                        if sidebarCollapsed && !completed {
+                            VStack(spacing: 8) {
+                                Text("\(count) 个 Pose").font(.caption.monospacedDigit()).foregroundStyle(.white)
+                                    .accessibilityIdentifier("floating-pose-count")
+                                recordPoseButton
+                            }.frame(width: 198).padding(12)
+                                .background(.black.opacity(0.8), in: RoundedRectangle(cornerRadius: 16))
+                                .overlay(RoundedRectangle(cornerRadius: 16).strokeBorder(.white.opacity(0.15)))
+                                .accessibilityElement(children: .contain).accessibilityIdentifier("floating-pose-controls")
+                        }
+                    }.padding(20)
                 }
-            }.frame(width: max(0, viewport.size.width - 340), height: viewport.size.height).clipped()
+            }.frame(width: sceneWidth, height: viewport.size.height).clipped()
+                .accessibilityElement(children: .contain).accessibilityIdentifier("teaching-viewport")
+            // Keep the scene/session and sidebar state alive; only resize the
+            // viewport. Folding the panel must never restart AR or calibration.
+            VStack(spacing: 0) {
+                HStack {
+                    Button { ar.stop(); Task { await session.close() } } label: { Label("本地项目", systemImage: "chevron.left") }.disabled(session.busy)
+                    Spacer()
+                    Button { setSidebarCollapsed(true) } label: {
+                        Label("收起", systemImage: "chevron.right").font(.caption).frame(minHeight: 32)
+                    }.buttonStyle(.bordered).accessibilityLabel("收起右侧面板")
+                        .accessibilityIdentifier("collapse-teaching-panel")
+                }.padding(.horizontal, 22).padding(.vertical, 12)
             ScrollView {
                 VStack(alignment: .leading, spacing: 19) {
-                    HStack {
-                        Button { ar.stop(); Task { await session.close() } } label: { Label("本地项目", systemImage: "chevron.left") }.disabled(session.busy)
-                        Spacer(); Text("本机运行").font(.caption).foregroundStyle(accent)
-                    }
                     Text(session.current?.session.manifest.name ?? "独立示教物体").font(.title3).lineLimit(2)
                     Text("\(count)").font(.system(size: 54, weight: .light, design: .monospaced)) + Text("  POSES").font(.caption).foregroundColor(.secondary)
+                    Text(renderer.appliedSettings.map { geometry.summary($0) } ?? "正在轻量加载模型…")
+                        .font(.caption).foregroundStyle(.secondary).accessibilityIdentifier("teaching-render-summary")
                     if session.current?.session.manifest.sampled == true { Text("大物体以抽样点云显示，尺寸与坐标不变").font(.caption).foregroundStyle(.secondary) }
+                    Divider()
+                    fieldOfViewControl
                     Divider()
                     if !completed {
                         calibrationPanel
-                        Button { ar.recordKeyframe() } label: {
-                            Label("记录 Pose", systemImage: "plus.viewfinder").font(.title3).frame(maxWidth: .infinity).padding(.vertical, 16)
-                        }.buttonStyle(.borderedProminent)
-                            .disabled(!ar.calibrated || !ar.trackingNormal || renderer.geometry == nil || session.busy || count >= maximumSamples || !session.error.isEmpty)
-                            .accessibilityIdentifier("capture-pose")
+                        if !sidebarCollapsed { recordPoseButton }
                         Text("移动到目标视角 → 记录 Pose → 调整下一个视角。每个 Pose 都会自动保存在 iPad。").font(.caption).foregroundStyle(.secondary)
                     }
                     Button { review = true } label: { Label("查看 / 编辑 Pose", systemImage: "list.bullet.rectangle").frame(maxWidth: .infinity).padding(7) }
@@ -356,7 +406,11 @@ struct TeachingView: View {
                         Button("重试保存") { Task { do { try await session.saveNow(); session.error = "" } catch { session.error = error.localizedDescription } } }
                     }
                 }.padding(22)
+            }
             }.frame(width: 340, height: viewport.size.height).background(Color(red: 0.025, green: 0.05, blue: 0.065))
+                .frame(width: sidebarWidth, alignment: .leading).clipped()
+                .opacity(sidebarCollapsed ? 0 : 1).allowsHitTesting(!sidebarCollapsed)
+                .accessibilityHidden(sidebarCollapsed)
         }
         }.task(id: projectID) {
             guard let project = session.current else { return }
@@ -378,6 +432,50 @@ struct TeachingView: View {
             Button("完成并同步到电脑") { ar.stop(); Task { await session.finish(sync: true) } }
             Button("仅完成并保存在 iPad") { ar.stop(); Task { await session.finish(sync: false) } }
             Button("继续示教", role: .cancel) {}
+        }
+    }
+    private func setSidebarCollapsed(_ collapsed: Bool) {
+        UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
+        sidebarCollapsed = collapsed
+    }
+    private var recordPoseButton: some View {
+        Button {
+            guard canRecordPose else { return }
+            ar.recordKeyframe()
+        } label: {
+            Label("记录 Pose", systemImage: "plus.viewfinder").font(.title3)
+                .frame(maxWidth: .infinity).padding(.vertical, 16)
+        }.buttonStyle(.borderedProminent).disabled(!canRecordPose)
+            .accessibilityIdentifier("capture-pose")
+    }
+    private func modelViewport(in available: CGSize) -> some View {
+        let size = zividFieldOfViewEnabled ? fieldOfView?.fittedSize(in: available) ?? available : available
+        return ZStack {
+            if liveCamera { ARSceneView(controller: ar) }
+            else { ObjectPreviewView(geometry: geometry, rendered: renderer.geometry) }
+            if zividFieldOfViewEnabled, let fieldOfView {
+                ZividFieldOfViewOverlay(fieldOfView: fieldOfView, labelAtTop: sidebarCollapsed)
+            }
+        }.frame(width: size.width, height: size.height).clipped()
+    }
+    private var fieldOfViewControl: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Button { zividFieldOfViewEnabled.toggle() } label: {
+                    Label("Zivid 2 M70 视野", systemImage: "viewfinder")
+                        .font(.subheadline).frame(minHeight: 44).contentShape(Rectangle())
+                }.buttonStyle(.plain).accessibilityHidden(true)
+                Spacer(minLength: 4)
+                Toggle("Zivid 2 M70 视野", isOn: $zividFieldOfViewEnabled).labelsHidden().fixedSize()
+                    .tint(accent).accessibilityIdentifier("zivid-fov-toggle")
+            }
+            if zividFieldOfViewEnabled {
+                Text("水平 56.6° · 垂直 35.6°").font(.caption).monospacedDigit().foregroundStyle(accent)
+                Text(fieldOfView == nil ? "正在获取相机视野…" : fieldOfView?.fullyVisible == false
+                     ? "iPad 相机视野不足，仅显示可见部分" : "阴影为视野外区域 · 标称视野参考")
+                    .font(.caption).foregroundStyle(fieldOfView?.fullyVisible == false ? .orange : .secondary)
+                    .fixedSize(horizontal: false, vertical: true).accessibilityIdentifier("zivid-fov-status")
+            }
         }
     }
     private var groundAssistancePanel: some View {
@@ -507,9 +605,9 @@ struct ModelDisplaySettingsView: View {
                     if !renderer.error.isEmpty { Text(renderer.error).foregroundStyle(.orange) }
                     Text(geometry.indices == 0
                          ? "此项目只有点云。若电脑源模型包含 Mesh，请新建传输以接收网格。"
-                         : "降低 Mesh 质量会减少显示的三角面；查看连续表面请选择「全量」。")
+                         : "轻量 Mesh 用点状轮廓辅助辨认；查看完整连续表面请选择「全量」。")
                         .font(.caption).foregroundStyle(.secondary)
-                    Text("显示设置随项目保存在 iPad。调整保留物体的实际尺寸、校准和已有 Pose。")
+                    Text("每次打开先以轻量显示：最多 5 万点或 4 万面。需要更多细节时，可手动提高质量；下次打开仍从轻量开始，保留上次的显示模式。调整保留物体的实际尺寸、校准和已有 Pose。")
                         .font(.callout).foregroundStyle(.secondary)
                 }.padding(24)
             }
@@ -530,6 +628,8 @@ struct ObjectPreviewView: UIViewRepresentable {
         let center = SCNVector3((minimum.x + maximum.x) / 2, (minimum.y + maximum.y) / 2, (minimum.z + maximum.z) / 2)
         let size = max(maximum.x - minimum.x, maximum.y - minimum.y, maximum.z - minimum.z, 0.1)
         let camera = SCNNode(); camera.camera = SCNCamera(); camera.camera?.zNear = 0.001; camera.camera?.zFar = Double(max(size * 100, 1000))
+        camera.camera?.projectionDirection = .vertical
+        camera.camera?.fieldOfView = ZividFieldOfView.previewVerticalDegrees
         camera.position = SCNVector3(center.x + size * 1.2, center.y - size * 1.8, center.z + size)
         camera.look(at: center, up: SCNVector3(0, 0, 1), localFront: SCNVector3(0, 0, -1))
         view.scene?.rootNode.addChildNode(camera); view.pointOfView = camera

@@ -86,6 +86,25 @@ playwright/.auth/
 /atlas-ipad-*-shots-[0-9]*/
 /ipad/atlas-ipad-*-shots/
 /ipad/atlas-ipad-*-shots-[0-9]*/
+/atlas-ipad-*-attachments/
+/atlas-ipad-*-attachments-[0-9]*/
+/ipad/atlas-ipad-*-attachments/
+/ipad/atlas-ipad-*-attachments-[0-9]*/
+
+# Ad-hoc device snapshots may contain local poses and pairing credentials.
+# Limit these rules to diagnostic filenames, keeping app source/fixtures visible.
+/atlas-ipad-*.json
+/atlas-ipad-*.plist
+/atlas-ipad-projects-*/
+/ipad/atlas-ipad-*.json
+/ipad/atlas-ipad-*.plist
+/ipad/atlas-ipad-projects-*/
+
+# Standalone Swift test executables produced during native iPad debugging.
+/atlas-ipad-*-test
+/atlas-ipad-*-tests
+/ipad/atlas-ipad-*-test
+/ipad/atlas-ipad-*-tests
 
 # ABX contract-test source copies, temporary imports and UI captures
 /atlas-abx-export-*/

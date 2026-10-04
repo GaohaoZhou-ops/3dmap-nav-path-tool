@@ -23,7 +23,7 @@ actor ProjectStore {
         try encoder.encode(project).write(to: file(project.id, ext: "json"), options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
     }
     func saveModel(_ data: Data, id: String) throws { try data.write(to: file(id, ext: "atls"), options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication]) }
-    func model(_ id: String) throws -> Data { try Data(contentsOf: file(id, ext: "atls")) }
+    func model(_ id: String) throws -> Data { try Data(contentsOf: file(id, ext: "atls"), options: .mappedIfSafe) }
     func modelURL(_ id: String) throws -> URL { try file(id, ext: "atls") }
     func projects() throws -> [LocalProject] {
         let files = try FileManager.default.contentsOfDirectory(at: root(), includingPropertiesForKeys: nil).filter { $0.pathExtension == "json" }

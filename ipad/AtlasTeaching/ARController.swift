@@ -14,6 +14,7 @@ final class ARController: NSObject, ObservableObject, @preconcurrency ARSessionD
     @Published var roll: Float = 0
     @Published var pitch: Float = 0
     @Published private(set) var levelReading: SpatialLevelReading?
+    @Published private(set) var cameraFieldOfView: ZividFieldOfView?
     @Published var groundAssistance = true {
         didSet {
             updateGroundPreview()
@@ -96,7 +97,7 @@ final class ARController: NSObject, ObservableObject, @preconcurrency ARSessionD
     }
     func stop() {
         running = false; view.session.pause(); trackingNormal = false; depthAvailable = false
-        levelReading = nil; lastLevelTime = 0; lastStatusTime = 0; clearGround()
+        levelReading = nil; cameraFieldOfView = nil; lastLevelTime = 0; lastStatusTime = 0; clearGround()
     }
     func suspend() { stop(); calibrated = false; objectRoot.isHidden = true; placed = false; hitPoint = nil; segmentID = nil }
     func beginCalibration() {
@@ -305,6 +306,7 @@ final class ARController: NSObject, ObservableObject, @preconcurrency ARSessionD
         }
         if frame.timestamp - lastStatusTime > 0.2 {
             lastStatusTime = frame.timestamp; trackingNormal = normal; depthAvailable = frame.sceneDepth != nil
+            updateCameraFieldOfView(frame)
             updateGroundPreview()
             switch frame.camera.trackingState {
             case .normal: tracking = "空间定位正常"
@@ -336,6 +338,18 @@ final class ARController: NSObject, ObservableObject, @preconcurrency ARSessionD
         }
         if groundCount != groundPlanes.count { groundCount = groundPlanes.count }
         updateGroundPreview()
+    }
+    private func updateCameraFieldOfView(_ frame: ARFrame) {
+        guard let orientation = view.window?.windowScene?.interfaceOrientation, orientation != .unknown else {
+            cameraFieldOfView = nil; return
+        }
+        let resolution = frame.camera.imageResolution
+        let displaySize = orientation.isPortrait ? CGSize(width: resolution.height, height: resolution.width) : resolution
+        // The enabled viewfinder fits the full camera image to this aspect. This
+        // avoids the sidebar/portrait crop cutting off M70's horizontal coverage.
+        let fieldOfView = ZividFieldOfView.project(intrinsics: frame.camera.intrinsics, resolution: resolution,
+            displayTransform: frame.displayTransform(for: orientation, viewportSize: displaySize), displaySize: displaySize)
+        if cameraFieldOfView != fieldOfView { cameraFieldOfView = fieldOfView }
     }
     private func updateLevel(_ frame: ARFrame) {
         guard running, placed, case .normal = frame.camera.trackingState,

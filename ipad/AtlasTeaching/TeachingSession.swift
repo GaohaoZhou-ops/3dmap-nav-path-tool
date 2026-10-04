@@ -6,6 +6,7 @@ final class TeachingSession: ObservableObject {
     @Published var projects: [LocalProject] = []
     @Published var current: LocalProject?
     @Published var busy = false
+    @Published private(set) var openingProjectID: String?
     @Published var error = ""
     @Published var status = ""
     @Published var serverConnection = LANAddressInput(address: UserDefaults.standard.string(forKey: "serverAddress") ?? "")
@@ -38,6 +39,7 @@ final class TeachingSession: ObservableObject {
             let existing = projects.first { $0.id == paired.id }
             var project = existing ?? LocalProject(serverURL: client.baseURL.absoluteString, session: paired,
                 result: TeachingResult(sessionId: paired.id, modelHash: paired.manifest.modelHash))
+            project.displaySettings = (project.displaySettings ?? ModelDisplaySettings()).forOpening()
             project.session = paired; project.serverURL = client.baseURL.absoluteString
             try await ProjectStore.shared.saveModel(data, id: paired.id)
             try await ProjectStore.shared.save(project)
@@ -47,11 +49,14 @@ final class TeachingSession: ObservableObject {
         } catch { self.error = "接收失败：\(error.localizedDescription)"; status = "请检查局域网地址、配对码与本地网络权限" }
     }
     func open(_ project: LocalProject) async {
-        guard !busy else { return }; busy = true; error = ""; defer { busy = false }
+        guard !busy else { return }; busy = true; error = ""; openingProjectID = project.id
+        defer { busy = false; openingProjectID = nil }
         do {
             let data = try await ProjectStore.shared.model(project.id)
-            geometry = try await Task.detached { try ModelGeometry(data: data, manifest: project.session.manifest) }.value
-            current = project; serverAddress = project.serverURL
+            geometry = try await Task.detached(priority: .userInitiated) { try ModelGeometry(data: data, manifest: project.session.manifest) }.value
+            var opened = project
+            opened.displaySettings = (project.displaySettings ?? ModelDisplaySettings()).forOpening()
+            current = opened; serverAddress = project.serverURL
             status = project.result.completedAt == nil ? "已恢复本地草稿，请重新校准物体" : "示教已完成，等待同步或已同步"
         } catch { self.error = error.localizedDescription }
     }

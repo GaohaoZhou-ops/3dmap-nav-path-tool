@@ -20,48 +20,45 @@ struct ContentView: View {
         }.tint(accent).task { await session.reload() }
     }
     private var library: some View {
-        NavigationStack {
-            GeometryReader { viewport in
-                let wide = viewport.size.width >= 1000 && viewport.size.width > viewport.size.height
-                let padding: CGFloat = viewport.size.width >= 700 ? 28 : 20
-                let panelHeight: CGFloat = wide ? max(360, viewport.size.height - 208) : 0
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 24) {
-                        libraryHeader
-                        if !ARController.supported {
-                            Label("空间定位需要配备 LiDAR 的 iPad Pro 真机。当前设备可接收、查看物体和已有 Pose。", systemImage: "info.circle")
-                                .font(.callout).foregroundStyle(.orange).padding().frame(maxWidth: .infinity, alignment: .leading)
-                                .background(.orange.opacity(0.07), in: RoundedRectangle(cornerRadius: 12))
-                        }
-                        if wide {
-                            HStack(alignment: .top, spacing: 24) {
-                                pairingPanel(minHeight: panelHeight).frame(width: min(420, viewport.size.width * 0.35))
-                                localProjectsPanel(minHeight: panelHeight).frame(maxWidth: .infinity)
-                            }
-                        } else {
-                            pairingPanel(minHeight: 0).fixedSize(horizontal: false, vertical: true)
-                            localProjectsPanel(minHeight: 0).fixedSize(horizontal: false, vertical: true)
-                        }
+        GeometryReader { viewport in
+            let wide = viewport.size.width >= 1000 && viewport.size.width > viewport.size.height
+            let padding: CGFloat = viewport.size.width >= 700 ? 28 : 20
+            let panelHeight: CGFloat = wide ? max(360, viewport.size.height - 208) : 0
+            ScrollView {
+                VStack(alignment: .leading, spacing: 24) {
+                    libraryHeader
+                    if !ARController.supported {
+                        Label("空间定位需要配备 LiDAR 的 iPad Pro 真机。当前设备可接收、查看物体和已有 Pose。", systemImage: "info.circle")
+                            .font(.callout).foregroundStyle(.orange).padding().frame(maxWidth: .infinity, alignment: .leading)
+                            .background(.orange.opacity(0.07), in: RoundedRectangle(cornerRadius: 12))
                     }
-                    .frame(maxWidth: .infinity, alignment: .topLeading)
-                    .padding(padding)
-                    .frame(minHeight: viewport.size.height, alignment: .topLeading)
-                    .accessibilityElement(children: .contain).accessibilityIdentifier("library-content")
+                    if wide {
+                        HStack(alignment: .top, spacing: 24) {
+                            pairingPanel(minHeight: panelHeight).frame(width: min(420, viewport.size.width * 0.35))
+                            localProjectsPanel(minHeight: panelHeight).frame(maxWidth: .infinity)
+                        }
+                    } else {
+                        pairingPanel(minHeight: 0).fixedSize(horizontal: false, vertical: true)
+                        localProjectsPanel(minHeight: 0).fixedSize(horizontal: false, vertical: true)
+                    }
                 }
-                .frame(width: viewport.size.width, height: viewport.size.height)
-                .scrollDismissesKeyboard(.interactively)
+                .frame(maxWidth: .infinity, alignment: .topLeading)
+                .padding(padding)
+                .frame(minHeight: viewport.size.height, alignment: .topLeading)
+                .accessibilityElement(children: .contain).accessibilityIdentifier("library-content")
             }
-            .background(Color(red: 0.025, green: 0.05, blue: 0.065).ignoresSafeArea())
-            .navigationTitle("Atlas 示教").navigationBarTitleDisplayMode(.inline)
-            .sheet(isPresented: $scanning, onDismiss: finishScanning) {
-                PairingScannerView { qr in scannedCode = qr; scanning = false }
-            }
-            .onAppear { if !scanning { discovery.start() } }
-            .onDisappear { discovery.stop() }
-            .onChange(of: scenePhase) { _, phase in
-                if phase == .active && session.current == nil && !scanning { discovery.start() }
-                else { discovery.stop() }
-            }
+            .frame(width: viewport.size.width, height: viewport.size.height)
+            .scrollDismissesKeyboard(.interactively)
+        }
+        .background(Color(red: 0.025, green: 0.05, blue: 0.065).ignoresSafeArea())
+        .sheet(isPresented: $scanning, onDismiss: finishScanning) {
+            PairingScannerView { qr in scannedCode = qr; scanning = false }
+        }
+        .onAppear { if !scanning { discovery.start() } }
+        .onDisappear { discovery.stop() }
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .active && session.current == nil && !scanning { discovery.start() }
+            else { discovery.stop() }
         }
     }
     private func finishScanning() {

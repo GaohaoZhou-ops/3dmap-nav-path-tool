@@ -10,6 +10,8 @@ final class ARController: NSObject, ObservableObject, @preconcurrency ARSessionD
     @Published var depthAvailable = false
     @Published var placed = false
     @Published var calibrated = false
+    @Published private(set) var repositioning = false
+    @Published private(set) var adjustingPlacement = false
     @Published var yaw: Float = 0
     @Published var roll: Float = 0
     @Published var pitch: Float = 0
@@ -37,6 +39,18 @@ final class ARController: NSObject, ObservableObject, @preconcurrency ARSessionD
     private var hitPoint: SIMD3<Float>?
     private var segmentID: String?
     private var anchorID: UUID?
+    private var placementRotationCorrection = matrix_identity_float4x4
+    private struct PlacementAdjustment {
+        var transform: simd_float4x4
+        var hitPoint: SIMD3<Float>?
+        var reference: SIMD3<Float>
+        var yaw: Float
+        var roll: Float
+        var pitch: Float
+        var segmentID: String
+        var rotationCorrection: simd_float4x4
+    }
+    private var placementAdjustment: PlacementAdjustment?
     private var gestureYaw: Float = 0
     private var lastStatusTime: TimeInterval = 0
     private var lastLevelTime: TimeInterval = 0
@@ -70,7 +84,8 @@ final class ARController: NSObject, ObservableObject, @preconcurrency ARSessionD
         if let bounds = manifest.bounds {
             referenceX = (bounds.min.x + bounds.max.x) / 2; referenceY = (bounds.min.y + bounds.max.y) / 2; referenceZ = bounds.min.z
         }
-        yaw = 0; roll = 0; pitch = 0; hitPoint = nil; placed = false; calibrated = false; segmentID = nil; anchorID = nil
+        yaw = 0; roll = 0; pitch = 0; hitPoint = nil; placed = false; calibrated = false; repositioning = false; segmentID = nil; anchorID = nil
+        placementRotationCorrection = matrix_identity_float4x4
         groundAssistance = true
         objectRoot.isHidden = true
         // Keep manual waypoints visible without constructing thousands of SceneKit nodes.
@@ -97,17 +112,89 @@ final class ARController: NSObject, ObservableObject, @preconcurrency ARSessionD
     }
     func stop() {
         running = false; view.session.pause(); trackingNormal = false; depthAvailable = false
+        placementAdjustment = nil; adjustingPlacement = false
         levelReading = nil; cameraFieldOfView = nil; lastLevelTime = 0; lastStatusTime = 0; clearGround()
     }
-    func suspend() { stop(); calibrated = false; objectRoot.isHidden = true; placed = false; hitPoint = nil; segmentID = nil }
+    func suspend() { stop(); calibrated = false; objectRoot.isHidden = true; placed = false; repositioning = false; hitPoint = nil; segmentID = nil }
     func beginCalibration() {
-        calibrated = false; segmentID = nil
-        if let id = anchorID, let anchor = view.session.currentFrame?.anchors.first(where: { $0.identifier == id }) { view.session.remove(anchor: anchor) }
-        anchorID = nil
+        placementAdjustment = nil; adjustingPlacement = false
+        calibrated = false; repositioning = false; segmentID = nil
+        objectRoot.isHidden = !placed
+        removeCalibrationAnchor()
+        adoptCurrentPlacement()
         updateGroundPreview()
         message = groundAssistance ? "缓慢移动 iPad 扫描水平地面，再点击青色网格放置物体" : "将屏幕中心对准现实中的物体基准点，再点击「放置物体」"
     }
+    private func removeCalibrationAnchor() {
+        if let id = anchorID, let anchor = view.session.currentFrame?.anchors.first(where: { $0.identifier == id }) { view.session.remove(anchor: anchor) }
+        anchorID = nil
+    }
+    private func addCalibrationAnchor() {
+        let anchor = ARAnchor(name: "Atlas independent object", transform: objectRoot.simdTransform)
+        anchorID = anchor.identifier; view.session.add(anchor: anchor)
+    }
+    private func adoptCurrentPlacement() {
+        guard placed else { placementRotationCorrection = matrix_identity_float4x4; return }
+        // Keep AR's refined placement when unlocking. Later translations retain
+        // its orientation, and angle controls apply relative to this same frame.
+        let transform = objectRoot.simdTransform
+        let currentReference = transform * SIMD4(reference, 1)
+        hitPoint = SIMD3(currentReference.x, currentReference.y, currentReference.z)
+        var rotation = transform; rotation.columns.3 = SIMD4(0, 0, 0, 1)
+        let nominal = TeachingCoordinates.placement(hit: .zero, reference: .zero, yaw: yaw, roll: roll, pitch: pitch)
+        placementRotationCorrection = rotation * nominal.inverse
+    }
+    func beginPlacementAdjustment() {
+        guard calibrated, placed, !adjustingPlacement, let segmentID else { return }
+        placementAdjustment = PlacementAdjustment(transform: objectRoot.simdTransform, hitPoint: hitPoint,
+            reference: reference, yaw: yaw, roll: roll, pitch: pitch, segmentID: segmentID,
+            rotationCorrection: placementRotationCorrection)
+        removeCalibrationAnchor()
+        adoptCurrentPlacement()
+        self.segmentID = nil; calibrated = false; adjustingPlacement = true
+        updateGroundPreview()
+        message = "点击或拖动调整物体位置，确认后继续示教；已有 Pose 保留"
+    }
+    func cancelPlacementAdjustment() {
+        guard adjustingPlacement, let snapshot = placementAdjustment else { return }
+        // Restore the full calibration, including its segment, so cancellation
+        // resumes teaching without appending another calibration or any Pose.
+        calibrated = true; repositioning = false
+        referenceX = snapshot.reference.x; referenceY = snapshot.reference.y; referenceZ = snapshot.reference.z
+        yaw = snapshot.yaw; roll = snapshot.roll; pitch = snapshot.pitch
+        hitPoint = snapshot.hitPoint; placementRotationCorrection = snapshot.rotationCorrection
+        objectRoot.simdTransform = snapshot.transform; objectRoot.isHidden = false
+        segmentID = snapshot.segmentID
+        placementAdjustment = nil; adjustingPlacement = false
+        addCalibrationAnchor(); updateGroundPreview()
+        if let frame = view.session.currentFrame { updateLevel(frame) }
+        message = "已恢复原位置，可以继续记录 Pose"
+    }
     private var reference: SIMD3<Float> { SIMD3(referenceX, referenceY, referenceZ) }
+    var placementActionEnabled: Bool {
+        guard !calibrated else { return false }
+        // Entering relocation does not require a hit under the camera center.
+        // Only committing a new position requires tracking and a real surface.
+        if placed && !repositioning { return true }
+        return trackingNormal && (!groundAssistance || groundTargetAvailable)
+    }
+    func beginRepositioning() {
+        guard placed, !calibrated, !repositioning else { return }
+        repositioning = true
+        objectRoot.isHidden = true; levelReading = nil
+        updateGroundPreview()
+        message = groundAssistance ? "点击青色地面网格选择新位置，或将准星对准地面后放置；取消可恢复原位置"
+            : "点击实测表面选择新位置，或将准星对准目标后放置；取消可恢复原位置"
+    }
+    func cancelRepositioning() {
+        guard repositioning, !calibrated else { return }
+        repositioning = false
+        // Reveal the retained transform exactly, including AR anchor refinement;
+        // rebuilding it from the original hit point could introduce a small jump.
+        objectRoot.isHidden = !placed
+        if let frame = view.session.currentFrame { updateLevel(frame) }
+        message = "已取消重新放置，保留原位置与方向"
+    }
     func placeObject(at point: CGPoint? = nil) {
         guard trackingNormal, !calibrated, let frame = view.session.currentFrame,
               case .normal = frame.camera.trackingState else { return }
@@ -116,15 +203,23 @@ final class ARController: NSObject, ObservableObject, @preconcurrency ARSessionD
             message = groundAssistance ? "请扫描并点击青色地面区域；需要在其他表面放置时可关闭「地面辅助」" : "尚未测到可靠表面，请缓慢移动或靠近后重试"
             return
         }
-        hitPoint = hit; placed = true; updatePlacement()
-        message = "调整物体的方向与倾斜，使模型与现场一致；水平仪仅供参考"
+        applyPlacement(at: hit)
+    }
+    // Apply only a resolved, measured target. Keep the old placement intact
+    // while selecting, on a failed hit, or when the operation is cancelled.
+    func applyPlacement(at hit: SIMD3<Float>) {
+        guard trackingNormal, !calibrated, hit.x.isFinite, hit.y.isFinite, hit.z.isFinite,
+              referenceX.isFinite, referenceY.isFinite, referenceZ.isFinite, yaw.isFinite, roll.isFinite, pitch.isFinite else { return }
+        let updating = placed
+        hitPoint = hit; placed = true; repositioning = false; updatePlacement()
+        message = updating ? "已更新物体位置，可继续调整方向与倾斜" : "调整物体的方向与倾斜，使模型与现场一致；水平仪仅供参考"
     }
     @objc private func tapToPlace(_ gesture: UITapGestureRecognizer) { if !calibrated { placeObject(at: gesture.location(in: view)) } }
     @objc private func dragToPlace(_ gesture: UIPanGestureRecognizer) {
         if !calibrated, gesture.numberOfTouches == 1 { placeObject(at: gesture.location(in: view)) }
     }
     @objc private func rotateObject(_ gesture: UIRotationGestureRecognizer) {
-        guard !calibrated, placed else { return }
+        guard !calibrated, placed, !repositioning else { return }
         if gesture.state == .began { gestureYaw = yaw }
         yaw = (gestureYaw - Float(gesture.rotation) * 180 / .pi + 540).truncatingRemainder(dividingBy: 360) - 180
         updatePlacement()
@@ -134,24 +229,27 @@ final class ARController: NSObject, ObservableObject, @preconcurrency ARSessionD
         for sample in samples.filter({ $0.kind == "keyframe" }).suffix(2000) { showMarker(sample) }
     }
     func updatePlacement() {
-        guard !calibrated, let hitPoint else { return }
+        guard !calibrated, !repositioning, let hitPoint else { return }
         guard referenceX.isFinite, referenceY.isFinite, referenceZ.isFinite, yaw.isFinite, roll.isFinite, pitch.isFinite else { return }
-        objectRoot.simdTransform = TeachingCoordinates.placement(hit: hitPoint, reference: reference, yaw: yaw, roll: roll, pitch: pitch)
+        var transform = placementRotationCorrection * TeachingCoordinates.placement(hit: .zero, reference: .zero, yaw: yaw, roll: roll, pitch: pitch)
+        transform.columns.3 = SIMD4(hitPoint, 1) - transform * SIMD4(reference, 0)
+        objectRoot.simdTransform = transform
         objectRoot.isHidden = false
         if let frame = view.session.currentFrame { updateLevel(frame) }
     }
     func confirmCalibration() {
-        guard placed, trackingNormal, !calibrated, referenceX.isFinite, referenceY.isFinite, referenceZ.isFinite,
+        guard placed, trackingNormal, !calibrated, !repositioning, referenceX.isFinite, referenceY.isFinite, referenceZ.isFinite,
               yaw.isFinite, roll.isFinite, pitch.isFinite else { return }
         updatePlacement()
         let calibration = Calibration(worldFromModel: objectRoot.simdTransform.elements, referencePoint: Point3(reference),
             yawDegrees: yaw, rollDegrees: roll, pitchDegrees: pitch)
+        let wasAdjusting = adjustingPlacement
         segmentID = calibration.id
-        let anchor = ARAnchor(name: "Atlas independent object", transform: objectRoot.simdTransform)
-        anchorID = anchor.identifier; view.session.add(anchor: anchor)
+        addCalibrationAnchor()
+        placementAdjustment = nil; adjustingPlacement = false
         calibrated = true; onCalibration?(calibration)
         updateGroundPreview()
-        message = "校准已锁定。移动 iPad，将相机置于目标视角后记录示教点"
+        message = wasAdjusting ? "物体位置已更新，继续记录 Pose" : "物体位置已确认，可以记录 Pose；需要移动时点击「调整物体位置」"
     }
     func recordKeyframe() { capture(kind: "keyframe") }
     private func capture(kind: String) {
@@ -352,7 +450,7 @@ final class ARController: NSObject, ObservableObject, @preconcurrency ARSessionD
         if cameraFieldOfView != fieldOfView { cameraFieldOfView = fieldOfView }
     }
     private func updateLevel(_ frame: ARFrame) {
-        guard running, placed, case .normal = frame.camera.trackingState,
+        guard running, placed, !repositioning, case .normal = frame.camera.trackingState,
               let orientation = view.window?.windowScene?.interfaceOrientation, orientation != .unknown else {
             levelReading = nil; return
         }

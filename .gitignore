@@ -100,11 +100,21 @@ playwright/.auth/
 /ipad/atlas-ipad-*.plist
 /ipad/atlas-ipad-projects-*/
 
+# USB pairing records created by local device-debugging tools contain credentials.
+/atlas-ipad-*-pairing/
+/ipad/atlas-ipad-*-pairing/
+
 # Standalone Swift test executables produced during native iPad debugging.
 /atlas-ipad-*-test
 /atlas-ipad-*-tests
 /ipad/atlas-ipad-*-test
 /ipad/atlas-ipad-*-tests
+
+# Isolated smoke-test workspaces if TMPDIR points into the repository.
+/atlas-native-ipad-*/
+/atlas-clean-build-*/
+/ipad/atlas-native-ipad-*/
+/ipad/atlas-clean-build-*/
 
 # ABX contract-test source copies, temporary imports and UI captures
 /atlas-abx-export-*/
@@ -133,6 +143,10 @@ venv/
 env/
 .uv-cache/
 .atlas-merge-venv/
+
+# Local Python environments for ad-hoc iPad device tools.
+/atlas-ipad-*-venv/
+/ipad/atlas-ipad-*-venv/
 
 # Local service runtime files
 .atlas-route.pid

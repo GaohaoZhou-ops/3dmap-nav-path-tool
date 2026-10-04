@@ -44,6 +44,11 @@ try {
   await run('xcrun', ['swiftc', '-parse-as-library', 'ipad/AtlasTeaching/TeachingModels.swift',
     'ipad/AtlasTeaching/ModelGeometry.swift', 'ipad/Tests/GeometryTests.swift', '-o', geometryBinary]);
   await run(geometryBinary, []);
+  const coverageBinary = path.join(directory, 'coverage-test');
+  await run('xcrun', ['swiftc', '-parse-as-library', 'ipad/AtlasTeaching/TeachingModels.swift',
+    'ipad/AtlasTeaching/ZividFieldOfView.swift', 'ipad/AtlasTeaching/ModelGeometry.swift',
+    'ipad/AtlasTeaching/TeachingCoverage.swift', 'ipad/Tests/TeachingCoverageTests.swift', '-o', coverageBinary]);
+  await run(coverageBinary, []);
   const binary = path.join(directory, 'native-test');
   await run('xcrun', ['swiftc', 'ipad/AtlasTeaching/TeachingModels.swift', 'ipad/AtlasTeaching/LANClient.swift', 'ipad/AtlasTeaching/ProjectStore.swift', 'ipad/Tests/NetworkTests.swift', '-o', binary]);
   // Cross a native hashing chunk boundary so changes at the end of a larger file are checked.

@@ -264,6 +264,7 @@ struct TeachingView: View {
     @Environment(\.scenePhase) private var scenePhase
     @StateObject private var ar = ARController()
     @StateObject private var renderer = ModelRenderer()
+    @StateObject private var coverage = TeachingCoverageRenderer()
     @State private var review = false
     @State private var finishing = false
     @State private var displaySettingsOpen = false
@@ -281,9 +282,14 @@ struct TeachingView: View {
         !completed && ar.calibrated && ar.trackingNormal && renderer.geometry != nil
             && !session.busy && count < maximumSamples && session.error.isEmpty
     }
+    private var canConfirmPlacement: Bool {
+        ar.placed && !ar.repositioning && ar.trackingNormal && renderer.geometry != nil
+            && !session.busy && session.error.isEmpty
+    }
     private var viewportMessage: String {
         if sidebarCollapsed && !session.error.isEmpty { return session.error }
         if !liveCamera { return "三维物体预览 · 拖动旋转 / 双指缩放视图" }
+        if ar.repositioning || ar.adjustingPlacement { return ar.message }
         if sidebarCollapsed && !ar.calibrated { return "展开面板，确认物体位置与方向后即可记录 Pose" }
         return ar.message
     }
@@ -291,23 +297,24 @@ struct TeachingView: View {
     var body: some View {
         GeometryReader { viewport in
         let sidebarWidth: CGFloat = sidebarCollapsed ? 0 : 340
-        let sceneWidth = max(0, viewport.size.width - sidebarWidth)
-        HStack(spacing: 0) {
+        let controlsWidth = max(0, viewport.size.width - sidebarWidth)
+        ZStack {
+            // Always render with the collapsed panel's full viewport. The panel
+            // covers its right edge; it must not resize/recenter the camera,
+            // the M70 mask, or the center used by placement raycasts.
             ZStack {
                 Color.black
-                modelViewport(in: CGSize(width: sceneWidth, height: viewport.size.height))
-                if !ar.placed && ARController.supported && !completed {
-                    VStack(spacing: 14) {
-                        Image(systemName: "viewfinder").font(.system(size: 48, weight: .ultraLight))
-                            .foregroundStyle(ar.groundAssistance && ar.groundTargetAvailable ? accent : .white)
-                        Text(ar.groundAssistance ? "扫描地面，在青色网格上放置物体" : "对准现场基准点，放置独立示教物体")
-                            .font(.callout).padding(10).background(.black.opacity(0.65), in: Capsule())
-                    }.allowsHitTesting(false)
-                } else if ar.placed && !completed {
-                    Image(systemName: "plus").font(.title2.weight(.ultraLight))
+                modelViewport(in: viewport.size)
+                if liveCamera {
+                    Image(systemName: ar.placed && !ar.repositioning ? "plus" : "viewfinder")
+                        .font(ar.placed && !ar.repositioning ? .title2.weight(.ultraLight) : .system(size: 48, weight: .ultraLight))
                         .foregroundStyle(ar.groundAssistance && ar.groundTargetAvailable ? accent : .white)
                         .shadow(color: .black, radius: 2).allowsHitTesting(false)
+                        .accessibilityLabel("模型放置准星").accessibilityIdentifier("teaching-placement-target")
                 }
+            }.frame(width: viewport.size.width, height: viewport.size.height).clipped()
+                .accessibilityElement(children: .contain).accessibilityIdentifier("teaching-viewport")
+            HStack(spacing: 0) {
                 VStack {
                     HStack {
                         Label(ar.tracking, systemImage: ar.trackingNormal ? "location.fill" : "location.slash")
@@ -337,7 +344,7 @@ struct TeachingView: View {
                             VStack(alignment: .leading, spacing: 10) {
                                 if !ar.calibrated { groundAssistancePanel }
                                 if levelVisible {
-                                    SpatialLevelView(reading: ar.levelReading, placed: ar.placed).allowsHitTesting(false)
+                                    SpatialLevelView(reading: ar.levelReading, placed: ar.placed && !ar.repositioning).allowsHitTesting(false)
                                 }
                             }.frame(width: 232)
                             Spacer(minLength: 0)
@@ -352,18 +359,27 @@ struct TeachingView: View {
                             VStack(spacing: 8) {
                                 Text("\(count) 个 Pose").font(.caption.monospacedDigit()).foregroundStyle(.white)
                                     .accessibilityIdentifier("floating-pose-count")
-                                recordPoseButton
+                                if ar.adjustingPlacement { placementAdjustmentControls }
+                                else {
+                                    recordPoseButton
+                                    if ar.calibrated { placementAdjustmentControls }
+                                }
                             }.frame(width: 198).padding(12)
                                 .background(.black.opacity(0.8), in: RoundedRectangle(cornerRadius: 16))
                                 .overlay(RoundedRectangle(cornerRadius: 16).strokeBorder(.white.opacity(0.15)))
                                 .accessibilityElement(children: .contain).accessibilityIdentifier("floating-pose-controls")
                         }
                     }.padding(20)
-                }
-            }.frame(width: sceneWidth, height: viewport.size.height).clipped()
-                .accessibilityElement(children: .contain).accessibilityIdentifier("teaching-viewport")
-            // Keep the scene/session and sidebar state alive; only resize the
-            // viewport. Folding the panel must never restart AR or calibration.
+                }.frame(width: controlsWidth, height: viewport.size.height)
+                    .overlay {
+                        if liveCamera && (!ar.placed || ar.repositioning) {
+                            Text(ar.groundAssistance ? "扫描地面，在青色网格上放置物体" : "对准现场基准点，放置独立示教物体")
+                                .font(.callout).padding(10).background(.black.opacity(0.65), in: Capsule())
+                                .padding(.horizontal, 16).offset(y: 60).allowsHitTesting(false)
+                        }
+                    }.clipped()
+            // Keep sidebar controls alive while folding; only the overlay's
+            // usable area changes, never the underlying scene/session.
             VStack(spacing: 0) {
                 HStack {
                     Button { ar.stop(); Task { await session.close() } } label: { Label("本地项目", systemImage: "chevron.left") }.disabled(session.busy)
@@ -373,6 +389,9 @@ struct TeachingView: View {
                     }.buttonStyle(.bordered).accessibilityLabel("收起右侧面板")
                         .accessibilityIdentifier("collapse-teaching-panel")
                 }.padding(.horizontal, 22).padding(.vertical, 12)
+                if liveCamera && !sidebarCollapsed && (ar.calibrated || ar.adjustingPlacement) {
+                    placementAdjustmentControls.padding(.horizontal, 22).padding(.bottom, 12)
+                }
             ScrollView {
                 VStack(alignment: .leading, spacing: 19) {
                     Text(session.current?.session.manifest.name ?? "独立示教物体").font(.title3).lineLimit(2)
@@ -382,17 +401,18 @@ struct TeachingView: View {
                     if session.current?.session.manifest.sampled == true { Text("大物体以抽样点云显示，尺寸与坐标不变").font(.caption).foregroundStyle(.secondary) }
                     Divider()
                     fieldOfViewControl
+                    coverageControl
                     Divider()
                     if !completed {
                         calibrationPanel
-                        if !sidebarCollapsed { recordPoseButton }
+                        if !sidebarCollapsed && !ar.adjustingPlacement { recordPoseButton }
                         Text("移动到目标视角 → 记录 Pose → 调整下一个视角。每个 Pose 都会自动保存在 iPad。").font(.caption).foregroundStyle(.secondary)
                     }
                     Button { review = true } label: { Label("查看 / 编辑 Pose", systemImage: "list.bullet.rectangle").frame(maxWidth: .infinity).padding(7) }
                         .buttonStyle(.bordered).disabled(count == 0)
                     if !completed {
                         Button { finishing = true } label: { Label("完成示教", systemImage: "checkmark.circle").frame(maxWidth: .infinity).padding(7) }
-                            .buttonStyle(.bordered).disabled(count == 0 || session.busy)
+                            .buttonStyle(.bordered).disabled(count == 0 || session.busy || ar.adjustingPlacement)
                     } else {
                         LANAddressFields(address: $session.serverConnection).disabled(session.busy)
                         Button { Task { await session.finish(sync: true) } } label: { Label("同步到电脑", systemImage: "arrow.up.circle").frame(maxWidth: .infinity).padding(10) }
@@ -411,20 +431,25 @@ struct TeachingView: View {
                 .frame(width: sidebarWidth, alignment: .leading).clipped()
                 .opacity(sidebarCollapsed ? 0 : 1).allowsHitTesting(!sidebarCollapsed)
                 .accessibilityHidden(sidebarCollapsed)
+            }
         }
         }.task(id: projectID) {
             guard let project = session.current else { return }
             ar.load(manifest: project.session.manifest, samples: project.result.samples)
             renderer.update(geometry, settings: session.displaySettings)
+            coverage.update(model: geometry, samples: project.result.samples)
             ar.onCalibration = { session.addCalibration($0) }
             ar.onSample = { session.addSample($0) }
             if !completed { await ar.start() }
-        }.onDisappear { ar.stop(); renderer.cancel() }
-        .onReceive(renderer.$geometry) { ar.display($0) }
+        }.onDisappear { ar.stop(); renderer.cancel(); coverage.cancel() }
+        .onReceive(renderer.$geometry) { ar.display($0); coverage.attach(to: $0) }
+        .onReceive(session.$current) { project in
+            if let project, project.id == projectID { coverage.update(model: geometry, samples: project.result.samples) }
+        }
         .onChange(of: session.displaySettings) { _, settings in renderer.update(geometry, settings: settings) }
         .onChange(of: scenePhase) { _, phase in
-            if phase != .active { ar.suspend(); session.backgroundSave() }
-            else if !completed { Task { await ar.start() } }
+            if phase != .active { ar.suspend(); coverage.cancel(); session.backgroundSave() }
+            else { coverage.resume(); if !completed { Task { await ar.start() } } }
         }
         .sheet(isPresented: $displaySettingsOpen) { ModelDisplaySettingsView(geometry: geometry, renderer: renderer).environmentObject(session) }
         .sheet(isPresented: $review, onDismiss: { ar.refreshMarkers(session.current?.result.samples ?? []) }) { PoseReviewView(rendered: renderer.geometry).environmentObject(session) }
@@ -448,6 +473,35 @@ struct TeachingView: View {
         }.buttonStyle(.borderedProminent).disabled(!canRecordPose)
             .accessibilityIdentifier("capture-pose")
     }
+    private var placementAdjustmentControls: some View {
+        VStack(spacing: 8) {
+            if ar.adjustingPlacement {
+                confirmPlacementButton
+                Button { ar.cancelPlacementAdjustment() } label: {
+                    Text("取消调整").frame(maxWidth: .infinity, minHeight: 32)
+                }.buttonStyle(.bordered).accessibilityIdentifier("cancel-placement-adjustment")
+            } else {
+                Button {
+                    UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
+                    ar.beginPlacementAdjustment()
+                } label: {
+                    Label("调整物体位置", systemImage: "arrow.up.and.down.and.arrow.left.and.right")
+                        .frame(maxWidth: .infinity, minHeight: 32)
+                }.buttonStyle(.bordered).disabled(session.busy || renderer.geometry == nil)
+                    .accessibilityIdentifier("adjust-model-placement")
+            }
+        }.font(.subheadline)
+    }
+    private var confirmPlacementButton: some View {
+        Button {
+            UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
+            ar.confirmCalibration()
+        } label: {
+            Text(ar.adjustingPlacement ? "确认位置，继续示教" : "确认物体位置与方向")
+                .frame(maxWidth: .infinity, minHeight: 32)
+        }.buttonStyle(.borderedProminent).disabled(!canConfirmPlacement)
+            .accessibilityIdentifier("confirm-model-calibration")
+    }
     private func modelViewport(in available: CGSize) -> some View {
         let size = zividFieldOfViewEnabled ? fieldOfView?.fittedSize(in: available) ?? available : available
         return ZStack {
@@ -457,6 +511,7 @@ struct TeachingView: View {
                 ZividFieldOfViewOverlay(fieldOfView: fieldOfView, labelAtTop: sidebarCollapsed)
             }
         }.frame(width: size.width, height: size.height).clipped()
+            .accessibilityElement(children: .contain).accessibilityIdentifier("teaching-render-surface")
     }
     private var fieldOfViewControl: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -475,6 +530,38 @@ struct TeachingView: View {
                      ? "iPad 相机视野不足，仅显示可见部分" : "阴影为视野外区域 · 标称视野参考")
                     .font(.caption).foregroundStyle(fieldOfView?.fullyVisible == false ? .orange : .secondary)
                     .fixedSize(horizontal: false, vertical: true).accessibilityIdentifier("zivid-fov-status")
+            }
+        }
+    }
+    private var coverageControl: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Button { coverage.enabled.toggle() } label: {
+                    Label("已示教区域", systemImage: "square.3.layers.3d")
+                        .font(.subheadline).frame(minHeight: 44).contentShape(Rectangle())
+                }.buttonStyle(.plain).accessibilityHidden(true)
+                Spacer(minLength: 4)
+                Toggle("已示教区域", isOn: $coverage.enabled).labelsHidden().fixedSize()
+                    .tint(accent).accessibilityIdentifier("teaching-coverage-toggle")
+            }
+            if coverage.enabled {
+                HStack {
+                    Text("着色强度").font(.caption)
+                    Slider(value: $coverage.opacity, in: 0.05...0.6, step: 0.05)
+                        .tint(.mint).accessibilityLabel("已示教区域着色强度")
+                        .accessibilityIdentifier("teaching-coverage-opacity")
+                    Text("\(Int((coverage.opacity * 100).rounded()))%")
+                        .font(.caption.monospacedDigit()).frame(width: 32, alignment: .trailing)
+                }
+                Text("M70 · 0.3–1.3 m · 绿色标记已示教表面")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            HStack(spacing: 6) {
+                if coverage.preparing { ProgressView().controlSize(.mini) }
+                Text(coverage.status).font(.caption)
+                    .foregroundStyle(coverage.error.isEmpty ? Color.secondary : .orange)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .accessibilityIdentifier("teaching-coverage-status")
             }
         }
     }
@@ -498,22 +585,30 @@ struct TeachingView: View {
     }
     private var calibrationPanel: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Label(ar.calibrated ? "物体已校准" : "先校准物体", systemImage: ar.calibrated ? "checkmark.seal" : "scope").foregroundStyle(accent)
-            if ar.calibrated {
-                Button("重新校准（保留已有 Pose）") { ar.beginCalibration() }.font(.caption)
-            } else {
+            Label(ar.calibrated ? "物体已校准" : ar.adjustingPlacement ? "正在调整物体" : "先校准物体", systemImage: ar.calibrated ? "checkmark.seal" : "scope").foregroundStyle(accent)
+            if !ar.calibrated {
                 Text("模型基准点 / 米（默认底部中心）").font(.caption).foregroundStyle(.secondary)
                 HStack {
                     coordinate("X", $ar.referenceX); coordinate("Y", $ar.referenceY); coordinate("Z", $ar.referenceZ)
-                }.onChange(of: ar.referenceX) { _, _ in ar.updatePlacement() }
+                }.disabled(ar.repositioning)
+                    .onChange(of: ar.referenceX) { _, _ in ar.updatePlacement() }
                     .onChange(of: ar.referenceY) { _, _ in ar.updatePlacement() }.onChange(of: ar.referenceZ) { _, _ in ar.updatePlacement() }
                 Text(ar.groundAssistance ? "点击或单指拖动青色地面网格放置物体，双指旋转调整方向。尺寸固定为 1:1，模型可自由倾斜。" : "点击或单指拖动放置物体，双指旋转调整方向。尺寸固定为 1:1；可按现场需要倾斜放置，水平仪仅供参考。")
                     .font(.caption).foregroundStyle(.secondary)
-                Button("放置物体 / 更新位置") { ar.placeObject() }.buttonStyle(.bordered)
-                    .disabled(!ar.trackingNormal || (ar.groundAssistance && !ar.groundTargetAvailable))
+                Button(ar.repositioning ? "放到准星位置" : ar.placed ? "重新放置物体" : "放置物体") {
+                    UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
+                    if ar.placed && !ar.repositioning { ar.beginRepositioning() }
+                    else { ar.placeObject() }
+                }.buttonStyle(.bordered)
+                    .disabled(!ar.placementActionEnabled)
                     .accessibilityIdentifier("place-model")
+                if ar.repositioning {
+                    Button("取消重新放置") { ar.cancelRepositioning() }.buttonStyle(.bordered)
+                        .accessibilityIdentifier("cancel-model-repositioning")
+                    Text("物体暂时隐藏，点击画面选择新位置；取消可恢复原位置。").font(.caption).foregroundStyle(.secondary)
+                }
                 HStack { Text("方向"); Spacer(); Text("\(ar.yaw, specifier: "%.1f")°").monospacedDigit() }.font(.caption)
-                Slider(value: $ar.yaw, in: -180...180).onChange(of: ar.yaw) { _, _ in ar.updatePlacement() }
+                Slider(value: $ar.yaw, in: -180...180).disabled(ar.repositioning).onChange(of: ar.yaw) { _, _ in ar.updatePlacement() }
                 Button { withAnimation { tiltControlsOpen.toggle() } } label: {
                     HStack {
                         Text("调整物体倾斜"); Spacer()
@@ -526,10 +621,9 @@ struct TeachingView: View {
                     VStack(spacing: 10) {
                         tiltControl("左右倾斜", angle: $ar.pitch, id: "model-pitch")
                         tiltControl("前后倾斜", angle: $ar.roll, id: "model-roll")
-                    }.font(.caption)
+                    }.font(.caption).disabled(ar.repositioning)
                 }
-                Button("确认物体位置与方向") { ar.confirmCalibration() }.buttonStyle(.bordered).disabled(!ar.placed || !ar.trackingNormal || renderer.geometry == nil)
-                    .accessibilityIdentifier("confirm-model-calibration")
+                if !ar.adjustingPlacement { confirmPlacementButton }
             }
         }
     }

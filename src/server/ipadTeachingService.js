@@ -68,6 +68,30 @@ export function createIPadTeachingService({ directory, serverId = randomUUID(), 
   const publicSession = (session) => ({ id: session.id, status: session.status, manifest: session.manifest,
     createdAt: session.createdAt, pairedAt: session.pairedAt, completedAt: session.completedAt,
     importedAt: session.importedAt, sampleCount: session.sampleCount || 0, deviceName: session.deviceName || '' });
+  async function verifyModel(session, identity) {
+    if (!/^[a-f0-9]{64}$/.test(identity?.modelHash) || !Number.isInteger(identity?.byteLength)
+      || identity.byteLength < 48 || identity.byteLength > MAX_MODEL_BYTES) fail(400, '模型校验信息无效');
+    if (identity.modelHash !== session.manifest.modelHash || identity.byteLength !== session.manifest.byteLength) {
+      fail(409, 'iPad 与电脑配对任务中的模型内容不一致，已停止同步；请确认使用的是同一模型');
+    }
+    // Re-read the actual frozen model. Names, project metadata and all poses are excluded.
+    const digest = createHash('sha256'); let byteLength = 0;
+    try {
+      for await (const chunk of createReadStream(path.join(directory, session.id, 'model.atls'))) {
+        byteLength += chunk.length;
+        if (byteLength > session.manifest.byteLength) fail(409, '电脑端模型文件已改变，已停止同步；请恢复配对时的模型后重试');
+        digest.update(chunk);
+      }
+    } catch (error) {
+      if (error.code === 'ENOENT') fail(409, '电脑端缺少配对时的模型文件，已停止同步；请恢复模型后重试');
+      throw error;
+    }
+    const modelHash = digest.digest('hex');
+    if (byteLength !== identity.byteLength || modelHash !== identity.modelHash) {
+      fail(409, '电脑端模型文件已改变，已停止同步；请恢复配对时的模型后重试');
+    }
+    return { sessionId: session.id, modelHash, byteLength, verified: true };
+  }
 
   return async function ipadMiddleware(req, res, next) {
     const pathname = (req.url || '').split('?')[0];
@@ -129,12 +153,13 @@ export function createIPadTeachingService({ directory, serverId = randomUUID(), 
         }
         fail(404, '找不到配对码，请确认电脑地址与配对码');
       }
-      const match = /^\/sessions\/([a-f0-9-]{36})(?:\/(model|result|imported|renew|pairing-qr))?$/.exec(route);
+      const match = /^\/sessions\/([a-f0-9-]{36})(?:\/(model|verify-model|result|imported|renew|pairing-qr))?$/.exec(route);
       if (!match) fail(404, '接口不存在');
       const [, id, action] = match;
       await serialized(id, async () => {
         const session = await load(id);
-        const role = (action === 'model' && req.method === 'GET') || (action === 'result' && req.method === 'POST') ? 'device' : 'owner';
+        const role = (action === 'model' && req.method === 'GET')
+          || (['verify-model', 'result'].includes(action) && req.method === 'POST') ? 'device' : 'owner';
         authorize(req, session, role);
         if (!action && req.method === 'GET') return json(res, 200, publicSession(session));
         if (!action && req.method === 'DELETE') {
@@ -175,9 +200,15 @@ export function createIPadTeachingService({ directory, serverId = randomUUID(), 
             'Cache-Control': 'no-store', 'X-Content-SHA256': session.manifest.modelHash });
           const stream = createReadStream(file); stream.on('error', (error) => res.destroy(error)); stream.pipe(res); return;
         }
+        if (action === 'verify-model' && req.method === 'POST') {
+          const identity = await readBody(req, 4096);
+          return json(res, 200, await verifyModel(session, identity));
+        }
         if (action === 'result' && req.method === 'POST') {
           const result = await readBody(req, 48 * 1024 * 1024);
           validateIPadResult(result, session.manifest, id);
+          // Recheck on receipt as well, including older clients and a file changed after preflight.
+          await verifyModel(session, { modelHash: result.modelHash, byteLength: session.manifest.byteLength });
           const body = JSON.stringify(result), digest = hash(body);
           // Exactly one immutable completed result. Retrying after a lost response is safe.
           if (session.resultHash && session.resultHash !== digest) fail(409, '已收到不同的完成结果，不能覆盖');

@@ -1,4 +1,26 @@
 import Foundation
+import CryptoKit
+
+struct ModelFileIdentity: Codable {
+    let modelHash: String
+    let byteLength: Int
+
+    static func read(from url: URL) throws -> ModelFileIdentity {
+        let file: FileHandle
+        do { file = try FileHandle(forReadingFrom: url) }
+        catch { throw TeachingError("无法读取 iPad 本地模型文件，已停止同步；本地 Pose 仍保留") }
+        defer { try? file.close() }
+        var digest = SHA256(), byteLength = 0
+        while let chunk = try file.read(upToCount: 1024 * 1024), !chunk.isEmpty {
+            try Task.checkCancellation()
+            byteLength += chunk.count
+            guard byteLength <= maximumModelBytes else { throw TeachingError("iPad 本地模型文件大小异常，已停止同步") }
+            digest.update(data: chunk)
+        }
+        guard byteLength >= 48 else { throw TeachingError("iPad 本地模型文件不完整，已停止同步") }
+        return ModelFileIdentity(modelHash: digest.finalize().map { String(format: "%02x", $0) }.joined(), byteLength: byteLength)
+    }
+}
 
 struct LANAddressInput {
     static let defaultPort = "21990"
@@ -163,9 +185,29 @@ struct LANClient {
         guard size <= maximumModelBytes else { throw TeachingError("物体超过 iPad 传输上限（192 MiB）") }
         let data = try Data(contentsOf: url); try check(response, data: data); return data
     }
-    func upload(_ project: LocalProject) async throws {
+    func upload(_ project: LocalProject, modelURL: URL, onModelVerified: @MainActor () -> Void = {}) async throws {
         guard project.result.completedAt != nil, !project.result.samples.isEmpty else { throw TeachingError("示教尚未完成") }
+        guard UUID(uuidString: project.id) != nil, project.result.sessionId == project.id else { throw TeachingError("本地模型与配对任务不匹配，已停止同步") }
+        let identity = try await Task.detached { try ModelFileIdentity.read(from: modelURL) }.value
+        try Task.checkCancellation()
+        guard identity.modelHash == project.session.manifest.modelHash,
+              identity.byteLength == project.session.manifest.byteLength,
+              identity.modelHash == project.result.modelHash else {
+            throw TeachingError("iPad 本地模型内容与配对时不一致，已停止同步；请恢复原模型，本地 Pose 仍保留")
+        }
         let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
+        // Send only the model fingerprint first. No poses are sent until both files match.
+        let (verificationData, verificationResponse) = try await Self.session.data(for: request("sessions/\(project.id)/verify-model",
+            token: project.session.deviceToken, method: "POST", body: try encoder.encode(identity)))
+        try check(verificationResponse, data: verificationData)
+        struct Verification: Decodable { var sessionId: String; var modelHash: String; var byteLength: Int; var verified: Bool }
+        let verification = try JSONDecoder().decode(Verification.self, from: verificationData)
+        guard verification.verified, verification.sessionId == project.id,
+              verification.modelHash == identity.modelHash, verification.byteLength == identity.byteLength else {
+            throw TeachingError("电脑返回的模型校验结果不匹配，已停止同步；本地 Pose 仍保留")
+        }
+        try Task.checkCancellation()
+        await onModelVerified()
         let (data, response) = try await Self.session.data(for: request("sessions/\(project.id)/result", token: project.session.deviceToken,
             method: "POST", body: try encoder.encode(project.result)))
         try check(response, data: data)

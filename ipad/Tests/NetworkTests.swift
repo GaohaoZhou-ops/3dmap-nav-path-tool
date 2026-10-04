@@ -6,6 +6,13 @@ import simd
     static func main() async throws {
         let args = CommandLine.arguments
         let address = args[1], fixture = URL(fileURLWithPath: args[2]), storeURL = URL(fileURLWithPath: args[3])
+        for valid in ["", "0", "1", "99", "100", "254", "255", "001"] { precondition(IPv4Input.acceptsOctet(valid)) }
+        for invalid in ["256", "999", "1234", "-1", "+1", "1a", "1.2", " 1", "２５５"] { precondition(!IPv4Input.acceptsOctet(invalid)) }
+        precondition(IPv4Input.octets("192.168.0.255") == ["192", "168", "0", "255"])
+        precondition(IPv4Input.octets("192.168..1", allowingEmpty: true) == ["192", "168", "", "1"])
+        for invalid in ["192.168..1", "192.168.0.256", "1.2.3", "1.2.3.4.5", "http://192.168.0.1", "192.168.0.1:21990"] {
+            precondition(IPv4Input.octets(invalid) == nil, "reject an entire invalid paste instead of changing its address")
+        }
         var fields = LANAddressInput()
         precondition(fields.host.isEmpty && fields.port == "21990" && !fields.canConnect)
         fields.host = "192.168.1.20"
@@ -74,17 +81,41 @@ import simd
         precondition(local[0].displaySettings == project.displaySettings, "display settings survive reopening alongside unchanged poses")
         let localModel = try await reopened.model(paired.id)
         precondition(localModel == model, "offline model recovery")
-        do { try await client.upload(project); preconditionFailure("unfinished work must never upload") }
+        let modelURL = try await reopened.modelURL(project.id)
+        do { try await client.upload(project, modelURL: modelURL); preconditionFailure("unfinished work must never upload") }
         catch let error as TeachingError { precondition(error.message == "示教尚未完成") }
         project.result.completedAt = timestamp()
         try await store.save(project)
-        try await client.upload(project)
-        try await client.upload(project) // lost response retry
+        let savedBefore = try Data(contentsOf: storeURL.appendingPathComponent(project.id).appendingPathExtension("json"))
+        precondition(model.count > 1024 * 1024, "exercise more than one file hashing chunk")
+        var changedModel = model; changedModel[model.count - 1] ^= 1
+        try await store.saveModel(changedModel, id: paired.id)
+        do { try await client.upload(project, modelURL: modelURL); preconditionFailure("local model mismatch uploaded poses") }
+        catch let error as TeachingError { precondition(error.message.contains("本地模型内容")) }
+        try FileManager.default.removeItem(at: modelURL)
+        do { try await client.upload(project, modelURL: modelURL); preconditionFailure("missing local model uploaded poses") }
+        catch let error as TeachingError { precondition(error.message.contains("无法读取")) }
+        try await store.saveModel(model, id: paired.id)
+        let remoteModelURL = URL(fileURLWithPath: args[4]).appendingPathComponent(paired.id).appendingPathComponent("model.atls")
+        try changedModel.write(to: remoteModelURL)
+        do { try await client.upload(project, modelURL: modelURL); preconditionFailure("same-name remote model mismatch uploaded poses") }
+        catch let error as TeachingError { precondition(error.message.contains("模型文件已改变"), error.message) }
+        try FileManager.default.removeItem(at: remoteModelURL)
+        do { try await client.upload(project, modelURL: modelURL); preconditionFailure("missing remote model uploaded poses") }
+        catch let error as TeachingError { precondition(error.message.contains("缺少配对时的模型文件"), error.message) }
+        try model.write(to: remoteModelURL)
+        let savedAfter = try Data(contentsOf: storeURL.appendingPathComponent(project.id).appendingPathExtension("json"))
+        precondition(savedBefore == savedAfter, "failed model checks must preserve every local Pose")
+        // Names and display settings do not participate in the file comparison.
+        project.session.manifest.name = "renamed-workpiece.ply"
+        project.displaySettings = ModelDisplaySettings(mode: .mesh, pointDensity: .full, meshQuality: .performance)
+        try await client.upload(project, modelURL: modelURL)
+        try await client.upload(project, modelURL: modelURL) // lost response retry verifies again
         let received = try JSONDecoder().decode(TeachingResult.self, from: await api("/sessions/\(paired.id)/result", token: creation.ownerToken))
         precondition(received.samples.count == 1 && received.id == result.id, "native completion receipt")
         for address in ["https://example.com", "http://192.168.1.2@outside.com", "http://192.168.1.2/path", "http://8.8.8.8"] {
             do { _ = try LANClient(address: address); preconditionFailure("non-LAN address accepted") } catch {}
         }
-        print("IPv4/port input, default and custom ports, native Swift LAN pairing, download, offline recovery, completion-only upload and retry passed.")
+        print("IPv4/port input, pairing, offline recovery, pre-sync model checks, local/remote mismatch and missing-file rejection, Pose preservation and verified retry passed.")
     }
 }

@@ -116,8 +116,11 @@ final class TeachingSession: ObservableObject {
                 let client = try LANClient(address: serverAddress)
                 project.serverURL = client.baseURL.absoluteString; current = project
                 try await ProjectStore.shared.save(project)
-                status = "正在通过局域网同步完成结果…"
-                try await client.upload(project)
+                status = "正在核对 iPad 与电脑的模型文件…"
+                let modelURL = try await ProjectStore.shared.modelURL(project.id)
+                try await client.upload(project, modelURL: modelURL) {
+                    self.status = "模型一致，正在通过局域网上传 Pose…"
+                }
                 project.syncedAt = timestamp(); current = project; try await ProjectStore.shared.save(project)
                 status = "同步成功，请在电脑端点击「检查完成状态」并接收结果"
             } else { status = "示教已完成并保存在 iPad，返回局域网后点击同步" }

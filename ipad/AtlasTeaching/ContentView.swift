@@ -217,30 +217,44 @@ struct ContentView: View {
 
 private struct LANAddressFields: View {
     @Binding var address: LANAddressInput
-    private enum Field { case host, port }
-    @FocusState private var focused: Field?
+    @State private var hostError = ""
+    @FocusState private var portFocused: Bool
     var body: some View {
-        HStack(alignment: .top, spacing: 12) {
-            VStack(alignment: .leading, spacing: 8) {
-                Text("IPv4 地址").font(.caption).foregroundStyle(.secondary)
-                TextField("192.168.1.20", text: $address.host)
-                    .focused($focused, equals: .host).submitLabel(.next).onSubmit { focused = .port }
-                    .accessibilityLabel("IPv4 地址").accessibilityIdentifier("server-address")
-            }.frame(maxWidth: .infinity)
-            VStack(alignment: .leading, spacing: 8) {
-                Text("端口").font(.caption).foregroundStyle(.secondary)
-                TextField(LANAddressInput.defaultPort, text: $address.port)
-                    .focused($focused, equals: .port).submitLabel(.done).onSubmit {
-                        if address.port.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { address.port = LANAddressInput.defaultPort }
-                        focused = nil
-                    }
-                    .multilineTextAlignment(.center)
-                    .accessibilityLabel("服务端口").accessibilityIdentifier("server-port")
-            }.frame(width: 94)
+        VStack(alignment: .leading, spacing: 8) {
+            ViewThatFits(in: .horizontal) {
+                HStack(alignment: .top, spacing: 12) { hostFields.frame(minWidth: 224); portField }
+                VStack(alignment: .leading, spacing: 12) { hostFields; portField }
+            }
+            if !hostError.isEmpty { Text(hostError).font(.caption).foregroundStyle(.orange).accessibilityIdentifier("server-address-error") }
+            // Older saved .local endpoints remain visible until replaced with an IPv4 address.
+            if !address.host.isEmpty && IPv4Input.octets(address.host, allowingEmpty: true) == nil {
+                Text("当前地址：\(address.host)").font(.caption).foregroundStyle(.secondary)
+            }
         }
-        .font(.system(.body, design: .monospaced))
-        .textFieldStyle(.roundedBorder).keyboardType(.numbersAndPunctuation)
-        .textInputAutocapitalization(.never).autocorrectionDisabled()
+        .onChange(of: address.host) { _, _ in hostError = "" }
+    }
+    private var hostFields: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("IPv4 地址").font(.caption).foregroundStyle(.secondary)
+            IPv4AddressField(host: $address.host, error: $hostError) { portFocused = true }
+                .frame(maxWidth: .infinity).frame(height: 44)
+        }.frame(maxWidth: .infinity)
+    }
+    private var portField: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("端口").font(.caption).foregroundStyle(.secondary)
+            TextField(LANAddressInput.defaultPort, text: $address.port)
+                .focused($portFocused).submitLabel(.done).onSubmit {
+                    if address.port.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { address.port = LANAddressInput.defaultPort }
+                    portFocused = false
+                }
+                .font(.system(.body, design: .monospaced)).multilineTextAlignment(.center)
+                .textFieldStyle(.plain).frame(height: 44)
+                .background(.black.opacity(0.24), in: RoundedRectangle(cornerRadius: 8))
+                .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(.white.opacity(0.18)))
+                .keyboardType(.numbersAndPunctuation).textInputAutocapitalization(.never).autocorrectionDisabled()
+                .accessibilityLabel("服务端口").accessibilityIdentifier("server-port")
+        }.frame(width: 94)
     }
 }
 

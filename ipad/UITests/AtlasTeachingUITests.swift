@@ -1,8 +1,84 @@
 import XCTest
 import CryptoKit
+import UIKit
 
 @MainActor
 final class AtlasTeachingUITests: XCTestCase {
+    private func ipv4Address(in app: XCUIApplication) -> String {
+        (0..<4).map { index in
+            let field = app.textFields["server-address-octet-\(index)"]
+            return field.value as? String ?? ""
+        }.joined(separator: ".")
+    }
+
+    func testSegmentedIPv4InputLimitsAndNavigation() {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        XCUIDevice.shared.orientation = .landscapeLeft
+        app.launchArguments = ["-serverAddress", "http://192.168.100.7:22001"]
+        app.launch()
+        let fields = (0..<4).map { app.textFields["server-address-octet-\($0)"] }
+        XCTAssertTrue(fields[0].waitForExistence(timeout: 15))
+        XCTAssertEqual(ipv4Address(in: app), "192.168.100.7")
+        let code = app.textFields["pairing-code"], receive = app.buttons["receive-model"]
+        code.tap(); code.typeText("Q7Z2")
+        fields[0].tap(); fields[0].typeText("10.")
+        fields[1].typeText("256")
+        XCTAssertEqual(fields[1].value as? String, "25", "reject the digit that would make an octet exceed 255")
+        XCTAssertTrue(app.staticTexts["server-address-error"].exists)
+        fields[1].typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: 2))
+        XCTAssertFalse(receive.isEnabled, "an empty octet makes the address incomplete")
+        fields[1].typeText(XCUIKeyboardKey.delete.rawValue)
+        XCTAssertEqual(fields[0].value as? String, "1", "backspace from an empty cell edits the preceding octet")
+        fields[0].typeText("92")
+        fields[1].typeText("168.")
+        fields[2].typeText("0.")
+        fields[3].typeText("255")
+        XCTAssertEqual(ipv4Address(in: app), "192.168.0.255", "three digits advance once; the following dot must not skip an octet")
+        XCTAssertTrue(receive.isEnabled)
+        fields[3].typeText("6")
+        XCTAssertEqual(fields[3].value as? String, "255", "a fourth digit cannot change the valid octet")
+        fields[3].typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: 3)); fields[3].typeText("0")
+        XCTAssertEqual(ipv4Address(in: app), "192.168.0.0")
+        XCTAssertTrue(receive.isEnabled, "zero is a valid octet")
+        XCTAssertEqual(app.textFields["server-port"].value as? String, "22001", "octet editing preserves the port")
+        app.buttons["完成"].tap()
+        let screenshot = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+        screenshot.name = "Segmented IPv4 with independent port"; screenshot.lifetime = .keepAlways; add(screenshot)
+        XCTAssertFalse(app.buttons["capture-pose"].exists)
+    }
+
+    func testSegmentedIPv4WholeAddressEditIsAtomic() {
+        // Exercise UIKit's whole-string edit transaction without relying on a
+        // background UI-test runner having access to the device clipboard.
+        let view = IPv4InputView(frame: CGRect(x: 0, y: 0, width: 260, height: 44))
+        view.setHost("192.168.100.7")
+        let fields = view.subviews.compactMap { $0 as? UITextField }
+        XCTAssertEqual(fields.count, 4)
+        var updates: [String] = [], error = ""
+        view.onChange = { updates.append($0) }
+        view.onReject = { error = $0 }
+        func paste(_ value: String) {
+            let first = fields[0]
+            XCTAssertEqual(first.delegate?.textField?(first,
+                shouldChangeCharactersIn: NSRange(location: 0, length: (first.text ?? "").utf16.count),
+                replacementString: value), false)
+        }
+        paste(" 010.002.003.255 ")
+        XCTAssertEqual(updates, ["10.2.3.255"])
+        XCTAssertEqual(fields.map { $0.text ?? "" }, ["10", "2", "3", "255"])
+        for invalid in ["10.2.3.256", "10.2..3", "10.2.3.4.5", "10.a.3.4", "10.2.3.9999"] {
+            paste(invalid)
+            XCTAssertFalse(error.isEmpty)
+            XCTAssertEqual(updates, ["10.2.3.255"], "a rejected paste must never publish a partial address")
+            XCTAssertEqual(fields.map { $0.text ?? "" }, ["10", "2", "3", "255"])
+        }
+        paste("0.0.0.0")
+        XCTAssertEqual(updates.last, "0.0.0.0")
+        paste("255.255.255.255")
+        XCTAssertEqual(updates.last, "255.255.255.255")
+    }
+
     func testPairingScannerCanCancelWithoutChangingManualInput() {
         continueAfterFailure = false
         let app = XCUIApplication()
@@ -39,7 +115,7 @@ final class AtlasTeachingUITests: XCTestCase {
         cancel.tap()
         XCTAssertTrue(code.waitForExistence(timeout: 5))
         XCTAssertEqual(code.value as? String, "Q7Z2")
-        XCTAssertEqual(app.textFields["server-address"].value as? String, "192.168.100.7")
+        XCTAssertEqual(ipv4Address(in: app), "192.168.100.7")
         XCTAssertEqual(app.textFields["server-port"].value as? String, "21990")
         XCTAssertTrue(app.buttons["receive-model"].isEnabled)
         XCTAssertFalse(app.buttons["capture-pose"].exists)
@@ -60,9 +136,9 @@ final class AtlasTeachingUITests: XCTestCase {
         code.tap(); code.typeText("Q7Z2")
         let service = app.buttons["discovered-service-\(serverID)"]
         XCTAssertTrue(service.waitForExistence(timeout: 20), app.debugDescription)
-        XCTAssertEqual(app.textFields["server-address"].value as? String, "192.168.100.7", "search never overwrites a manually entered address")
+        XCTAssertEqual(ipv4Address(in: app), "192.168.100.7", "search never overwrites a manually entered address")
         service.tap()
-        XCTAssertNotEqual(app.textFields["server-address"].value as? String, "192.168.100.7")
+        XCTAssertNotEqual(ipv4Address(in: app), "192.168.100.7")
         XCTAssertEqual(code.value as? String, "Q7Z2", "selection keeps the pairing code")
         XCTAssertTrue(app.buttons["receive-model"].isEnabled)
         XCTAssertFalse(app.buttons["capture-pose"].exists, "discovery never pairs or opens a teaching session")
@@ -107,16 +183,16 @@ final class AtlasTeachingUITests: XCTestCase {
         XCUIDevice.shared.orientation = .landscapeLeft
         app.launchArguments = ["-serverAddress", "192.168.100.7"]
         app.launch()
-        let host = app.textFields["server-address"], port = app.textFields["server-port"]
+        let host = app.textFields["server-address-octet-0"], port = app.textFields["server-port"]
         XCTAssertTrue(host.waitForExistence(timeout: 15))
-        XCTAssertEqual(host.value as? String, "192.168.100.7")
+        XCTAssertEqual(ipv4Address(in: app), "192.168.100.7")
         XCTAssertEqual(port.value as? String, "21990")
         app.textFields["pairing-code"].tap(); app.textFields["pairing-code"].typeText("Q7Z2")
         let receive = app.buttons["receive-model"]
         XCTAssertTrue(receive.isEnabled)
         port.coordinate(withNormalizedOffset: CGVector(dx: 0.95, dy: 0.5)).tap()
         port.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: 5)); port.typeText("22001")
-        XCTAssertEqual(host.value as? String, "192.168.100.7", "editing the port keeps the IPv4 address")
+        XCTAssertEqual(ipv4Address(in: app), "192.168.100.7", "editing the port keeps the IPv4 address")
         XCTAssertEqual(port.value as? String, "22001"); XCTAssertTrue(receive.isEnabled)
         port.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: 5)); port.typeText("65536")
         XCTAssertFalse(receive.isEnabled)
@@ -151,7 +227,7 @@ final class AtlasTeachingUITests: XCTestCase {
         continueAfterFailure = false
         let app = XCUIApplication()
         app.launch()
-        XCTAssertTrue(app.textFields["server-address"].waitForExistence(timeout: 15))
+        XCTAssertTrue(app.textFields["server-address-octet-0"].waitForExistence(timeout: 15))
         for orientation in [UIDeviceOrientation.landscapeLeft, .portrait] {
             XCUIDevice.shared.orientation = orientation
             let rotated = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
@@ -208,7 +284,7 @@ final class AtlasTeachingUITests: XCTestCase {
         XCUIDevice.shared.orientation = .landscapeLeft
         app.launchArguments = ["-serverAddress", address]
         app.launch()
-        XCTAssertTrue(app.textFields["server-address"].waitForExistence(timeout: 15))
+        XCTAssertTrue(app.textFields["server-address-octet-0"].waitForExistence(timeout: 15))
         if environment["ATLAS_HARDWARE_LOCAL_ONLY"] == "1", let id = environment["ATLAS_HARDWARE_SESSION"] {
             let project = app.buttons["local-project-\(id)"]
             XCTAssertTrue(project.waitForExistence(timeout: 15)); project.tap()
@@ -326,10 +402,9 @@ final class AtlasTeachingUITests: XCTestCase {
         app.launch()
         let landscape = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in app.windows.firstMatch.frame.width > app.windows.firstMatch.frame.height }, object: nil)
         XCTAssertEqual(XCTWaiter.wait(for: [landscape], timeout: 10), .completed)
-        let address = app.textFields["server-address"]
+        let address = app.textFields["server-address-octet-0"]
         XCTAssertTrue(address.waitForExistence(timeout: 15))
         address.tap()
-        if let current = address.value as? String, current != address.placeholderValue { address.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: current.count)) }
         address.typeText("127.0.0.1")
         let port = app.textFields["server-port"]; port.tap()
         if let current = port.value as? String, current != port.placeholderValue { port.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: current.count)) }

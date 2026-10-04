@@ -74,9 +74,14 @@ playwright/.auth/
 *.profraw
 *.profdata
 
-# UI smoke-test screenshots saved in the repository root
+# UI smoke-test captures saved in the repository root
 /atlas-*.png
 /transfer-*.png
+/atlas-ipad-*.mp4
+
+# xcresulttool exports UUID-named images, recordings, snapshots and a manifest.
+/atlas-ipad-*-shots/
+/ipad/atlas-ipad-*-shots/
 
 # Python bytecode, environments, and test caches
 __pycache__/

@@ -67,11 +67,12 @@ export function rememberIPadTicket(ticket) {
   localStorage.setItem(ticketKey, JSON.stringify([ticket, ...tickets.filter((item) => item.id !== ticket.id)]));
 }
 
-export function ipadResultTask(result, ticket, mapData) {
+export async function ipadResultTask(result, ticket, mapData) {
   validateIPadResult(result, ticket.manifest, ticket.id);
-  if (mapData.sourceHash ? ticket.manifest.sourceHash !== mapData.sourceHash
-    : ticket.manifest.sourceMapId !== mapData.mapId) {
-    throw new Error('当前独立示教物体已切换，请打开发送时的工程再接收');
+  // Compare actual geometry with the transferred model, never names, IDs or teaching poses.
+  const { manifest } = await packIPadModel(mapData);
+  if (manifest.modelHash !== ticket.manifest.modelHash || manifest.byteLength !== ticket.manifest.byteLength) {
+    throw new Error('当前独立示教物体与 iPad 的模型内容不一致，即使文件同名也无法接收；请打开配对时的模型');
   }
   return { id: `ipad-${result.id}`, name: `iPad 示教 · ${ticket.manifest.name}`,
     createdAt: result.createdAt, updatedAt: result.completedAt, coordinateFrame: 'virtual_origin',

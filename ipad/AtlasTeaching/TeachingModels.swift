@@ -7,6 +7,19 @@ let maximumModelBytes = 192 * 1024 * 1024
 let maximumModelVertices = 5_000_000
 let maximumModelIndices = 30_000_000
 
+enum IPv4Input {
+    static func acceptsOctet(_ text: String) -> Bool {
+        text.isEmpty || (text.utf8.count <= 3 && text.utf8.allSatisfy { (48...57).contains($0) }
+            && Int(text).map { (0...255).contains($0) } == true)
+    }
+    static func octets(_ host: String, allowingEmpty: Bool = false) -> [String]? {
+        if host.isEmpty && allowingEmpty { return Array(repeating: "", count: 4) }
+        let parts = host.split(separator: ".", omittingEmptySubsequences: false).map(String.init)
+        guard parts.count == 4, parts.allSatisfy({ acceptsOctet($0) && (allowingEmpty || !$0.isEmpty) }) else { return nil }
+        return parts
+    }
+}
+
 enum PairingCode {
     static func normalize(_ value: String) -> String { value.trimmingCharacters(in: .whitespacesAndNewlines).uppercased() }
     static func isValid(_ value: String) -> Bool {

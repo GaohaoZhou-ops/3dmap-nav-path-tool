@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -72,6 +72,26 @@ try {
     device: { model: 'iPad Pro', lidar: true }, calibrations: [{ id: 'segment-1', worldFromModel: new Matrix4().makeRotationX(-Math.PI / 2).toArray() }],
     samples: [0, 1].map((index) => ({ id: `sample-${index}`, name: `Pose ${index + 1}`, segmentId: 'segment-1', capturedAt: new Date().toISOString(), kind: 'keyframe', tracking: 'normal',
       cameraPose: { frameName: 'ipad_camera_optical_frame', position: { x: index + 1, y: 2, z: 3 }, quaternion: { x: 0, y: 0, z: 0, w: 1 } }, surfacePoint: { x: 1, y: 1, z: 1 } })) };
+  const identity = { modelHash: packed.manifest.modelHash, byteLength: packed.buffer.byteLength };
+  const verify = (body = identity, expected = 200) => request(sessionPath + '/verify-model', { method: 'POST', token: paired.deviceToken, body, expected });
+  await request(sessionPath + '/verify-model', { method: 'POST', body: identity, expected: 401 });
+  await request(sessionPath + '/verify-model', { method: 'POST', token: owner, body: identity, expected: 401 });
+  await verify({ ...identity, byteLength: -1 }, 400);
+  await verify({ ...identity, modelHash: '0'.repeat(64) }, 409);
+  await verify({ ...identity, byteLength: identity.byteLength + 1 }, 409);
+  assert.deepEqual(await verify(), { ...identity, sessionId: created.id, verified: true });
+  // A same-size model replacement after verification must also fail at result receipt.
+  const modelFile = path.join(directory, created.id, 'model.atls');
+  const changed = packed.buffer.slice(0); new DataView(changed).setFloat32(32, 42, true);
+  await writeFile(modelFile, new Uint8Array(changed));
+  assert.match((await verify(identity, 409)).error, /模型文件已改变/);
+  await request(sessionPath + '/result', { method: 'POST', token: paired.deviceToken, body: result, expected: 409 });
+  assert.equal((await request(sessionPath, { token: owner })).status, 'paired', 'failed checks never mark a result completed');
+  await request(sessionPath + '/result', { token: owner, expected: 409 });
+  await rm(modelFile);
+  assert.match((await verify(identity, 409)).error, /缺少.*模型文件/);
+  await writeFile(modelFile, new Uint8Array(packed.buffer));
+  await verify();
   assert.throws(() => validateIPadResult({ ...result, modelHash: 'wrong' }, packed.manifest, created.id), /不匹配/);
   const reflected = structuredClone(result); reflected.calibrations[0].worldFromModel = new Matrix4().makeScale(-1, 1, 1).toArray();
   assert.throws(() => validateIPadResult(reflected, packed.manifest, created.id), /镜像/);
@@ -85,9 +105,27 @@ try {
   await request(sessionPath + '/result', { method: 'POST', token: paired.deviceToken, body: { ...result, id: randomUUID() }, expected: 409 });
   const received = await request(sessionPath + '/result', { token: owner }); assert.deepEqual(received, result);
   const ticket = { ...created, manifest: packed.manifest };
-  const task = ipadResultTask(result, ticket, map);
-  assert.equal(ipadResultTask(result, ticket, { ...map, mapId: 'reopened-project' }).id, task.id, 'same source can be reopened before import');
-  assert.throws(() => ipadResultTask(result, ticket, { ...map, sourceHash: 'different' }), /物体已切换/);
+  const task = await ipadResultTask(result, ticket, map);
+  assert.equal((await ipadResultTask(result, ticket, { ...map, mapId: 'reopened-project', name: 'renamed.ply', sourceHash: 'different-metadata' })).id,
+    task.id, 'identical model bytes match regardless of names or project metadata');
+  for (const field of ['position', 'color', 'index']) {
+    const different = geometry.clone();
+    if (field === 'index') different.setIndex([0, 2, 1]);
+    else different.getAttribute(field).setX(0, field === 'position' ? 42 : 0.5);
+    await assert.rejects(ipadResultTask(result, ticket, { ...map, geometry: different }), /模型内容不一致/,
+      `same filename, IDs, counts and source hash must not hide changed ${field}`);
+    different.dispose();
+  }
+  const desktopTasks = teachingTransferFixture('independent').config.config.project.virtualTeaching.tasks;
+  const desktopBefore = structuredClone(desktopTasks), ipadBefore = structuredClone(result);
+  const withDesktopPoses = { ...map, teachingTasks: desktopTasks, samples: desktopTasks[0].parkingPoints[0].poses };
+  assert.equal((await packIPadModel(withDesktopPoses)).manifest.modelHash, packed.manifest.modelHash, 'desktop poses are excluded from model fingerprints');
+  const withBoth = normalizeProject(buildExport({ mapData: map, teachingSpaceMode: 'independent', heightRange: [0, 4], waypoints: [], edges: [],
+    teachingTasks: [...desktopTasks, await ipadResultTask(result, ticket, withDesktopPoses)] }));
+  assert.equal(withBoth.teachingTasks.length, desktopTasks.length + 1, 'different desktop and iPad poses coexist');
+  assert.deepEqual(withBoth.teachingTasks.at(-1).mobileCapture, result);
+  assert.deepEqual(desktopTasks, desktopBefore, 'model checking never changes desktop poses');
+  assert.deepEqual(result, ipadBefore, 'model checking never changes iPad poses');
   const exported = buildExport({ mapData: map, teachingSpaceMode: 'independent', heightRange: [0, 4], waypoints: [], edges: [], teachingTasks: [task] });
   const normalized = normalizeProject(JSON.parse(JSON.stringify(exported)));
   assert.deepEqual(normalized.teachingTasks[0].mobileCapture, result);
@@ -115,9 +153,10 @@ try {
   const written = await writeBackTeachingWorkspace(transferSnapshot(extraction), background);
   assert.equal(written.config.project.virtualTeaching.tasks.filter((item) => item.mobileCapture).length, 1);
   await request(sessionPath + '/imported', { token: owner, method: 'POST' });
+  assert.equal((await verify()).verified, true, 'model checks do not compare already imported poses');
   await request(sessionPath + '/result', { method: 'POST', token: paired.deviceToken, body: result });
   assert.equal((await request(sessionPath, { token: owner })).status, 'imported');
   await request(sessionPath, { method: 'DELETE', token: owner });
   await request(sessionPath + '/result', { token: paired.deviceToken, method: 'POST', body: result, expected: 410 });
-  geometry.dispose(); console.log('iPad LAN, model integrity, pairing, completion retry, persistence, poses and workspace transforms passed.');
+  geometry.dispose(); console.log('iPad LAN, pre-sync model content checks, same-name mismatch rejection, independent poses, completion retry, persistence and workspace transforms passed.');
 } finally { await new Promise((resolve) => server.close(resolve)); await rm(directory, { recursive: true, force: true }); }

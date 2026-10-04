@@ -4168,11 +4168,16 @@ export default function App() {
 
   const importIPadTeaching = async (result, ticket) => {
     const current = latestWorkspaceRef.current;
+    const workspaceId = sessionIdRef.current;
     if (current.teachingSpaceMode !== 'independent' || !sessionReadyRef.current) throw new Error('请先打开对应的独立示教工程');
-    const task = ipadResultTask(result, ticket, current.mapData);
-    const next = current.teachingTasks.some((item) => item.mobileCapture?.id === result.id)
-      ? current.teachingTasks : [...current.teachingTasks, task];
-    latestWorkspaceRef.current = { ...current, teachingTasks: next, activeTeachingTaskId: task.id, activeTeachingParkingPointId: null };
+    const task = await ipadResultTask(result, ticket, current.mapData);
+    const latest = latestWorkspaceRef.current;
+    if (latest.mapData !== current.mapData || latest.teachingSpaceMode !== 'independent'
+      || sessionIdRef.current !== workspaceId || !sessionReadyRef.current) throw new Error('校验期间独立示教物体已切换，请重新接收');
+    // Preserve desktop poses edited while the model hash was being calculated.
+    const next = latest.teachingTasks.some((item) => item.mobileCapture?.id === result.id)
+      ? latest.teachingTasks : [...latest.teachingTasks, task];
+    latestWorkspaceRef.current = { ...latest, teachingTasks: next, activeTeachingTaskId: task.id, activeTeachingParkingPointId: null };
     setTeachingTasks(next); setActiveTeachingTaskId(task.id); setActiveTeachingParkingPointId(null);
     await persistWorkspaceNow();
     if (!sessionReadyRef.current) throw new Error('接收结果尚未保存成功，请重试；服务端仍保留结果');

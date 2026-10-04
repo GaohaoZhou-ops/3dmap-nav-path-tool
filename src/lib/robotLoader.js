@@ -415,7 +415,50 @@ async function loadManifest(descriptor, signal) {
   if (response.status === 404) return null;
   if (!response.ok) throw new Error(`Web 模型清单请求失败（${response.status}）`);
   const manifest = await response.json();
-  return manifest && typeof manifest.meshOverrides === 'object' ? manifest : null;
+  return manifest && (
+    typeof manifest.meshOverrides === 'object'
+    || typeof manifest.collisionMeshOverrides === 'object'
+  ) ? manifest : null;
+}
+
+const belongsToRobotCollisionModel = (object, root) => {
+  let current = object;
+  while (current && current !== root) {
+    if (
+      current.userData?.robotCollisionGeometry
+      || current.userData?.urdfType === 'collision'
+    ) return true;
+    current = current.parent;
+  }
+  return false;
+};
+
+export function setRobotVisualBounds(target, robot) {
+  const bounds = target || new THREE.Box3();
+  bounds.makeEmpty();
+  if (!robot) return bounds;
+  robot.updateWorldMatrix(true, true);
+  const objectBounds = new THREE.Box3();
+  robot.traverse((object) => {
+    if (
+      !object.geometry
+      || (!object.isMesh && !object.isLine && !object.isLineSegments && !object.isPoints)
+      || belongsToRobotCollisionModel(object, robot)
+    ) return;
+    let sourceBounds;
+    if (object.boundingBox !== undefined) {
+      if (object.boundingBox === null) object.computeBoundingBox();
+      sourceBounds = object.boundingBox;
+    } else {
+      if (!object.geometry.boundingBox) object.geometry.computeBoundingBox();
+      sourceBounds = object.geometry.boundingBox;
+    }
+    if (sourceBounds && !sourceBounds.isEmpty()) {
+      objectBounds.copy(sourceBounds).applyMatrix4(object.matrixWorld);
+      bounds.union(objectBounds);
+    }
+  });
+  return bounds;
 }
 
 async function loadUrdfRobot(descriptor, signal, onProgress) {
@@ -459,13 +502,24 @@ async function loadUrdfRobot(descriptor, signal, onProgress) {
       index,
     })),
   );
-  onProgress?.({ loaded: 0, total: visualEntries.length, phase: '解析 URDF 关节树' });
+  const collisionEntries = linkElements.flatMap((linkElement) =>
+    childElements(linkElement, 'collision').map((collisionElement, index) => ({
+      linkElement,
+      collisionElement,
+      index,
+    })),
+  );
+  const geometryEntryCount = visualEntries.length + collisionEntries.length;
+  onProgress?.({ loaded: 0, total: geometryEntryCount, phase: '解析 URDF 关节树与碰撞模型' });
   const assetCache = new Map();
   const meshOverrides = {
     ...BUILTIN_MESH_OVERRIDES,
     ...(manifest?.meshOverrides || {}),
   };
+  const collisionMeshOverrides = manifest?.collisionMeshOverrides || {};
   let loadedVisuals = 0;
+  let loadedCollisions = 0;
+  let processedGeometries = 0;
 
   const visualTasks = visualEntries.map(async ({ linkElement, visualElement, index }) => {
     const linkName = linkElement.getAttribute('name');
@@ -531,11 +585,95 @@ async function loadUrdfRobot(descriptor, signal, onProgress) {
     visual.add(object);
     link.add(visual);
     loadedVisuals += 1;
+    processedGeometries += 1;
     onProgress?.({
-      loaded: loadedVisuals,
-      total: visualEntries.length,
-      phase: `装配机器人模型 ${loadedVisuals}/${visualEntries.length}`,
+      loaded: processedGeometries,
+      total: geometryEntryCount,
+      phase: `装配机器人模型 ${processedGeometries}/${geometryEntryCount}`,
     });
+  });
+
+  const collisionTasks = collisionEntries.map(async ({
+    linkElement,
+    collisionElement,
+    index,
+  }) => {
+    const linkName = linkElement.getAttribute('name');
+    const link = linkGroups.get(linkName);
+    const geometryElement = childElement(collisionElement, 'geometry');
+    if (!link || !geometryElement) return;
+    const collision = new THREE.Group();
+    collision.name = `${linkName}:collision:${index}`;
+    collision.userData.urdfType = 'collision';
+    collision.userData.collisionIndex = index;
+    const material = new THREE.MeshBasicMaterial({
+      visible: false,
+      colorWrite: false,
+      depthWrite: false,
+    });
+    const meshElement = childElement(geometryElement, 'mesh');
+    let object;
+    let origin = readOrigin(childElement(collisionElement, 'origin'));
+    try {
+      if (meshElement) {
+        const filename = meshElement.getAttribute('filename');
+        if (!filename) throw new Error(`${linkName} 的 collision 缺少 mesh filename`);
+        const override = collisionMeshOverrides[filename] || null;
+        const selectedFile = override?.file || filename;
+        const assetReference = resolveAssetReference(
+          selectedFile,
+          descriptor,
+          Boolean(override?.file),
+        );
+        if (!assetCache.has(assetReference.url)) {
+          assetCache.set(
+            assetReference.url,
+            loadAsset(
+              assetReference.url,
+              signal,
+              extensionForPath(selectedFile),
+              { descriptor, path: assetReference.path },
+            ),
+          );
+        }
+        const asset = await assetCache.get(assetReference.url);
+        object = instantiateAsset(asset, material);
+        object.scale.fromArray(
+          override?.applyUrdfScale === false
+            ? parseNumbers(override.scale, 3, [1, 1, 1])
+            : parseNumbers(meshElement.getAttribute('scale'), 3, [1, 1, 1]),
+        );
+        if (override?.origin) {
+          origin = {
+            xyz: parseNumbers(override.origin.xyz, 3, origin.xyz),
+            rpy: parseNumbers(override.origin.rpy, 3, origin.rpy),
+          };
+        }
+        collision.userData.sourceFile = filename;
+        collision.userData.loadedFile = selectedFile;
+      } else {
+        object = createPrimitive(geometryElement, material);
+        if (!object) throw new Error(`${linkName} 包含不支持的 URDF collision 几何类型`);
+      }
+      object.traverse((child) => {
+        if (child.isMesh) child.userData.robotCollisionGeometry = true;
+      });
+      applyOrigin(collision, origin);
+      collision.add(object);
+      // Collision geometry participates in transforms and queries but is never rendered.
+      collision.visible = false;
+      link.add(collision);
+      loadedCollisions += 1;
+      processedGeometries += 1;
+      onProgress?.({
+        loaded: processedGeometries,
+        total: geometryEntryCount,
+        phase: `装配碰撞模型 ${processedGeometries}/${geometryEntryCount}`,
+      });
+    } catch (error) {
+      material.dispose();
+      throw error;
+    }
   });
 
   const childLinkNames = new Set();
@@ -577,8 +715,11 @@ async function loadUrdfRobot(descriptor, signal, onProgress) {
     if (!childLinkNames.has(name)) robot.add(link);
   });
 
-  const results = await Promise.allSettled(visualTasks);
-  const failure = results.find((result) => result.status === 'rejected');
+  const [visualResults, collisionResults] = await Promise.all([
+    Promise.allSettled(visualTasks),
+    Promise.allSettled(collisionTasks),
+  ]);
+  const failure = visualResults.find((result) => result.status === 'rejected');
   if (failure) {
     disposeRobotModel(robot);
     throw failure.reason;
@@ -610,6 +751,10 @@ async function loadUrdfRobot(descriptor, signal, onProgress) {
     linkCount: linkGroups.size,
     jointCount: jointElements.length,
     visualCount: loadedVisuals,
+    collisionCount: loadedCollisions,
+    collisionLoadErrorCount: collisionResults.filter(
+      (result) => result.status === 'rejected',
+    ).length,
     zividCount: visualEntries.reduce((count, { visualElement }) => {
       const filename = childElement(childElement(visualElement, 'geometry'), 'mesh')
         ?.getAttribute('filename');
@@ -644,6 +789,8 @@ async function loadDirectRobot(descriptor, signal, onProgress) {
     linkCount: 1,
     jointCount: 0,
     visualCount: 1,
+    collisionCount: 0,
+    collisionLoadErrorCount: 0,
     zividCount: 0,
     opticalFrameCount: 0,
     webOverrideCount: 0,
@@ -666,7 +813,7 @@ export async function loadRobotModel(value, options = {}) {
   robot.userData.descriptor = descriptor;
   robot.userData.mapOrigin = [0, 0, 0];
   robot.updateMatrixWorld(true);
-  const bounds = new THREE.Box3().setFromObject(robot);
+  const bounds = setRobotVisualBounds(new THREE.Box3(), robot);
   const size = bounds.getSize(new THREE.Vector3());
   const frameNames = [
     'base_link',

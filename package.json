@@ -13,6 +13,7 @@
     "test:ipad:native": "node tests/ipad_native_lan_smoke.mjs",
     "test:ipad:qr": "node tests/ipad_qr_pairing_smoke.mjs",
     "test:transfer": "node tests/teaching_transfer_smoke.mjs && node tests/teaching_transfer_preview_smoke.mjs",
+    "test:collision-backends": "node tests/isaac_collision_backend_smoke.mjs",
     "preview": "vite preview",
     "service:start": "./scripts/start.sh",
     "service:status": "./scripts/status.sh",

@@ -495,9 +495,11 @@ export async function collectProjectRobotResources(robot, onProgress, existingPa
   if (manifestFile) {
     try {
       const manifest = JSON.parse(strFromU8(manifestFile.bytes).replace(/^\uFEFF/, ''));
-      Object.values(manifest.meshOverrides || {}).forEach((override) => {
-        if (override?.file) requiredPaths.add(resolveRelativePath(packagePath, override.file));
-      });
+      [manifest.meshOverrides, manifest.collisionMeshOverrides]
+        .flatMap((overrides) => Object.values(overrides || {}))
+        .forEach((override) => {
+          if (override?.file) requiredPaths.add(resolveRelativePath(packagePath, override.file));
+        });
     } catch (error) {
       throw new Error(`机器人 Web 模型清单解析失败：${error.message}`);
     }

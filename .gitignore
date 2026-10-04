@@ -22,6 +22,14 @@ output/
 *.tsbuildinfo
 vite.config.*.timestamp-*
 
+# Node.js and browser diagnostic dumps
+*.heapsnapshot
+*.cpuprofile
+report.[0-9]*.[0-9]*.[0-9]*.[0-9]*.json
+/core
+/core.*
+*.dmp
+
 # Xcode / Swift build output and local IDE state
 # Keep project files, shared schemes, asset catalogs, and source artwork tracked.
 DerivedData/
@@ -198,6 +206,8 @@ slurm-*.err
 !.env.*.example
 !.env.template
 !.env.*.template
+.direnv/
+.envrc.local
 
 # Editor and operating-system metadata
 .DS_Store

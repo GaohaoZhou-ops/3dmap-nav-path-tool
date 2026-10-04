@@ -12,6 +12,9 @@ const YELLOW_WARNING_COLOR = '#ffc84a';
 export const createRobotCollisionStatus = (overrides = {}) => ({
   enabled: false,
   state: 'disabled',
+  backend: 'local',
+  requestedBackend: 'local',
+  engine: 'Browser spatial worker',
   threshold: ROBOT_COLLISION_SAFETY_DISTANCE,
   minimumDistance: null,
   collisionLinks: [],
@@ -19,6 +22,8 @@ export const createRobotCollisionStatus = (overrides = {}) => ({
   excludedLinks: [],
   monitoredLinkCount: 0,
   monitoredProxyCount: 0,
+  collisionModelProxyCount: 0,
+  visualFallbackProxyCount: 0,
   sourcePointCount: 0,
   indexedPointCount: 0,
   meshSampleCount: 0,
@@ -39,6 +44,15 @@ const findOwningLink = (object, robot) => {
     current = current.parent;
   }
   return null;
+};
+
+const hasUrdfAncestor = (object, robot, type) => {
+  let current = object;
+  while (current && current !== robot) {
+    if (current.userData?.urdfType === type) return true;
+    current = current.parent;
+  }
+  return false;
 };
 
 const materialAllowsCollisionOverlay = (mesh) => {
@@ -69,6 +83,9 @@ export function collectRobotCollisionProxies(robot) {
   const proxies = [];
   const excludedLinks = new Set();
   const monitoredLinks = new Set();
+  const visualMeshes = new Map();
+  const collisionMeshes = new Map();
+  const highlightEntries = [];
   const redMaterial = createWarningMaterial(RED_WARNING_COLOR);
   const yellowMaterial = createWarningMaterial(YELLOW_WARNING_COLOR);
   let proxyIndex = 0;
@@ -77,12 +94,7 @@ export function collectRobotCollisionProxies(robot) {
     if (object.userData?.urdfType === 'link' && isExcludedRobotCollisionLink(object.name)) {
       excludedLinks.add(object.name);
     }
-    if (
-      !object.isMesh
-      || object.userData?.robotChassisDragHandle
-      || !object.geometry?.getAttribute?.('position')
-      || !materialAllowsCollisionOverlay(object)
-    ) return;
+    if (!object.isMesh || !object.geometry?.getAttribute?.('position')) return;
 
     const link = findOwningLink(object, robot);
     const linkName = link?.name || robot?.name || 'robot';
@@ -91,33 +103,71 @@ export function collectRobotCollisionProxies(robot) {
       return;
     }
 
-    if (!object.geometry.boundingBox) object.geometry.computeBoundingBox();
-    const box = object.geometry.boundingBox;
-    if (!box || box.isEmpty()) return;
-    const localCenter = box.getCenter(new THREE.Vector3());
-    const localHalfSize = box.getSize(new THREE.Vector3()).multiplyScalar(0.5);
-    if (![...localCenter.toArray(), ...localHalfSize.toArray()].every(Number.isFinite)) return;
+    const isCollisionGeometry = Boolean(object.userData?.robotCollisionGeometry)
+      || hasUrdfAncestor(object, robot, 'collision');
+    if (isCollisionGeometry) {
+      if (!collisionMeshes.has(linkName)) collisionMeshes.set(linkName, []);
+      collisionMeshes.get(linkName).push(object);
+      return;
+    }
+    if (object.userData?.robotChassisDragHandle || !materialAllowsCollisionOverlay(object)) return;
+    if (!visualMeshes.has(linkName)) visualMeshes.set(linkName, []);
+    visualMeshes.get(linkName).push(object);
+  });
 
-    monitoredLinks.add(linkName);
-    proxies.push({
-      id: `proxy-${proxyIndex += 1}`,
-      linkName,
-      mesh: object,
-      localCenter,
-      localHalfSize,
-      originalMaterial: object.material,
-      warningMaterials: {
-        collision: warningMaterialForMesh(object, redMaterial),
-        near: warningMaterialForMesh(object, yellowMaterial),
-      },
-      warningState: 'safe',
+  const linkNames = new Set([...visualMeshes.keys(), ...collisionMeshes.keys()]);
+  linkNames.forEach((linkName) => {
+    const dedicatedCollisionMeshes = collisionMeshes.get(linkName) || [];
+    const fallbackVisualMeshes = visualMeshes.get(linkName) || [];
+    const detectionMeshes = dedicatedCollisionMeshes.length
+      ? dedicatedCollisionMeshes
+      : fallbackVisualMeshes;
+    const proxySource = dedicatedCollisionMeshes.length ? 'urdf-collision' : 'visual-fallback';
+
+    detectionMeshes.forEach((mesh) => {
+      if (!mesh.geometry.boundingBox) mesh.geometry.computeBoundingBox();
+      const box = mesh.geometry.boundingBox;
+      if (!box || box.isEmpty()) return;
+      const localCenter = box.getCenter(new THREE.Vector3());
+      const localHalfSize = box.getSize(new THREE.Vector3()).multiplyScalar(0.5);
+      if (![...localCenter.toArray(), ...localHalfSize.toArray()].every(Number.isFinite)) return;
+
+      monitoredLinks.add(linkName);
+      proxies.push({
+        id: `proxy-${proxyIndex += 1}`,
+        linkName,
+        mesh,
+        source: proxySource,
+        localCenter,
+        localHalfSize,
+      });
+    });
+
+    fallbackVisualMeshes.forEach((mesh) => {
+      highlightEntries.push({
+        linkName,
+        mesh,
+        originalMaterial: mesh.material,
+        warningMaterials: {
+          collision: warningMaterialForMesh(mesh, redMaterial),
+          near: warningMaterialForMesh(mesh, yellowMaterial),
+        },
+        warningState: 'safe',
+      });
     });
   });
 
   return {
     proxies,
+    highlightEntries,
     excludedLinks: [...excludedLinks].sort(),
     monitoredLinks: [...monitoredLinks].sort(),
+    collisionModelProxyCount: proxies.filter(
+      (proxy) => proxy.source === 'urdf-collision',
+    ).length,
+    visualFallbackProxyCount: proxies.filter(
+      (proxy) => proxy.source === 'visual-fallback',
+    ).length,
     warningMaterials: [redMaterial, yellowMaterial],
   };
 }
@@ -164,6 +214,7 @@ export function serializeRobotCollisionProxies(collection) {
     return {
       id: proxy.id,
       linkName: proxy.linkName,
+      source: proxy.source,
       center: center.toArray(),
       axes,
       halfSize,
@@ -197,25 +248,25 @@ export function selectRobotCollisionProbe(records) {
 }
 
 export function applyRobotCollisionHighlights(collection, result = {}) {
-  if (!collection?.proxies) return;
+  if (!collection?.highlightEntries) return;
   const collisionLinks = new Set(result.collisionLinks || []);
   const nearLinks = new Set(result.nearLinks || []);
-  collection.proxies.forEach((proxy) => {
-    const collision = collisionLinks.has(proxy.linkName);
-    const near = !collision && nearLinks.has(proxy.linkName);
+  collection.highlightEntries.forEach((entry) => {
+    const collision = collisionLinks.has(entry.linkName);
+    const near = !collision && nearLinks.has(entry.linkName);
     const nextState = collision ? 'collision' : near ? 'near' : 'safe';
-    if (proxy.warningState === nextState) return;
-    proxy.warningState = nextState;
-    proxy.mesh.material = nextState === 'safe'
-      ? proxy.originalMaterial
-      : proxy.warningMaterials[nextState];
+    if (entry.warningState === nextState) return;
+    entry.warningState = nextState;
+    entry.mesh.material = nextState === 'safe'
+      ? entry.originalMaterial
+      : entry.warningMaterials[nextState];
   });
 }
 
 export function disposeRobotCollisionProxies(collection) {
-  collection?.proxies?.forEach((proxy) => {
-    proxy.mesh.material = proxy.originalMaterial;
-    proxy.warningState = 'safe';
+  collection?.highlightEntries?.forEach((entry) => {
+    entry.mesh.material = entry.originalMaterial;
+    entry.warningState = 'safe';
   });
   collection?.warningMaterials?.forEach((material) => material.dispose());
 }

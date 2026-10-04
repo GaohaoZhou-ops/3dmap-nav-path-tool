@@ -165,6 +165,41 @@ BASE_URL=http://127.0.0.1:22001 python tests/ipad_teaching_ui_smoke.py
 
 数据转换回归：`npm run test:transfer`。浏览器流程回归：启动服务后运行 `uv run --with playwright python tests/teaching_transfer_ui_smoke.py`，覆盖点击放置、区域提取、精调回写、重复回写、并发修改保护及工程目录保存。三维操作回归：`uv run --with playwright python tests/teaching_transfer_3d_ui_smoke.py`，验证真实手柄拖拽、旋转、表面定位、裁剪盒调整、视角隔离与隐藏机器人的位姿转换。
 
+## 可选 Isaac Sim / PhysX 物理后端
+
+碰撞保护保持原有浏览器 Worker 为默认后端，因此不启动 Isaac Sim 时已有工程和操作
+完全不变。URDF 机器人现在优先装载 `<collision>` 几何；某个 link 没有可用碰撞模型
+时才回退到原视觉几何，视觉显示本身不会改变。
+
+相邻的 `../isaac-sim-server` 已包含 `atlas.isaac.collision` 扩展。先启动 Isaac Sim，
+再以 `isaac` 模式启动本工具：
+
+```bash
+cd ../isaac-sim-server
+./bin/start.sh
+
+cd ../3dmap-nav-path-tool
+ATLAS_PHYSICS_BACKEND=isaac ./scripts/start.sh
+```
+
+Isaac 模式通过本工具的 `/__atlas/physics/` 同源接口访问，不要求浏览器直接连接
+49101。Isaac 扩展会把 PLY 三角面构建为静态 USD/PhysX 碰撞网格；纯点云继续使用
+与原 Worker 等价的有界空间索引，并与 PhysX Mesh 查询合并结果。可选配置：
+
+- `ATLAS_PHYSICS_BACKEND=local|auto|isaac`：默认 `local`；`auto` 在 Isaac 不可用时
+  自动回退本地；`isaac` 不可用时明确报错，不静默改变用户选择。
+- `ISAAC_SIM_COLLISION_URL`：服务端访问地址，默认
+  `http://127.0.0.1:49101`。
+- `ISAAC_SIM_COLLISION_TOKEN`：Isaac API 非回环监听时所需令牌；一般无需设置。
+
+若 URDF 的 collision 网格不是浏览器支持的 STL/GLB/GLTF，可在机器人包的
+`web-model.json` 中用 `collisionMeshOverrides` 将原 URI 映射到等价的 Web 网格；
+该资源也会随便携工程归档一并收集。
+
+后端只在用户开启“碰撞保护”后建立会话，关闭开关即删除 USD 会话并释放资源；
+碰撞保护仍不会随页面刷新自动开启。画布调试属性 `data-collision-backend` 会显示
+`local` 或 `isaac`，`data-collision-model-proxy-count` 表示实际使用的 URDF 碰撞体数。
+
 ## 停车点集群计算
 
 “示教数据中心”选中任务后，“合并停车点”旁提供“合并停车点-Server”。弹窗中的“导出”会生成可直接复制到高性能计算集群的 ZIP：包内包含冻结后的任务计算快照、完整环境 `float32` 点坐标与三角面索引、当前 URDF、非底盘碰撞网格、依赖清单、Python DLS/环境终态碰撞算法和 `run_cluster.sh` 一键脚本。在集群解压后执行 `bash run_cluster.sh`，脚本会建立隔离虚拟环境、校验全部文件摘要并在 `output/` 同时生成结果 ZIP 与单文件 JSON。执行过程中会显示总体百分比进度条、当前阶段、处理对象和累计用时；在 Slurm 等非交互日志中也会按进度或固定时间输出心跳。

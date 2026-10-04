@@ -50,6 +50,7 @@ import {
   normalizeRobotJointValues,
   normalizeRobotPose,
   readRobotJointValues,
+  setRobotVisualBounds,
   setRobotJointValue,
 } from '../lib/robotLoader.js';
 import { normalizeRobotJointLocks } from '../lib/robotJointLocks.js';
@@ -76,6 +77,7 @@ import {
   selectRobotCollisionProbe,
   serializeRobotCollisionProxies,
 } from '../lib/robotCollision.js';
+import { createRobotCollisionBackend } from '../lib/robotCollisionBackend.js';
 
 const RESOLUTION_LEVELS = [
   { ratio: 0.05, label: '极速', tone: 'turbo' },
@@ -365,6 +367,9 @@ const packCollisionIndices = (attribute) => {
 const collisionStatusSignature = (status) => JSON.stringify({
   enabled: status.enabled,
   state: status.state,
+  backend: status.backend,
+  requestedBackend: status.requestedBackend,
+  engine: status.engine,
   minimumDistance: Number.isFinite(status.minimumDistance)
     ? Number(status.minimumDistance).toFixed(4)
     : null,
@@ -373,6 +378,8 @@ const collisionStatusSignature = (status) => JSON.stringify({
   excludedLinks: status.excludedLinks,
   monitoredLinkCount: status.monitoredLinkCount,
   monitoredProxyCount: status.monitoredProxyCount,
+  collisionModelProxyCount: status.collisionModelProxyCount,
+  visualFallbackProxyCount: status.visualFallbackProxyCount,
   sourcePointCount: status.sourcePointCount,
   indexedPointCount: status.indexedPointCount,
   meshSampleCount: status.meshSampleCount,
@@ -5384,6 +5391,9 @@ export default function PointCloudViewer({
       if (!canvas) return;
       canvas.dataset.collisionProtectionEnabled = status.enabled ? 'true' : 'false';
       canvas.dataset.collisionState = status.state;
+      canvas.dataset.collisionBackend = status.backend || 'local';
+      canvas.dataset.collisionRequestedBackend = status.requestedBackend || 'local';
+      canvas.dataset.collisionEngine = status.engine || '';
       canvas.dataset.collisionSafetyDistance = String(ROBOT_COLLISION_SAFETY_DISTANCE);
       canvas.dataset.collisionContactMargin = String(ROBOT_COLLISION_CONTACT_MARGIN);
       canvas.dataset.collisionMinimumDistance = Number.isFinite(status.minimumDistance)
@@ -5394,6 +5404,10 @@ export default function PointCloudViewer({
       canvas.dataset.collisionExcludedLinks = (status.excludedLinks || []).join(',');
       canvas.dataset.collisionMonitoredLinkCount = String(status.monitoredLinkCount || 0);
       canvas.dataset.collisionMonitoredProxyCount = String(status.monitoredProxyCount || 0);
+      canvas.dataset.collisionModelProxyCount = String(status.collisionModelProxyCount || 0);
+      canvas.dataset.collisionVisualFallbackProxyCount = String(
+        status.visualFallbackProxyCount || 0,
+      );
       canvas.dataset.collisionSourcePoints = String(status.sourcePointCount || 0);
       canvas.dataset.collisionIndexedPoints = String(status.indexedPointCount || 0);
       canvas.dataset.collisionMeshSamples = String(status.meshSampleCount || 0);
@@ -5456,8 +5470,8 @@ export default function PointCloudViewer({
 
     publishStatus({
       state: 'building',
-      message: '正在建立环境空间索引',
-      detail: `${positionAttribute.count.toLocaleString('zh-CN')} 个地图顶点正在专用 Worker 中处理`,
+      message: '正在连接碰撞后端',
+      detail: `${positionAttribute.count.toLocaleString('zh-CN')} 个地图顶点等待建立环境模型`,
       ...indexMetrics,
     });
 
@@ -5553,115 +5567,156 @@ export default function PointCloudViewer({
     };
     collisionCheckRequestRef.current = requestCollisionCheckFromScene;
 
-    try {
-      worker = new Worker(new URL('../workers/robotCollision.worker.js', import.meta.url), {
-        type: 'module',
-      });
-      canvas.dataset.collisionWorker = 'building';
-      worker.onmessage = (event) => {
-        if (disposed || collisionMonitorGenerationRef.current !== generation) return;
-        const message = event.data || {};
-        if (message.type === 'ready') {
-          workerReady = true;
-          indexMetrics = {
-            sourcePointCount: Number(message.sourcePointCount) || 0,
-            indexedPointCount: Number(message.indexedPointCount) || 0,
-            meshSampleCount: Number(message.meshSampleCount) || 0,
-          };
-          canvas.dataset.collisionWorker = 'dedicated';
-          canvas.dataset.collisionIndexBuildMs = Number(message.buildMs || 0).toFixed(2);
-          canvas.dataset.collisionIndexCellSize = String(message.cellSize || COLLISION_INDEX_CELL_SIZE);
-          canvas.dataset.collisionIndexBuckets = String(message.bucketCount || 0);
-          publishStatus({
-            state: 'waiting',
-            message: '环境索引已就绪',
-            detail: `已索引 ${(indexMetrics.indexedPointCount).toLocaleString('zh-CN')} 个环境样本，正在同步机器人`,
-            ...indexMetrics,
-          });
-          requestCollisionCheck();
+    const startCollisionBackend = async () => {
+      try {
+        worker = await createRobotCollisionBackend();
+        if (disposed || collisionMonitorGenerationRef.current !== generation) {
+          worker.terminate();
           return;
         }
-        if (message.type === 'result') {
+        const backend = worker.atlasBackend || 'local';
+        const requestedBackend = worker.atlasRequestedBackend || backend;
+        const engine = worker.atlasEngine || (
+          backend === 'isaac' ? 'NVIDIA PhysX' : 'Browser spatial worker'
+        );
+        publishStatus({
+          state: 'building',
+          backend,
+          requestedBackend,
+          engine,
+          message: backend === 'isaac' ? '正在同步 Isaac Sim 环境' : '正在建立环境空间索引',
+          detail: worker.atlasFallbackReason
+            ? `Isaac 暂不可用，已回退本地检测：${worker.atlasFallbackReason}`
+            : `${positionAttribute.count.toLocaleString('zh-CN')} 个地图顶点正在${backend === 'isaac' ? '构建 PhysX 场景' : '专用 Worker 中处理'}`,
+        });
+        canvas.dataset.collisionWorker = 'building';
+
+        const stopFailedBackend = () => {
           workerBusy = false;
-          if (Number(message.revision) !== checkRevision || !proxyCollection) return;
-          checkCount += 1;
-          const collisionLinks = Array.isArray(message.collisionLinks)
-            ? message.collisionLinks
-            : [];
-          const nearLinks = Array.isArray(message.nearLinks) ? message.nearLinks : [];
-          const minimumDistance = Number.isFinite(message.minimumDistance)
-            ? Number(message.minimumDistance)
-            : null;
-          const state = collisionLinks.length ? 'collision' : nearLinks.length ? 'near' : 'safe';
-          applyRobotCollisionHighlights(proxyCollection, { collisionLinks, nearLinks });
-          canvas.dataset.collisionLastCheckMs = Number(message.checkMs || 0).toFixed(2);
-          publishStatus({
-            state,
-            minimumDistance,
-            collisionLinks,
-            nearLinks,
-            excludedLinks: proxyCollection.excludedLinks,
-            monitoredLinkCount: proxyCollection.monitoredLinks.length,
-            monitoredProxyCount: proxyCollection.proxies.length,
-            checkCount,
-            message: state === 'collision'
-              ? '检测到环境干涉'
-              : state === 'near'
-                ? '进入 100 mm 安全边界'
-                : '非底盘结构安全',
-            detail: state === 'collision'
-              ? `红色部件：${collisionLinks.slice(0, 4).join(' / ')}${collisionLinks.length > 4 ? ` +${collisionLinks.length - 4}` : ''}`
-              : state === 'near'
-                ? `最近直线距离 ${Math.max(0, minimumDistance * 1000).toFixed(0)} mm · ${nearLinks.slice(0, 3).join(' / ')}`
-                : '最近环境样本距离不小于 100 mm',
-            ...indexMetrics,
-          });
-          if (collisionCheckPending) {
-            window.setTimeout(requestCollisionCheck, 0);
+          workerReady = false;
+          if (checkTimer) {
+            window.clearInterval(checkTimer);
+            checkTimer = null;
           }
-          return;
-        }
-        if (message.type === 'error') {
-          workerBusy = false;
+          canvas.dataset.collisionWorker = 'error';
           applyRobotCollisionHighlights(proxyCollection, {});
+          const failedWorker = worker;
+          worker = null;
+          failedWorker?.terminate();
+        };
+
+        worker.onmessage = (event) => {
+          if (disposed || collisionMonitorGenerationRef.current !== generation) return;
+          const message = event.data || {};
+          if (message.type === 'ready') {
+            workerReady = true;
+            indexMetrics = {
+              sourcePointCount: Number(message.sourcePointCount) || 0,
+              indexedPointCount: Number(message.indexedPointCount) || 0,
+              meshSampleCount: Number(message.meshSampleCount) || 0,
+            };
+            canvas.dataset.collisionWorker = backend === 'isaac' ? 'isaac' : 'dedicated';
+            canvas.dataset.collisionPhysxMeshReady = message.physxMeshReady === true
+              ? 'true'
+              : message.physxMeshReady === false ? 'false' : '';
+            canvas.dataset.collisionIndexBuildMs = Number(message.buildMs || 0).toFixed(2);
+            canvas.dataset.collisionIndexCellSize = String(
+              message.cellSize || COLLISION_INDEX_CELL_SIZE,
+            );
+            canvas.dataset.collisionIndexBuckets = String(message.bucketCount || 0);
+            publishStatus({
+              state: 'waiting',
+              backend,
+              requestedBackend,
+              engine: message.engine || engine,
+              message: '环境索引已就绪',
+              detail: `${backend === 'isaac' ? 'Isaac Sim / PhysX' : '本地 Worker'} 已索引 ${indexMetrics.indexedPointCount.toLocaleString('zh-CN')} 个环境样本，正在同步机器人`,
+              ...indexMetrics,
+            });
+            requestCollisionCheck();
+            return;
+          }
+          if (message.type === 'result') {
+            workerBusy = false;
+            if (Number(message.revision) !== checkRevision || !proxyCollection) return;
+            checkCount += 1;
+            const collisionLinks = Array.isArray(message.collisionLinks)
+              ? message.collisionLinks
+              : [];
+            const nearLinks = Array.isArray(message.nearLinks) ? message.nearLinks : [];
+            const minimumDistance = Number.isFinite(message.minimumDistance)
+              ? Number(message.minimumDistance)
+              : null;
+            const state = collisionLinks.length ? 'collision' : nearLinks.length ? 'near' : 'safe';
+            applyRobotCollisionHighlights(proxyCollection, { collisionLinks, nearLinks });
+            canvas.dataset.collisionLastCheckMs = Number(message.checkMs || 0).toFixed(2);
+            publishStatus({
+              state,
+              minimumDistance,
+              collisionLinks,
+              nearLinks,
+              excludedLinks: proxyCollection.excludedLinks,
+              monitoredLinkCount: proxyCollection.monitoredLinks.length,
+              monitoredProxyCount: proxyCollection.proxies.length,
+              collisionModelProxyCount: proxyCollection.collisionModelProxyCount,
+              visualFallbackProxyCount: proxyCollection.visualFallbackProxyCount,
+              checkCount,
+              message: state === 'collision'
+                ? '检测到环境干涉'
+                : state === 'near'
+                  ? '进入 100 mm 安全边界'
+                  : '非底盘结构安全',
+              detail: state === 'collision'
+                ? `红色部件：${collisionLinks.slice(0, 4).join(' / ')}${collisionLinks.length > 4 ? ` +${collisionLinks.length - 4}` : ''}`
+                : state === 'near'
+                  ? `最近直线距离 ${Math.max(0, minimumDistance * 1000).toFixed(0)} mm · ${nearLinks.slice(0, 3).join(' / ')}`
+                  : '最近环境样本距离不小于 100 mm',
+              ...indexMetrics,
+            });
+            if (collisionCheckPending) window.setTimeout(requestCollisionCheck, 0);
+            return;
+          }
+          if (message.type === 'error') {
+            stopFailedBackend();
+            publishStatus({
+              state: 'error',
+              message: '干涉检测中断',
+              detail: message.message || `${engine} 返回了未知错误`,
+              ...indexMetrics,
+            });
+          }
+        };
+        worker.onerror = (event) => {
+          if (disposed || collisionMonitorGenerationRef.current !== generation) return;
+          stopFailedBackend();
           publishStatus({
             state: 'error',
             message: '干涉检测中断',
-            detail: message.message || '专用 Worker 返回了未知错误',
-            ...indexMetrics,
+            detail: event.message || `${engine} 无法建立环境索引`,
           });
-        }
-      };
-      worker.onerror = (event) => {
-        if (disposed || collisionMonitorGenerationRef.current !== generation) return;
-        workerBusy = false;
-        applyRobotCollisionHighlights(proxyCollection, {});
+        };
+
+        const positions = packCollisionPositions(positionAttribute);
+        const indices = packCollisionIndices(geometry.getIndex?.());
+        worker.postMessage({
+          type: 'init',
+          positions,
+          indices,
+          requestedCellSize: COLLISION_INDEX_CELL_SIZE,
+        }, [positions.buffer, indices.buffer]);
+        checkTimer = window.setInterval(
+          requestCollisionCheck,
+          ROBOT_COLLISION_CHECK_INTERVAL_MS,
+        );
+      } catch (error) {
         publishStatus({
           state: 'error',
-          message: '干涉检测中断',
-          detail: event.message || '专用 Worker 无法建立环境索引',
+          message: '干涉检测无法启动',
+          detail: error.message || '碰撞后端初始化失败',
         });
-      };
-
-      const positions = packCollisionPositions(positionAttribute);
-      const indices = packCollisionIndices(geometry.getIndex?.());
-      worker.postMessage({
-        type: 'init',
-        positions,
-        indices,
-        requestedCellSize: COLLISION_INDEX_CELL_SIZE,
-      }, [positions.buffer, indices.buffer]);
-      checkTimer = window.setInterval(
-        requestCollisionCheck,
-        ROBOT_COLLISION_CHECK_INTERVAL_MS,
-      );
-    } catch (error) {
-      publishStatus({
-        state: 'error',
-        message: '干涉检测无法启动',
-        detail: error.message || '当前浏览器不支持专用 Worker',
-      });
-    }
+      }
+    };
+    void startCollisionBackend();
 
     return () => {
       disposed = true;
@@ -5733,8 +5788,7 @@ export default function PointCloudViewer({
     } else if (focusRequest.type === 'robot') {
       const robot = robotLayerRef.current;
       if (robot?.children.length) {
-        const robotSphere = new THREE.Box3()
-          .setFromObject(robot)
+        const robotSphere = setRobotVisualBounds(new THREE.Box3(), robot)
           .getBoundingSphere(new THREE.Sphere());
         if (Number.isFinite(robotSphere.radius) && robotSphere.radius > 0) {
           target = robotSphere.center.clone();
@@ -5750,8 +5804,8 @@ export default function PointCloudViewer({
       const robot = robotLayerRef.current;
       const ghostPoseRoot = robotParkingGhostVisualRef.current?.poseRoot;
       if (robot?.children.length && ghostPoseRoot) {
-        const comparisonBounds = new THREE.Box3().setFromObject(robot);
-        comparisonBounds.expandByObject(ghostPoseRoot);
+        const comparisonBounds = setRobotVisualBounds(new THREE.Box3(), robot);
+        comparisonBounds.union(setRobotVisualBounds(new THREE.Box3(), ghostPoseRoot));
         const comparisonSphere = comparisonBounds.getBoundingSphere(new THREE.Sphere());
         if (Number.isFinite(comparisonSphere.radius) && comparisonSphere.radius > 0) {
           target = comparisonSphere.center.clone();
@@ -6689,7 +6743,8 @@ export default function PointCloudViewer({
     const camera = cameraRef.current;
     const robot = robotLayerRef.current;
     if (!controls || !camera || !robot?.children.length) return;
-    const sphere = new THREE.Box3().setFromObject(robot).getBoundingSphere(new THREE.Sphere());
+    const sphere = setRobotVisualBounds(new THREE.Box3(), robot)
+      .getBoundingSphere(new THREE.Sphere());
     if (!Number.isFinite(sphere.radius) || sphere.radius <= 0) return;
     precisionPanRef.current?.clear?.();
     const direction = camera.position.clone().sub(controls.target);
@@ -6856,7 +6911,11 @@ export default function PointCloudViewer({
                   : <ShieldAlert size={16} />}
               </span>
               <div>
-                <small>NON-CHASSIS / ENV CLEARANCE</small>
+                <small>
+                  {robotCollisionStatus.backend === 'isaac'
+                    ? 'ISAAC SIM / PHYSX COLLISION'
+                    : 'LOCAL WORKER / ENV CLEARANCE'}
+                </small>
                 <strong>{robotCollisionStatus.message}</strong>
                 <em>{robotCollisionStatus.detail}</em>
               </div>

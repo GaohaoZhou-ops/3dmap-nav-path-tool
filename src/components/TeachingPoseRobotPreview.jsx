@@ -17,6 +17,7 @@ import {
   loadRobotModel,
   normalizeRobotDescriptor,
   normalizeRobotPose,
+  setRobotVisualBounds,
 } from '../lib/robotLoader.js';
 
 const EMPTY_JOINT_VALUES = Object.freeze({});
@@ -126,7 +127,7 @@ export default function TeachingPoseRobotPreview({
     const loadedRobot = robotRef.current;
     if (!context || !loadedRobot) return;
     loadedRobot.updateMatrixWorld(true);
-    const bounds = new THREE.Box3().setFromObject(loadedRobot);
+    const bounds = setRobotVisualBounds(new THREE.Box3(), loadedRobot);
     if (bounds.isEmpty()) return;
     const center = bounds.getCenter(new THREE.Vector3());
     const size = bounds.getSize(new THREE.Vector3());

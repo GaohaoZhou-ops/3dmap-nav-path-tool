@@ -61,6 +61,45 @@ struct ModelGeometry {
         let mesh = usesMesh(settings), count = renderedCount(settings), total = mesh ? indices / 3 : vertices
         return "\(mesh ? "Mesh" : "点云") · \(count.formatted()) / \(total.formatted()) \(mesh ? "面" : "点")"
     }
+    func makeThumbnailGeometry() throws -> SCNGeometry {
+        // Compact the thumbnail's buffers so rendering never uploads millions of
+        // source vertices. Dense surfaces use colored splats at thumbnail scale.
+        let mesh = indices > 0 && indices / 3 <= 120_000
+        let count = mesh ? indices : min(vertices, 80_000)
+        func gcd(_ a: Int, _ b: Int) -> Int { var a = a, b = b; while b != 0 { (a, b) = (b, a % b) }; return a }
+        var step = max(1, Int(Double(vertices) * 0.61803398875))
+        while gcd(step, vertices) != 1 { step += 1 }
+        var compact = Data(count: count * 28), sequential = Data(count: count * 4)
+        try compact.withUnsafeMutableBytes { destination in
+            try data.withUnsafeBytes { source in
+                let output = destination.bindMemory(to: UInt32.self)
+                let bytes = source.bindMemory(to: UInt8.self)
+                var sampled = 0
+                for i in 0..<count {
+                    if i % 4096 == 0 { try Task.checkCancellation() }
+                    let vertex = mesh ? Int(UInt32(littleEndian: source.loadUnaligned(fromByteOffset: 32 + vertices * 16 + i * 4, as: UInt32.self))) : sampled
+                    for axis in 0..<3 { output[i * 7 + axis] = source.loadUnaligned(fromByteOffset: 32 + vertex * 12 + axis * 4, as: UInt32.self) }
+                    for channel in 0..<4 { output[i * 7 + 3 + channel] = (Float(bytes[32 + vertices * 12 + vertex * 4 + channel]) / 255).bitPattern.littleEndian }
+                    sampled = (sampled + step) % vertices
+                }
+            }
+        }
+        sequential.withUnsafeMutableBytes { raw in
+            let indices = raw.bindMemory(to: UInt32.self)
+            for i in 0..<count { indices[i] = UInt32(i).littleEndian }
+        }
+        let positions = SCNGeometrySource(data: compact, semantic: .vertex, vectorCount: count,
+            usesFloatComponents: true, componentsPerVector: 3, bytesPerComponent: 4, dataOffset: 0, dataStride: 28)
+        let colors = SCNGeometrySource(data: compact, semantic: .color, vectorCount: count,
+            usesFloatComponents: true, componentsPerVector: 4, bytesPerComponent: 4, dataOffset: 12, dataStride: 28)
+        let element = SCNGeometryElement(data: sequential, primitiveType: mesh ? .triangles : .point,
+            primitiveCount: mesh ? count / 3 : count, bytesPerIndex: 4)
+        element.pointSize = 2; element.minimumPointScreenSpaceRadius = 0.8; element.maximumPointScreenSpaceRadius = 1.8
+        let geometry = SCNGeometry(sources: [positions, colors], elements: [element])
+        let material = SCNMaterial(); material.lightingModel = .constant; material.isDoubleSided = true
+        geometry.materials = [material]; geometry.boundingBox = (minimum, maximum)
+        return geometry
+    }
     func makeGeometry(settings: ModelDisplaySettings) throws -> SCNGeometry {
         try Task.checkCancellation()
         let mesh = usesMesh(settings), total = mesh ? indices / 3 : vertices, count = renderedCount(settings)

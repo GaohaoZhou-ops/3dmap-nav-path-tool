@@ -1,10 +1,73 @@
 import Foundation
 
+struct LANAddressInput {
+    static let defaultPort = "21990"
+    var host = ""
+    var port = defaultPort
+    private var scheme = "http"
+
+    init(address: String = "") {
+        let text = address.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return }
+        let explicitScheme = text.contains("://")
+        guard let parts = URLComponents(string: explicitScheme ? text : "http://\(text)"),
+              let host = parts.host, !host.isEmpty, ["http", "https"].contains(parts.scheme),
+              parts.user == nil, parts.password == nil, parts.query == nil, parts.fragment == nil,
+              parts.path.isEmpty || parts.path == "/" else { self.host = text; return }
+        self.host = host; scheme = parts.scheme ?? "http"
+        // Preserve an explicit URL's standard port when reopening older projects.
+        port = parts.port.map(String.init) ?? (explicitScheme ? (scheme == "https" ? "443" : "80") : Self.defaultPort)
+    }
+    var effectivePort: String {
+        let value = port.trimmingCharacters(in: .whitespacesAndNewlines)
+        return value.isEmpty ? Self.defaultPort : value
+    }
+    var displayAddress: String { "\(host):\(effectivePort)" }
+    var address: String {
+        let host = host.trimmingCharacters(in: .whitespacesAndNewlines)
+        return host.isEmpty ? "" : "\(scheme)://\(host):\(effectivePort)"
+    }
+    var canConnect: Bool {
+        guard effectivePort.utf8.allSatisfy({ (48...57).contains($0) }),
+              let port = Int(effectivePort), (1...65535).contains(port),
+              let client = try? LANClient(address: address) else { return false }
+        return client.baseURL.host?.lowercased() == host.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    }
+}
+
 struct LANServiceInfo: Decodable {
     let `protocol`: String
     let serverId: String
     let serverName: String
     let port: Int
+}
+
+struct PairingQRCode: Decodable {
+    let `protocol`: String
+    let address: String
+    let code: String
+    let sessionId: String
+    let serverId: String
+    let expiresAt: Double
+
+    static func parse(_ text: String) throws -> PairingQRCode {
+        guard text.utf8.count <= 2048, let data = text.data(using: .utf8),
+              let value = try? JSONDecoder().decode(Self.self, from: data) else {
+            throw TeachingError("这不是 Atlas 配对二维码，请扫描电脑「iPad 运行」窗口中的二维码")
+        }
+        try value.validate()
+        return value
+    }
+    func validate() throws {
+        guard self.protocol == "atlas-ipad-pairing/1", PairingCode.isValid(code),
+              UUID(uuidString: sessionId) != nil, UUID(uuidString: serverId) != nil, expiresAt.isFinite else {
+            throw TeachingError("二维码格式不支持，请在电脑上更新配对码后重新扫描")
+        }
+        _ = try LANClient(address: address)
+        guard expiresAt > Date().timeIntervalSince1970 * 1000 else {
+            throw TeachingError("二维码已过期，请在电脑点击「更新配对码」后重新扫描")
+        }
+    }
 }
 
 private final class NoRedirects: NSObject, URLSessionTaskDelegate {
@@ -26,9 +89,12 @@ struct LANClient {
         guard let url = URL(string: text.contains("://") ? text : "http://\(text)"),
               ["http", "https"].contains(url.scheme), let host = url.host,
               url.user == nil, url.password == nil, url.query == nil, url.fragment == nil,
-              url.path.isEmpty || url.path == "/" else { throw TeachingError("请输入电脑显示的局域网地址，例如 http://192.168.1.20:21990") }
-        let octets = host.split(separator: ".").compactMap { Int($0) }
-        let ipv4 = octets.count == 4 && octets.allSatisfy { (0...255).contains($0) }
+              url.path.isEmpty || url.path == "/" else { throw TeachingError("请检查电脑的 IPv4 地址与端口，例如 192.168.1.20，端口 21990") }
+        guard url.port == nil || (1...65535).contains(url.port!) else { throw TeachingError("局域网端口无效") }
+        let parts = host.split(separator: ".", omittingEmptySubsequences: false)
+        let octets = parts.compactMap { Int($0) }
+        let ipv4 = parts.count == 4 && octets.count == 4 && octets.allSatisfy { (0...255).contains($0) }
+            && parts.allSatisfy { !$0.isEmpty && $0.utf8.allSatisfy { (48...57).contains($0) } }
         let localIPv4 = ipv4 && (octets[0] == 10 || octets[0] == 127 || (octets[0] == 192 && octets[1] == 168)
             || (octets[0] == 172 && (16...31).contains(octets[1])) || (octets[0] == 169 && octets[1] == 254))
         guard localIPv4 || host.hasSuffix(".local") || host == "localhost" else { throw TeachingError("仅支持局域网 IPv4 地址或 .local 主机名") }
@@ -69,13 +135,25 @@ struct LANClient {
         }
         return info
     }
-    func pair(code: String, deviceID: String, name: String) async throws -> PairedSession {
+    func pair(code: String, deviceID: String, name: String, qr: PairingQRCode? = nil) async throws -> PairedSession {
         let code = PairingCode.normalize(code)
         guard PairingCode.isValid(code) else { throw TeachingError("请输入 4 位配对码，仅支持大写字母 A–Z 和数字 0–9") }
-        let body = try JSONSerialization.data(withJSONObject: ["code": code, "deviceId": deviceID, "deviceName": name])
+        var fields = ["code": code, "deviceId": deviceID, "deviceName": name]
+        if let qr {
+            try qr.validate()
+            guard try LANClient(address: qr.address).baseURL == baseURL, PairingCode.normalize(qr.code) == code else {
+                throw TeachingError("二维码配对信息已变更，请重新扫描")
+            }
+            let info = try await identify()
+            guard info.serverId == qr.serverId else { throw TeachingError("电脑服务已重启或地址已变更，请重新打开电脑配对窗口并扫码") }
+            fields["sessionId"] = qr.sessionId; fields["serverId"] = qr.serverId
+        }
+        let body = try JSONSerialization.data(withJSONObject: fields)
         let (data, response) = try await Self.session.data(for: request("pair", method: "POST", body: body))
         try check(response, data: data)
-        return try JSONDecoder().decode(PairedSession.self, from: data)
+        let paired = try JSONDecoder().decode(PairedSession.self, from: data)
+        if let qr, paired.id != qr.sessionId { throw TeachingError("接收任务与二维码不匹配，请重新扫描") }
+        return paired
     }
     func download(_ paired: PairedSession) async throws -> Data {
         guard UUID(uuidString: paired.id) != nil else { throw TeachingError("配对任务标识无效") }

@@ -3,12 +3,15 @@ import { mkdir, readFile, writeFile, rename, readdir, stat } from 'node:fs/promi
 import { createReadStream } from 'node:fs';
 import { networkInterfaces, hostname } from 'node:os';
 import path from 'node:path';
+import QRCode from 'qrcode';
 import { IPAD_PROTOCOL, MAX_MODEL_BYTES, validateModelBytes, validateIPadResult } from '../lib/ipadProtocol.js';
 import { advertiseIPadService } from './ipadDiscovery.js';
 
 const hash = (value) => createHash('sha256').update(value).digest('hex');
 const secret = () => randomBytes(32).toString('hex');
 const randomPairingCode = () => randomInt(36 ** 4).toString(36).padStart(4, '0').toUpperCase();
+const lanAddresses = (port) => [...new Set(Object.values(networkInterfaces()).flat()
+  .filter((item) => item?.family === 'IPv4' && !item.internal).map((item) => `http://${item.address}:${port}`))];
 const fail = (code, message) => { const error = new Error(message); error.status = code; throw error; };
 const equal = (a, b) => typeof a === 'string' && typeof b === 'string' && a.length === b.length
   && timingSafeEqual(Buffer.from(a), Buffer.from(b));
@@ -30,7 +33,7 @@ async function readBody(req, limit, asJSON = true) {
   try { return JSON.parse(body.toString('utf8')); } catch { fail(400, 'JSON 数据无效'); }
 }
 
-export function createIPadTeachingService({ directory, serverId = randomUUID(), serverName = hostname().replace(/\.local$/i, '').slice(0, 120), generatePairingCode = randomPairingCode }) {
+export function createIPadTeachingService({ directory, serverId = randomUUID(), serverName = hostname().replace(/\.local$/i, '').slice(0, 120), generatePairingCode = randomPairingCode, getAddresses = lanAddresses }) {
   const locks = new Map(), attempts = new Map();
   async function serialized(id, run) {
     const previous = locks.get(id) || Promise.resolve();
@@ -76,7 +79,7 @@ export function createIPadTeachingService({ directory, serverId = randomUUID(), 
       const route = pathname.slice('/__atlas/ipad'.length);
       if (route === '/info' && req.method === 'GET') {
         const port = req.socket.localPort;
-        const addresses = [...new Set(Object.values(networkInterfaces()).flat().filter((item) => item?.family === 'IPv4' && !item.internal).map((item) => `http://${item.address}:${port}`))];
+        const addresses = getAddresses(port);
         return json(res, 200, { protocol: IPAD_PROTOCOL, serverId, serverName, port, addresses, maxModelBytes: MAX_MODEL_BYTES });
       }
       if (route === '/sessions' && req.method === 'POST') {
@@ -101,6 +104,8 @@ export function createIPadTeachingService({ directory, serverId = randomUUID(), 
         const attempt = attempts.get(peer) || { start: now, count: 0 }; attempt.count += 1; attempts.set(peer, attempt);
         if (attempt.count > 20) fail(429, '配对尝试过于频繁，请一分钟后重试');
         const body = await readBody(req, 4096);
+        if ((body.sessionId != null || body.serverId != null)
+          && (body.serverId !== serverId || !/^[a-f0-9-]{36}$/.test(body.sessionId || ''))) fail(409, '二维码对应的服务已变更，请重新扫描电脑上的二维码');
         const code = String(body.code || '').trim().toUpperCase();
         if (!/^[A-Z0-9]{4}$/.test(code)) fail(400, '请输入 4 位配对码，仅支持大写字母 A–Z 和数字 0–9');
         if (!/^[a-zA-Z0-9-]{16,80}$/.test(body.deviceId || '')) fail(400, '配对设备标识无效');
@@ -110,6 +115,7 @@ export function createIPadTeachingService({ directory, serverId = randomUUID(), 
           if (!equal(candidate.pairingCodeHash, hash(code))) continue;
           return await serialized(candidate.id, async () => {
             const session = await load(candidate.id);
+            if (body.sessionId != null && body.sessionId !== session.id) fail(409, '二维码与当前传输任务不匹配，请重新扫描');
             if (!equal(session.pairingCodeHash, hash(code))) fail(404, '配对码已更新，请使用电脑显示的新配对码');
             if (now > session.pairingExpiresAt) fail(410, '配对码已过期，请在电脑上重新生成');
             if (!['ready', 'paired'].includes(session.status)) fail(409, '该任务当前不可配对');
@@ -123,7 +129,7 @@ export function createIPadTeachingService({ directory, serverId = randomUUID(), 
         }
         fail(404, '找不到配对码，请确认电脑地址与配对码');
       }
-      const match = /^\/sessions\/([a-f0-9-]{36})(?:\/(model|result|imported|renew))?$/.exec(route);
+      const match = /^\/sessions\/([a-f0-9-]{36})(?:\/(model|result|imported|renew|pairing-qr))?$/.exec(route);
       if (!match) fail(404, '接口不存在');
       const [, id, action] = match;
       await serialized(id, async () => {
@@ -133,6 +139,18 @@ export function createIPadTeachingService({ directory, serverId = randomUUID(), 
         if (!action && req.method === 'GET') return json(res, 200, publicSession(session));
         if (!action && req.method === 'DELETE') {
           session.status = 'cancelled'; await save(session); return json(res, 200, { status: 'cancelled' });
+        }
+        if (action === 'pairing-qr' && req.method === 'POST') {
+          if (session.status !== 'ready') fail(409, '只有尚未配对的任务可以生成二维码');
+          if (Date.now() >= session.pairingExpiresAt) fail(410, '配对码已过期，请点击「更新配对码」');
+          const { address, code } = await readBody(req, 4096);
+          if (!getAddresses(req.socket.localPort).includes(address)) fail(400, '请选择当前电脑的局域网地址');
+          if (typeof code !== 'string' || !/^[A-Z0-9]{4}$/.test(code)
+            || !equal(session.pairingCodeHash, hash(code))) fail(409, '配对码已更新，请刷新任务或更新配对码');
+          const payload = { protocol: 'atlas-ipad-pairing/1', address, code,
+            sessionId: session.id, serverId, expiresAt: session.pairingExpiresAt };
+          const image = await QRCode.toDataURL(JSON.stringify(payload), { errorCorrectionLevel: 'M', margin: 4, scale: 8 });
+          return json(res, 200, { image, expiresAt: session.pairingExpiresAt });
         }
         if (action === 'renew' && req.method === 'POST') {
           if (session.status !== 'ready') fail(409, '只有尚未配对的任务可以更新配对码');

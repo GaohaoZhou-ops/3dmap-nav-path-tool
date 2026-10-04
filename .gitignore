@@ -36,6 +36,15 @@ xcuserdata/
 *.dSYM/
 *.dSYM.zip
 
+# Exported iPad app containers and Xcode diagnostics
+# Containers can include local models, poses, and pairing credentials.
+*.xcappdata/
+*.xcappdata.zip
+*.xccrashpoint/
+*.xcactivitylog
+*.crash
+*.ips
+
 # Local Apple signing material
 *.mobileprovision
 *.provisionprofile
@@ -51,6 +60,8 @@ test-results/
 /test-artifacts/
 /screenshots/
 /test-downloads/
+/ipad/test-artifacts/
+/ipad/screenshots/
 .playwright/
 .local-browsers/
 ms-playwright/
@@ -58,6 +69,7 @@ playwright/.cache/
 playwright/.auth/
 *.lcov
 *.xcresult/
+*.xcresult.zip
 *.xctestrun
 *.profraw
 *.profdata
@@ -94,6 +106,7 @@ env/
 .atlas-route.pid
 .atlas-route.log
 .atlas-cache/
+AtlasModelThumbnails/
 *.log
 *.log.[0-9]*
 *.pid
@@ -162,6 +175,8 @@ robots/
 !maps/xian_map.ply
 !tests/fixtures/*.[pP][lL][yY]
 !tests/fixtures/**/*.[pP][lL][yY]
+!ipad/Tests/Fixtures/*.[pP][lL][yY]
+!ipad/Tests/Fixtures/**/*.[pP][lL][yY]
 
 # Local iPad model-transfer payloads; keep deliberate test fixtures trackable.
 *.atls

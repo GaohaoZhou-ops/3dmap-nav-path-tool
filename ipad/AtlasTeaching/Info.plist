@@ -9,7 +9,7 @@
     <key>CFBundleShortVersionString</key><string>1.0.0</string>
     <key>CFBundleVersion</key><string>1</string>
     <key>LSRequiresIPhoneOS</key><true/>
-    <key>NSCameraUsageDescription</key><string>使用相机与 LiDAR 在 iPad 本机定位独立示教物体并逐个记录 Pose。</string>
+    <key>NSCameraUsageDescription</key><string>使用相机扫描电脑上的配对二维码，并与 LiDAR 一起在 iPad 本机定位物体、逐个记录 Pose。</string>
     <key>NSLocalNetworkUsageDescription</key><string>搜索局域网中的 Atlas 示教服务，凭配对码接收独立示教物体，并在完成后同步 Pose。</string>
     <key>NSBonjourServices</key><array><string>_atlas-teach._tcp</string></array>
     <key>NSAppTransportSecurity</key><dict><key>NSAllowsLocalNetworking</key><true/></dict>

@@ -24,6 +24,7 @@ actor ProjectStore {
     }
     func saveModel(_ data: Data, id: String) throws { try data.write(to: file(id, ext: "atls"), options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication]) }
     func model(_ id: String) throws -> Data { try Data(contentsOf: file(id, ext: "atls")) }
+    func modelURL(_ id: String) throws -> URL { try file(id, ext: "atls") }
     func projects() throws -> [LocalProject] {
         let files = try FileManager.default.contentsOfDirectory(at: root(), includingPropertiesForKeys: nil).filter { $0.pathExtension == "json" }
         return try files.map { try JSONDecoder().decode(LocalProject.self, from: Data(contentsOf: $0)) }

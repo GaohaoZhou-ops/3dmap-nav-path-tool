@@ -6,6 +6,27 @@ import simd
     static func main() async throws {
         let args = CommandLine.arguments
         let address = args[1], fixture = URL(fileURLWithPath: args[2]), storeURL = URL(fileURLWithPath: args[3])
+        var fields = LANAddressInput()
+        precondition(fields.host.isEmpty && fields.port == "21990" && !fields.canConnect)
+        fields.host = "192.168.1.20"
+        precondition(fields.address == "http://192.168.1.20:21990" && fields.canConnect)
+        fields.port = "22001"
+        precondition(fields.address == "http://192.168.1.20:22001" && fields.canConnect)
+        fields.port = ""
+        precondition(fields.effectivePort == "21990" && fields.canConnect, "empty port uses the default")
+        for port in ["0", "65536", "-1", "abc", "21990/path"] {
+            fields.port = port; precondition(!fields.canConnect, "invalid ports must not enable pairing")
+        }
+        fields.port = "21990"
+        for host in ["192.168.1", "192.168.1.999", "8.8.8.8", "192.168.1.20/path", "http://192.168.1.20"] {
+            fields.host = host; precondition(!fields.canConnect, "the host field must not turn into another URL")
+        }
+        let restored = LANAddressInput(address: "http://192.168.1.20:22001")
+        precondition(restored.host == "192.168.1.20" && restored.port == "22001" && restored.canConnect)
+        precondition(restored.displayAddress == "192.168.1.20:22001", "visible addresses omit the scheme")
+        let secure = LANAddressInput(address: "https://studio.local")
+        precondition(secure.address == "https://studio.local:443" && secure.canConnect, "preserve existing saved endpoints")
+        precondition(LANAddressInput(address: "192.168.1.20").port == "21990")
         let manifest = try JSONDecoder().decode(ModelManifest.self, from: Data(contentsOf: fixture.appendingPathExtension("json")))
         let model = try Data(contentsOf: fixture.appendingPathExtension("atls"))
         func api(_ path: String, method: String = "GET", token: String? = nil, body: Data? = nil) async throws -> Data {
@@ -23,7 +44,7 @@ import simd
         let creation = try JSONDecoder().decode(Creation.self, from: await api("/sessions", method: "POST", body: body))
         precondition(creation.pairingCode.count == 4 && PairingCode.isValid(creation.pairingCode))
         _ = try await api("/sessions/\(creation.id)/model", method: "PUT", token: creation.ownerToken, body: model)
-        let client = try LANClient(address: address)
+        let client = try LANClient(address: LANAddressInput(address: address).address)
         let info = try await client.identify()
         precondition(info.protocol == teachingProtocol && !info.serverName.isEmpty, "identify a real teaching service before offering it")
         for invalid in ["", "A12", "ABCDE", "A1-2", "A1B2C3D4E5F6", "中文12"] {
@@ -64,6 +85,6 @@ import simd
         for address in ["https://example.com", "http://192.168.1.2@outside.com", "http://192.168.1.2/path", "http://8.8.8.8"] {
             do { _ = try LANClient(address: address); preconditionFailure("non-LAN address accepted") } catch {}
         }
-        print("Native Swift LAN pairing, download, offline model/Pose recovery, completion-only upload and retry passed.")
+        print("IPv4/port input, default and custom ports, native Swift LAN pairing, download, offline recovery, completion-only upload and retry passed.")
     }
 }

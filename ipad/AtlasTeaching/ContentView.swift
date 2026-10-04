@@ -7,6 +7,9 @@ struct ContentView: View {
     @EnvironmentObject private var session: TeachingSession
     @Environment(\.scenePhase) private var scenePhase
     @StateObject private var discovery = LANServiceDiscovery()
+    @State private var scanning = false
+    @State private var scannedCode: PairingQRCode?
+    @State private var codeFocused = false
     var body: some View {
         GeometryReader { viewport in
         Group {
@@ -21,7 +24,7 @@ struct ContentView: View {
             GeometryReader { viewport in
                 let wide = viewport.size.width >= 1000 && viewport.size.width > viewport.size.height
                 let padding: CGFloat = viewport.size.width >= 700 ? 28 : 20
-                let panelHeight: CGFloat = wide ? max(360, viewport.size.height - 284) : 0
+                let panelHeight: CGFloat = wide ? max(360, viewport.size.height - 208) : 0
                 ScrollView {
                     VStack(alignment: .leading, spacing: 24) {
                         libraryHeader
@@ -39,16 +42,6 @@ struct ContentView: View {
                             pairingPanel(minHeight: 0).fixedSize(horizontal: false, vertical: true)
                             localProjectsPanel(minHeight: 0).fixedSize(horizontal: false, vertical: true)
                         }
-                        if wide {
-                            HStack(alignment: .top, spacing: 24) {
-                                workflowStep("1", "校准物体", "将虚拟物体放到现场，确认位置与方向。")
-                                    .frame(maxWidth: .infinity, alignment: .leading)
-                                workflowStep("2", "逐个记录 Pose", "移动 iPad，逐个记录需要的观察视角。")
-                                    .frame(maxWidth: .infinity, alignment: .leading)
-                                workflowStep("3", "完成后同步", "示教过程保存在本机，完成后传回电脑。")
-                                    .frame(maxWidth: .infinity, alignment: .leading)
-                            }
-                        }
                     }
                     .frame(maxWidth: .infinity, alignment: .topLeading)
                     .padding(padding)
@@ -60,19 +53,34 @@ struct ContentView: View {
             }
             .background(Color(red: 0.025, green: 0.05, blue: 0.065).ignoresSafeArea())
             .navigationTitle("Atlas 示教").navigationBarTitleDisplayMode(.inline)
-            .onAppear { discovery.start() }
+            .sheet(isPresented: $scanning, onDismiss: finishScanning) {
+                PairingScannerView { qr in scannedCode = qr; scanning = false }
+            }
+            .onAppear { if !scanning { discovery.start() } }
             .onDisappear { discovery.stop() }
             .onChange(of: scenePhase) { _, phase in
-                if phase == .active && session.current == nil { discovery.start() }
+                if phase == .active && session.current == nil && !scanning { discovery.start() }
                 else { discovery.stop() }
             }
         }
+    }
+    private func finishScanning() {
+        if let qr = scannedCode {
+            scannedCode = nil
+            Task { await session.pair(qr: qr) }
+        } else { discovery.start() }
+    }
+    private func beginScanning() {
+        codeFocused = false; discovery.stop()
+        UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
+        // Finish the native field's resignation before SwiftUI presents the camera.
+        DispatchQueue.main.async { scanning = true }
     }
     private var libraryHeader: some View {
         HStack(alignment: .center, spacing: 24) {
             VStack(alignment: .leading, spacing: 10) {
                 Text("ATLAS / IPAD PRO").font(.system(.caption, design: .monospaced)).tracking(3).foregroundStyle(accent)
-                Text("带着物体，去现场示教。").font(.largeTitle.weight(.medium))
+                Text("虚拟示教").font(.largeTitle.weight(.medium))
                 Text("每次记录一个 Pose。本机完成定位和保存，结束后通过局域网同步。")
                     .font(.callout).foregroundStyle(.secondary)
             }
@@ -84,44 +92,45 @@ struct ContentView: View {
     private func pairingPanel(minHeight: CGFloat) -> some View {
         VStack(alignment: .leading, spacing: 12) {
             Label("从电脑接收物体", systemImage: "wifi").font(.title2.weight(.medium))
-            Text("在电脑点击「iPad 运行」。搜索并选择电脑，再输入电脑显示的配对码。")
-                .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             discoveryPanel
-            VStack(alignment: .leading, spacing: 8) {
-                Text("电脑局域网地址").font(.caption).foregroundStyle(.secondary)
-                TextField("http://192.168.1.20:21990", text: $session.serverAddress)
-                    .textContentType(.URL).keyboardType(.URL).textInputAutocapitalization(.never).autocorrectionDisabled()
-                    .textFieldStyle(.roundedBorder).accessibilityIdentifier("server-address")
-            }
+            LANAddressFields(address: $session.serverConnection).disabled(session.busy)
             VStack(alignment: .leading, spacing: 8) {
                 Text("4 位配对码 · 大写字母或数字").font(.caption).foregroundStyle(.secondary)
-                TextField("例如 Q7Z2", text: $session.code)
-                    .font(.system(.title3, design: .monospaced)).keyboardType(.asciiCapable)
-                    .textInputAutocapitalization(.characters).autocorrectionDisabled()
-                    .textFieldStyle(.roundedBorder).accessibilityIdentifier("pairing-code")
-                    .onChange(of: session.code) { _, value in
-                        let normalized = PairingCode.normalize(value)
-                        if value != normalized { session.code = normalized }
-                    }
+                pairingCodeInput
             }
             Button { Task { await session.pair() } } label: {
                 Label("接收物体", systemImage: "arrow.down.circle").frame(maxWidth: .infinity).padding(.vertical, 10)
             }
-            .buttonStyle(.borderedProminent).disabled(session.busy || session.serverAddress.isEmpty || !PairingCode.isValid(session.code))
+            .buttonStyle(.borderedProminent).disabled(session.busy || !session.serverConnection.canConnect || !PairingCode.isValid(session.code))
             .accessibilityIdentifier("receive-model")
             if session.busy { ProgressView() }
             if !session.error.isEmpty { Text(session.error).font(.callout).foregroundStyle(.orange).textSelection(.enabled) }
             Spacer(minLength: 4)
-            Text(session.status).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            if !session.status.isEmpty {
+                Text(session.status).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            }
         }
         .padding(24)
         .frame(maxWidth: .infinity, minHeight: minHeight, alignment: .topLeading)
         .background(Color.white.opacity(0.04), in: RoundedRectangle(cornerRadius: 18))
         .accessibilityElement(children: .contain).accessibilityIdentifier("library-pairing-panel")
     }
+    private var pairingCodeInput: some View {
+        let characters = Array(session.code)
+        let invalid = characters.count > 4 || characters.contains { !$0.isASCII || !("A"..."Z").contains(String($0)) && !("0"..."9").contains(String($0)) }
+        return VStack(alignment: .leading, spacing: 8) {
+            PairingCodeField(code: $session.code, isFocused: $codeFocused)
+                .frame(maxWidth: .infinity).frame(height: 58).disabled(session.busy)
+            if invalid { Text("请输入 4 位字母或数字").font(.caption).foregroundStyle(.orange) }
+        }
+    }
     private var discoveryPanel: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
+                Button(action: beginScanning) {
+                    Label("扫码配对", systemImage: "qrcode.viewfinder")
+                }.buttonStyle(.borderedProminent).font(.callout)
+                    .disabled(session.busy).accessibilityIdentifier("scan-pairing-code")
                 Button { discovery.start() } label: {
                     Label("搜索局域网服务", systemImage: "network")
                 }.buttonStyle(.bordered).font(.callout)
@@ -141,7 +150,7 @@ struct ContentView: View {
                                     Image(systemName: "desktopcomputer").foregroundStyle(accent)
                                     VStack(alignment: .leading, spacing: 3) {
                                         Text(server.name).font(.callout.weight(.medium)).lineLimit(1)
-                                        Text(server.address).font(.system(.caption2, design: .monospaced)).foregroundStyle(.secondary).lineLimit(1)
+                                        Text(LANAddressInput(address: server.address).displayAddress).font(.system(.caption2, design: .monospaced)).foregroundStyle(.secondary).lineLimit(1)
                                     }
                                     Spacer(minLength: 0)
                                     Image(systemName: session.serverAddress == server.address ? "checkmark.circle.fill" : "plus.circle").foregroundStyle(accent)
@@ -157,16 +166,6 @@ struct ContentView: View {
                 .accessibilityIdentifier("discovery-status")
         }
     }
-    private func workflowStep(_ number: String, _ title: String, _ detail: String) -> some View {
-        HStack(alignment: .top, spacing: 12) {
-            Text(number).font(.system(.caption, design: .monospaced)).foregroundStyle(accent)
-                .frame(width: 26, height: 26).background(accent.opacity(0.1), in: Circle())
-            VStack(alignment: .leading, spacing: 4) {
-                Text(title).font(.callout.weight(.medium))
-                Text(detail).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-            }
-        }
-    }
     private func localProjectsPanel(minHeight: CGFloat) -> some View {
         VStack(alignment: .leading, spacing: 20) {
             HStack {
@@ -174,8 +173,6 @@ struct ContentView: View {
                 Spacer()
                 Text("\(session.projects.count) 个物体").font(.caption).foregroundStyle(.secondary)
             }
-            Text("选择物体继续示教，已有 Pose 会保留。")
-                .font(.callout).foregroundStyle(.secondary)
             Divider()
             if session.projects.isEmpty {
                 VStack(spacing: 16) {
@@ -188,15 +185,19 @@ struct ContentView: View {
                 ForEach(session.projects) { project in
                     Button { Task { await session.open(project) } } label: {
                         HStack(spacing: 18) {
-                            Image(systemName: "cube.transparent").font(.system(size: 28, weight: .light)).foregroundStyle(accent)
-                                .frame(width: 58, height: 64).background(accent.opacity(0.08), in: RoundedRectangle(cornerRadius: 12))
                             VStack(alignment: .leading, spacing: 10) {
-                                Text(project.session.manifest.name).font(.headline).multilineTextAlignment(.leading)
+                                Text(project.session.manifest.name).font(.headline).multilineTextAlignment(.leading).lineLimit(3)
                                 Text("\(project.result.samples.count) 个 Pose · \(project.syncedAt != nil ? "已同步" : project.result.completedAt != nil ? "已完成，待同步" : "本地草稿")")
                                     .font(.caption).foregroundStyle(.secondary)
                             }
                             Spacer(minLength: 4)
-                            Image(systemName: "arrow.up.right").foregroundStyle(accent)
+                            ProjectThumbnailView(project: project)
+                                .frame(width: 150, height: 100)
+                                .overlay(alignment: .topTrailing) {
+                                    Image(systemName: "arrow.up.right").font(.caption.weight(.medium)).foregroundStyle(accent)
+                                        .padding(7).background(.black.opacity(0.5), in: Circle()).padding(6)
+                                }
+                                .allowsHitTesting(false)
                         }
                         .padding(20).frame(maxWidth: .infinity, alignment: .leading)
                         .background(Color.white.opacity(0.04), in: RoundedRectangle(cornerRadius: 14))
@@ -204,8 +205,6 @@ struct ContentView: View {
                 }
             }
             Spacer(minLength: 12)
-            Label("物体与 Pose 保存在本机，可离线继续示教。", systemImage: "internaldrive")
-                .font(.caption).foregroundStyle(.secondary)
         }
         .padding(24)
         .frame(maxWidth: .infinity, minHeight: minHeight, alignment: .topLeading)
@@ -214,6 +213,35 @@ struct ContentView: View {
         .accessibilityElement(children: .contain).accessibilityIdentifier("library-projects-panel")
     }
 
+}
+
+private struct LANAddressFields: View {
+    @Binding var address: LANAddressInput
+    private enum Field { case host, port }
+    @FocusState private var focused: Field?
+    var body: some View {
+        HStack(alignment: .top, spacing: 12) {
+            VStack(alignment: .leading, spacing: 8) {
+                Text("IPv4 地址").font(.caption).foregroundStyle(.secondary)
+                TextField("192.168.1.20", text: $address.host)
+                    .focused($focused, equals: .host).submitLabel(.next).onSubmit { focused = .port }
+                    .accessibilityLabel("IPv4 地址").accessibilityIdentifier("server-address")
+            }.frame(maxWidth: .infinity)
+            VStack(alignment: .leading, spacing: 8) {
+                Text("端口").font(.caption).foregroundStyle(.secondary)
+                TextField(LANAddressInput.defaultPort, text: $address.port)
+                    .focused($focused, equals: .port).submitLabel(.done).onSubmit {
+                        if address.port.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { address.port = LANAddressInput.defaultPort }
+                        focused = nil
+                    }
+                    .multilineTextAlignment(.center)
+                    .accessibilityLabel("服务端口").accessibilityIdentifier("server-port")
+            }.frame(width: 94)
+        }
+        .font(.system(.body, design: .monospaced))
+        .textFieldStyle(.roundedBorder).keyboardType(.numbersAndPunctuation)
+        .textInputAutocapitalization(.never).autocorrectionDisabled()
+    }
 }
 
 struct TeachingView: View {
@@ -281,10 +309,9 @@ struct TeachingView: View {
                         Button { finishing = true } label: { Label("完成示教", systemImage: "checkmark.circle").frame(maxWidth: .infinity).padding(7) }
                             .buttonStyle(.bordered).disabled(count == 0 || session.busy)
                     } else {
-                        TextField("电脑局域网地址", text: $session.serverAddress).textFieldStyle(.roundedBorder)
-                            .keyboardType(.URL).textInputAutocapitalization(.never).autocorrectionDisabled()
+                        LANAddressFields(address: $session.serverConnection).disabled(session.busy)
                         Button { Task { await session.finish(sync: true) } } label: { Label("同步到电脑", systemImage: "arrow.up.circle").frame(maxWidth: .infinity).padding(10) }
-                            .buttonStyle(.borderedProminent).disabled(session.busy)
+                            .buttonStyle(.borderedProminent).disabled(session.busy || !session.serverConnection.canConnect)
                     }
                     if session.busy { ProgressView() }
                     Text(session.status).font(.caption).foregroundStyle(.secondary)

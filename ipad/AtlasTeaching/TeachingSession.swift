@@ -7,8 +7,12 @@ final class TeachingSession: ObservableObject {
     @Published var current: LocalProject?
     @Published var busy = false
     @Published var error = ""
-    @Published var status = "物体接收后即可离线示教"
-    @Published var serverAddress = UserDefaults.standard.string(forKey: "serverAddress") ?? ""
+    @Published var status = ""
+    @Published var serverConnection = LANAddressInput(address: UserDefaults.standard.string(forKey: "serverAddress") ?? "")
+    var serverAddress: String {
+        get { serverConnection.address }
+        set { serverConnection = LANAddressInput(address: newValue) }
+    }
     @Published var code = ""
     @Published var geometry: ModelGeometry?
     var displaySettings: ModelDisplaySettings { current?.displaySettings ?? ModelDisplaySettings() }
@@ -21,12 +25,13 @@ final class TeachingSession: ObservableObject {
     func reload() async {
         do { projects = try await ProjectStore.shared.projects() } catch { self.error = "读取本地草稿失败：\(error.localizedDescription)" }
     }
-    func pair() async {
+    func pair(qr: PairingQRCode? = nil) async {
         guard !busy else { return }; busy = true; error = ""; defer { busy = false }
         do {
-            let client = try LANClient(address: serverAddress)
+            if let qr { try qr.validate(); serverAddress = qr.address; code = PairingCode.normalize(qr.code) }
+            let client = try LANClient(address: qr?.address ?? serverAddress)
             status = "连接电脑并配对…"
-            let paired = try await client.pair(code: code, deviceID: deviceID, name: "iPad Pro")
+            let paired = try await client.pair(code: code, deviceID: deviceID, name: "iPad Pro", qr: qr)
             status = "通过局域网下载物体…"
             let data = try await client.download(paired)
             let geometry = try await Task.detached { try ModelGeometry(data: data, manifest: paired.manifest) }.value

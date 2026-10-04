@@ -3,6 +3,49 @@ import CryptoKit
 
 @MainActor
 final class AtlasTeachingUITests: XCTestCase {
+    func testPairingScannerCanCancelWithoutChangingManualInput() {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        XCUIDevice.shared.orientation = .landscapeLeft
+        app.launchArguments = ["-serverAddress", "http://192.168.100.7:21990"]
+        app.launch()
+        let code = app.textFields["pairing-code"]
+        XCTAssertTrue(code.waitForExistence(timeout: 15))
+        app.buttons["scan-pairing-code"].tap()
+        let cancel = app.buttons["cancel-pairing-scan"]
+        XCTAssertTrue(cancel.waitForExistence(timeout: 10))
+        let springboard = XCUIApplication(bundleIdentifier: "com.apple.springboard")
+        let allow = springboard.alerts.buttons.matching(NSPredicate(format: "label IN %@", ["允许", "好", "OK", "Allow"])).firstMatch
+        if allow.waitForExistence(timeout: 3) { allow.tap() }
+        XCTAssertTrue(app.staticTexts["scanner-status"].exists)
+        #if !targetEnvironment(simulator)
+        XCTAssertFalse(app.staticTexts["scanner-camera-help"].exists, "The connected iPad Pro must display the real camera scanner")
+        #endif
+        let shot = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+        shot.name = "Native QR pairing scanner"; shot.lifetime = .keepAlways; add(shot)
+        cancel.tap()
+        XCTAssertTrue(code.waitForExistence(timeout: 5))
+        // VisionKit can restore the physical device orientation after dismissal.
+        // Wait for the rotation before editing so the next tap uses stable coordinates.
+        XCUIDevice.shared.orientation = .portrait
+        let portrait = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            let frame = app.windows.firstMatch.frame
+            return frame.height > frame.width
+        }, object: nil)
+        XCTAssertEqual(XCTWaiter.wait(for: [portrait], timeout: 10), .completed)
+        code.tap(); code.typeText("Q7Z2")
+        app.buttons["scan-pairing-code"].tap()
+        XCTAssertTrue(cancel.waitForExistence(timeout: 10))
+        cancel.tap()
+        XCTAssertTrue(code.waitForExistence(timeout: 5))
+        XCTAssertEqual(code.value as? String, "Q7Z2")
+        XCTAssertEqual(app.textFields["server-address"].value as? String, "192.168.100.7")
+        XCTAssertEqual(app.textFields["server-port"].value as? String, "21990")
+        XCTAssertTrue(app.buttons["receive-model"].isEnabled)
+        XCTAssertFalse(app.buttons["capture-pose"].exists)
+        XCUIDevice.shared.orientation = .landscapeLeft
+    }
+
     func testDiscoverTeachingServerKeepsPairingCode() throws {
         guard let serverID = ProcessInfo.processInfo.environment["ATLAS_DISCOVERY_SERVER_ID"] else {
             throw XCTSkip("Provide the running LAN service ID for a physical discovery test")
@@ -17,9 +60,9 @@ final class AtlasTeachingUITests: XCTestCase {
         code.tap(); code.typeText("Q7Z2")
         let service = app.buttons["discovered-service-\(serverID)"]
         XCTAssertTrue(service.waitForExistence(timeout: 20), app.debugDescription)
-        XCTAssertEqual(app.textFields["server-address"].value as? String, "http://192.168.100.7:21990", "search never overwrites a manually entered address")
+        XCTAssertEqual(app.textFields["server-address"].value as? String, "192.168.100.7", "search never overwrites a manually entered address")
         service.tap()
-        XCTAssertNotEqual(app.textFields["server-address"].value as? String, "http://192.168.100.7:21990")
+        XCTAssertNotEqual(app.textFields["server-address"].value as? String, "192.168.100.7")
         XCTAssertEqual(code.value as? String, "Q7Z2", "selection keeps the pairing code")
         XCTAssertTrue(app.buttons["receive-model"].isEnabled)
         XCTAssertFalse(app.buttons["capture-pose"].exists, "discovery never pairs or opens a teaching session")
@@ -42,6 +85,8 @@ final class AtlasTeachingUITests: XCTestCase {
         code.typeText("2")
         XCTAssertEqual(code.value as? String, "Q7Z2")
         XCTAssertTrue(receive.isEnabled, "uppercase letters beyond F are supported")
+        let filled = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+        filled.name = "Four filled pairing code cells"; filled.lifetime = .keepAlways; add(filled)
         code.typeText("9")
         XCTAssertFalse(receive.isEnabled, "do not truncate a pasted longer code into a different valid code")
         code.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: 5))
@@ -54,6 +99,52 @@ final class AtlasTeachingUITests: XCTestCase {
         XCTAssertFalse(app.buttons["capture-pose"].exists, "input validation never pairs by itself")
         let shot = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
         shot.name = "Four-character alphanumeric pairing input"; shot.lifetime = .keepAlways; add(shot)
+    }
+
+    func testSeparateIPv4AndPortInputs() {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        XCUIDevice.shared.orientation = .landscapeLeft
+        app.launchArguments = ["-serverAddress", "192.168.100.7"]
+        app.launch()
+        let host = app.textFields["server-address"], port = app.textFields["server-port"]
+        XCTAssertTrue(host.waitForExistence(timeout: 15))
+        XCTAssertEqual(host.value as? String, "192.168.100.7")
+        XCTAssertEqual(port.value as? String, "21990")
+        app.textFields["pairing-code"].tap(); app.textFields["pairing-code"].typeText("Q7Z2")
+        let receive = app.buttons["receive-model"]
+        XCTAssertTrue(receive.isEnabled)
+        port.coordinate(withNormalizedOffset: CGVector(dx: 0.95, dy: 0.5)).tap()
+        port.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: 5)); port.typeText("22001")
+        XCTAssertEqual(host.value as? String, "192.168.100.7", "editing the port keeps the IPv4 address")
+        XCTAssertEqual(port.value as? String, "22001"); XCTAssertTrue(receive.isEnabled)
+        port.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: 5)); port.typeText("65536")
+        XCTAssertFalse(receive.isEnabled)
+        port.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: 5))
+        XCTAssertTrue(receive.isEnabled, "a blank port uses 21990")
+        port.typeText("21990\n")
+        let screenshot = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+        screenshot.name = "IPv4 address and default port"; screenshot.lifetime = .keepAlways; add(screenshot)
+        XCTAssertFalse(app.buttons["capture-pose"].exists)
+    }
+
+    func testLocalModelThumbnailLoadsWithoutOpeningProject() throws {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        XCUIDevice.shared.orientation = .landscapeLeft
+        app.launch()
+        let project = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "local-project-")).firstMatch
+        guard project.waitForExistence(timeout: 15) else { throw XCTSkip("Requires a locally received model") }
+        let id = String(project.identifier.dropFirst("local-project-".count))
+        let preview = app.images["model-thumbnail-\(id)"]
+        XCTAssertTrue(preview.waitForExistence(timeout: 45), app.debugDescription)
+        XCTAssertTrue(project.frame.contains(preview.frame), "The thumbnail stays inside its model card")
+        XCTAssertFalse(app.buttons["capture-pose"].exists, "Generating a thumbnail must not open or calibrate the project")
+        let screenshot = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+        screenshot.name = "Local model card with actual cached preview"; screenshot.lifetime = .keepAlways; add(screenshot)
+        app.terminate(); app.launch()
+        XCTAssertTrue(preview.waitForExistence(timeout: 15), "The preview remains available after relaunch")
+        XCTAssertFalse(app.buttons["capture-pose"].exists)
     }
 
     func testLibraryFillsWindowAndAdaptsToRotation() {
@@ -238,8 +329,11 @@ final class AtlasTeachingUITests: XCTestCase {
         let address = app.textFields["server-address"]
         XCTAssertTrue(address.waitForExistence(timeout: 15))
         address.tap()
-        if let current = address.value as? String, current.hasPrefix("http") { address.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: current.count)) }
-        address.typeText("http://127.0.0.1:21990")
+        if let current = address.value as? String, current != address.placeholderValue { address.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: current.count)) }
+        address.typeText("127.0.0.1")
+        let port = app.textFields["server-port"]; port.tap()
+        if let current = port.value as? String, current != port.placeholderValue { port.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: current.count)) }
+        port.typeText("21990\n")
         let code = app.textFields["pairing-code"]; code.tap(); code.typeText(ticket["pairingCode"] as! String)
         app.buttons["receive-model"].tap()
         let capture = app.buttons["capture-pose"]

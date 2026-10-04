@@ -26,6 +26,23 @@ import CryptoKit
             sourceMapId: "grid", coordinateFrame: "virtual_origin", distanceUnit: "meter", verticalAxis: "Z",
             vertices: vertices, indices: faces * 3, sampled: false, originalVertices: vertices, byteLength: data.count)
         let model = try ModelGeometry(data: data, manifest: manifest)
+        let thumbnail = try model.makeThumbnailGeometry()
+        let thumbnailPositions = thumbnail.sources(for: .vertex)[0]
+        precondition(thumbnailPositions.vectorCount <= 80_000 && thumbnailPositions.data.count < data.count,
+            "card previews must have a bounded GPU buffer independent of the full model")
+        precondition(thumbnail.boundingBox.min.z == -2 && thumbnail.boundingBox.max.x == 449,
+            "thumbnail framing must retain the complete model bounds")
+        let thumbnailPoints = thumbnailPositions.data.withUnsafeBytes { raw in
+            (0..<thumbnailPositions.vectorCount).map { index -> SIMD3<Float> in
+                let offset = index * thumbnailPositions.dataStride
+                return SIMD3(raw.loadUnaligned(fromByteOffset: offset, as: Float.self),
+                    raw.loadUnaligned(fromByteOffset: offset + 4, as: Float.self),
+                    raw.loadUnaligned(fromByteOffset: offset + 8, as: Float.self))
+            }
+        }
+        precondition(Set(thumbnailPoints).count == thumbnailPoints.count && thumbnailPoints.allSatisfy {
+            $0.x >= 0 && $0.x <= 449 && $0.y >= 0 && $0.y <= 449 && $0.z == -2
+        }, "thumbnail points must be distinct source positions without changing coordinates")
         let full = try model.makeGeometry(settings: ModelDisplaySettings(meshQuality: .full))
         precondition(full.elements[0].primitiveType == .triangles && full.elements[0].primitiveCount == faces)
         precondition(full.elements[0].data == data.subdata(in: (32 + vertices * 16)..<data.count), "full quality retains exact source triangles")
@@ -61,6 +78,30 @@ import CryptoKit
         let pointsOnly = try ModelGeometry(data: pointData, manifest: pointManifest)
         let legacyGeometry = try pointsOnly.makeGeometry(settings: ModelDisplaySettings())
         precondition(legacyGeometry.elements[0].primitiveType == .point, "legacy point clouds never invent mesh")
+        let pointThumbnail = try pointsOnly.makeThumbnailGeometry()
+        precondition(pointThumbnail.elements[0].primitiveType == .point)
+
+        var triangleData = Data(count: 92)
+        triangleData.withUnsafeMutableBytes { raw in
+            let words = raw.bindMemory(to: UInt32.self)
+            words[0] = 0x534c5441; words[1] = 1; words[2] = 3; words[3] = 3
+            for (i, value) in [Float(0), 0, 0, 1, 0, 0, 0, 1, 0].enumerated() { words[8 + i] = value.bitPattern }
+            words[17] = 0xff0000ff; words[18] = 0xff00ff00; words[19] = 0xffff0000
+            words[20] = 2; words[21] = 0; words[22] = 1
+        }
+        var triangleManifest = manifest
+        triangleManifest.vertices = 3; triangleManifest.indices = 3; triangleManifest.byteLength = triangleData.count
+        triangleManifest.modelHash = SHA256.hash(data: triangleData).map { String(format: "%02x", $0) }.joined()
+        let triangleThumbnail = try ModelGeometry(data: triangleData, manifest: triangleManifest).makeThumbnailGeometry()
+        precondition(triangleThumbnail.elements[0].primitiveType == .triangles && triangleThumbnail.elements[0].primitiveCount == 1,
+            "small meshes retain faces in their card preview")
+        let trianglePositions = triangleThumbnail.sources(for: .vertex)[0]
+        trianglePositions.data.withUnsafeBytes { raw in
+            precondition(raw.loadUnaligned(fromByteOffset: 4, as: Float.self) == 1,
+                "compacted mesh follows the source triangle indices")
+            precondition(raw.loadUnaligned(fromByteOffset: 20, as: Float.self) == 1,
+                "compacted preview preserves the source vertex color")
+        }
 
         let renderer = ModelRenderer()
         renderer.update(model, settings: ModelDisplaySettings(meshQuality: .full))
@@ -71,6 +112,6 @@ import CryptoKit
         }
         precondition(renderer.appliedSettings == denseSettings && renderer.geometry?.elements[0].primitiveCount == 50_625, "latest selection wins over cancelled rendering")
         precondition(model.data == data && manifest.modelHash == digest, "source data remain intact")
-        print("Mesh quality, point density, original topology/coordinates, point-only compatibility and render cancellation passed.")
+        print("Mesh quality, point density, compact thumbnails, original topology/coordinates, point-only compatibility and render cancellation passed.")
     }
 }

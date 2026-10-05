@@ -3,9 +3,84 @@ import CryptoKit
 import UIKit
 import SceneKit
 import SwiftUI
+import Metal
 
 @MainActor
 final class AtlasTeachingUITests: XCTestCase {
+    private func expectAutomaticPlacement(_ app: XCUIApplication, file: StaticString = #filePath, line: UInt = #line) {
+        let capture = app.buttons["capture-pose"]
+        XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "enabled == true"), object: capture)], timeout: 15), .completed,
+            "valid placement must enable recording without another tap", file: file, line: line)
+        XCTAssertFalse(app.buttons["confirm-model-calibration"].exists, file: file, line: line)
+        XCTAssertFalse(app.buttons["finish-placement-adjustment"].exists, file: file, line: line)
+        XCTAssertTrue(app.buttons["adjust-model-placement"].exists, file: file, line: line)
+    }
+
+    func testPoseMarkersStaySmallWhenCameraCrossesRecordedPosition() throws {
+        let ar = ARController()
+        let sample = TeachingSample(segmentId: "marker-render-test", kind: "keyframe",
+            cameraPose: CameraPose(position: Point3(.zero), quaternion: Rotation4(simd_quatf())))
+        ar.refreshMarkers([sample])
+        let markers = try XCTUnwrap(ar.view.scene.rootNode.childNode(withName: "recorded-pose-markers", recursively: true))
+        XCTAssertEqual(markers.childNodes.count, 1)
+        let scene = SCNScene(); scene.background.contents = UIColor.black
+        // Render the production markers on the device GPU without needing to
+        // move the physical iPad through a millimetre-sized recorded position.
+        scene.rootNode.addChildNode(markers.clone())
+        let camera = SCNNode(); camera.camera = SCNCamera()
+        camera.camera?.fieldOfView = 60; camera.camera?.zFar = 10
+        scene.rootNode.addChildNode(camera)
+        let renderer = SCNRenderer(device: try XCTUnwrap(MTLCreateSystemDefaultDevice()), options: nil)
+        renderer.scene = scene; renderer.pointOfView = camera
+        func capture(_ name: String? = nil) throws -> (count: Int, width: Int, height: Int, limit: Int) {
+            let image = renderer.snapshot(atTime: 0, with: CGSize(width: 320, height: 240), antialiasingMode: .none)
+            let cgImage = try XCTUnwrap(image.cgImage)
+            let context = try XCTUnwrap(CGContext(data: nil, width: cgImage.width, height: cgImage.height,
+                bitsPerComponent: 8, bytesPerRow: cgImage.width * 4, space: CGColorSpaceCreateDeviceRGB(),
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue | CGBitmapInfo.byteOrder32Big.rawValue))
+            context.draw(cgImage, in: CGRect(x: 0, y: 0, width: cgImage.width, height: cgImage.height))
+            let pixels = try XCTUnwrap(context.data).assumingMemoryBound(to: UInt8.self)
+            var count = 0, minX = cgImage.width, maxX = -1, minY = cgImage.height, maxY = -1
+            for y in 0..<cgImage.height {
+                for x in 0..<cgImage.width {
+                    let offset = (y * cgImage.width + x) * 4
+                    if pixels[offset] > 150 && pixels[offset + 1] > 100 && pixels[offset + 2] < 100 {
+                        count += 1; minX = min(minX, x); maxX = max(maxX, x); minY = min(minY, y); maxY = max(maxY, y)
+                    }
+                }
+            }
+            if let name {
+                let attachment = XCTAttachment(image: image)
+                attachment.name = name; attachment.lifetime = .keepAlways; add(attachment)
+            }
+            return (count, max(0, maxX - minX + 1), max(0, maxY - minY + 1), Int(ceil(12 * image.scale)))
+        }
+        for near in [0.001, 0.01] {
+            camera.camera?.zNear = near
+            for distance: Float in [-0.03, 0, 0.0005, 0.004, 0.009, 0.012, 0.02, 0.05, 0.1, 0.5] {
+                camera.simdPosition = SIMD3(0, 0, distance)
+                let shot = try capture(near == 0.001 && distance == 0.012 ? "Pose marker 12 mm from camera" : nil)
+                XCTAssertLessThanOrEqual(shot.width, shot.limit, "near=\(near), distance=\(distance): no large yellow patch")
+                XCTAssertLessThanOrEqual(shot.height, shot.limit)
+                XCTAssertLessThanOrEqual(shot.count, shot.limit * shot.limit)
+                if distance <= 0 { XCTAssertEqual(shot.count, 0, "points at/behind the camera are clipped") }
+                if distance >= 0.02 { XCTAssertGreaterThan(shot.count, 0, "the fix must retain visible Pose markers") }
+            }
+        }
+        // Markers still respect the model's depth, instead of drawing over it.
+        let occluder = SCNNode(geometry: SCNPlane(width: 1, height: 1))
+        occluder.position.z = 0.25
+        occluder.geometry?.firstMaterial?.diffuse.contents = UIColor.blue
+        occluder.geometry?.firstMaterial?.lightingModel = .constant
+        scene.rootNode.addChildNode(occluder)
+        XCTAssertEqual(try capture().count, 0, "a foreground model surface must hide the marker")
+        occluder.removeFromParentNode()
+        XCTAssertGreaterThan(try capture().count, 0)
+        ar.refreshMarkers([])
+        XCTAssertTrue(markers.childNodes.isEmpty, "deleting Poses clears their markers")
+    }
+
     func testSpatialAxesAlignmentRendering() throws {
         func reading(_ angle: Float) -> SpatialLevelReading {
             SpatialLevelReading.measure(screenFromWorld: simd_float4x4(simd_quatf(angle: angle * .pi / 180, axis: SIMD3(0, 0, 1))).inverse)!
@@ -206,11 +281,10 @@ final class AtlasTeachingUITests: XCTestCase {
         XCTAssertTrue(project.waitForExistence(timeout: 15)); project.tap()
         let aid = app.switches["ground-assistance"]
         XCTAssertTrue(aid.waitForExistence(timeout: 30)); aid.tap()
-        let place = app.buttons["place-model"], confirm = app.buttons["confirm-model-calibration"]
+        let place = app.buttons["place-model"]
         XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: NSPredicate(format: "enabled == true"), object: place)], timeout: 30), .completed)
         app.otherElements["teaching-render-surface"].coordinate(withNormalizedOffset: CGVector(dx: 0.48, dy: 0.7)).tap()
-        XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: NSPredicate(format: "enabled == true"), object: confirm)], timeout: 15), .completed)
-        confirm.tap()
+        expectAutomaticPlacement(app)
         let capture = app.buttons["capture-pose"]
         XCTAssertTrue(capture.isEnabled)
         app.buttons["review-poses"].tap()
@@ -283,11 +357,10 @@ final class AtlasTeachingUITests: XCTestCase {
         XCTAssertTrue(project.waitForExistence(timeout: 15)); project.tap()
         let aid = app.switches["ground-assistance"]
         XCTAssertTrue(aid.waitForExistence(timeout: 30)); aid.tap()
-        let place = app.buttons["place-model"], confirm = app.buttons["confirm-model-calibration"]
+        let place = app.buttons["place-model"]
         XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: NSPredicate(format: "enabled == true"), object: place)], timeout: 30), .completed)
         app.otherElements["teaching-render-surface"].coordinate(withNormalizedOffset: CGVector(dx: 0.48, dy: 0.7)).tap()
-        XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: NSPredicate(format: "enabled == true"), object: confirm)], timeout: 15), .completed)
-        confirm.tap()
+        expectAutomaticPlacement(app)
         XCTAssertTrue(app.buttons["capture-pose"].isEnabled)
         app.buttons["review-poses"].tap()
         let close = app.buttons["close-pose-review"]
@@ -319,11 +392,10 @@ final class AtlasTeachingUITests: XCTestCase {
         XCTAssertTrue(project.waitForExistence(timeout: 15)); project.tap()
         let aid = app.switches["ground-assistance"]
         XCTAssertTrue(aid.waitForExistence(timeout: 15)); aid.tap()
-        let place = app.buttons["place-model"], confirm = app.buttons["confirm-model-calibration"]
+        let place = app.buttons["place-model"]
         XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: NSPredicate(format: "enabled == true"), object: place)], timeout: 30), .completed)
         app.otherElements["teaching-render-surface"].coordinate(withNormalizedOffset: CGVector(dx: 0.48, dy: 0.7)).tap()
-        XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: NSPredicate(format: "enabled == true"), object: confirm)], timeout: 15), .completed)
-        confirm.tap()
+        expectAutomaticPlacement(app)
         let capture = app.buttons["capture-pose"], alert = app.alerts["当前 Pose 与上一个距离很近"]
         XCTAssertTrue(capture.isEnabled); capture.tap()
         XCTAssertFalse(alert.exists, "the first Pose must record directly")
@@ -365,7 +437,7 @@ final class AtlasTeachingUITests: XCTestCase {
             accepted.append(sample); return true
         }
         ar.trackingNormal = true
-        ar.applyPlacement(at: SIMD3(0, -1, -2)); ar.confirmCalibration()
+        ar.applyPlacement(at: SIMD3(0, -1, -2))
         let calibration = try XCTUnwrap(calibrations.last)
         let sample = TeachingSample(segmentId: calibration.id, kind: "keyframe",
             cameraPose: CameraPose(position: Point3(SIMD3(0.03, 0.04, 0)), quaternion: Rotation4(simd_quatf())),
@@ -403,6 +475,63 @@ final class AtlasTeachingUITests: XCTestCase {
         XCTAssertEqual(accepted.count, 1, "suspension invalidates a pending sample")
     }
 
+    func testInitialPlacementAutomaticallyCalibratesAfterTapOrDrag() throws {
+        let ar = ARController()
+        var calibrations: [Calibration] = [], poseWrites = 0
+        ar.onCalibration = { calibrations.append($0) }
+        ar.onSample = { _ in poseWrites += 1; return true }
+        let first = SIMD3<Float>(0.2, -1, -2), last = SIMD3<Float>(0.8, -1, -3)
+        ar.applyPlacement(at: first)
+        XCTAssertFalse(ar.placed); XCTAssertTrue(calibrations.isEmpty, "tracking is required")
+        ar.trackingNormal = true
+        ar.placeObject() // No measured surface/camera frame in this isolated test.
+        ar.applyPlacement(at: SIMD3(.nan, -1, -2))
+        XCTAssertFalse(ar.calibrated); XCTAssertTrue(calibrations.isEmpty)
+
+        ar.yaw = 35; ar.pitch = 12; ar.roll = -8
+        ar.applyPlacement(at: first)
+        XCTAssertTrue(ar.calibrated, "a valid tap/button placement enters teaching immediately")
+        XCTAssertEqual(calibrations.count, 1)
+        XCTAssertEqual(calibrations[0].yawDegrees, 35)
+        XCTAssertEqual(calibrations[0].pitchDegrees, 12)
+        XCTAssertEqual(calibrations[0].rollDegrees, -8)
+        ar.confirmCalibration(); ar.applyPlacement(at: last)
+        XCTAssertEqual(calibrations.count, 1, "duplicate events cannot recalibrate a locked model")
+
+        ar.suspend(); ar.trackingNormal = true
+        ar.beginPlacementDrag(); ar.applyPlacement(at: first); ar.applyPlacement(at: last)
+        let root = try XCTUnwrap(ar.view.scene.rootNode.childNode(withName: "independent-teaching-object", recursively: true)?.parent)
+        XCTAssertTrue(ar.placed); XCTAssertFalse(ar.calibrated)
+        ar.confirmCalibration()
+        XCTAssertEqual(calibrations.count, 1, "drag updates must not commit or hide the ground before release")
+        let finalTransform = root.simdTransform.elements
+        ar.finishPlacementDrag(); ar.finishPlacementDrag()
+        XCTAssertTrue(ar.calibrated); XCTAssertEqual(calibrations.count, 2)
+        XCTAssertEqual(calibrations[1].worldFromModel, finalTransform, "release commits the last valid drag target once")
+
+        ar.beginPlacementAdjustment()
+        ar.beginPlacementDrag(); ar.applyPlacement(at: first); ar.finishPlacementDrag()
+        XCTAssertTrue(ar.adjustingPlacement); XCTAssertFalse(ar.calibrated)
+        XCTAssertEqual(calibrations.count, 2, "editing still allows multiple moves before Finish")
+        ar.cancelPlacementAdjustment()
+        XCTAssertTrue(ar.calibrated); XCTAssertEqual(root.simdTransform.elements, finalTransform)
+        XCTAssertEqual(calibrations.count, 2)
+
+        for cancelled in [true, false] {
+            ar.suspend(); ar.trackingNormal = true
+            ar.beginPlacementDrag(); ar.applyPlacement(at: first)
+            if !cancelled { ar.trackingNormal = false }
+            ar.finishPlacementDrag(cancelled: cancelled)
+            XCTAssertFalse(ar.placed); XCTAssertFalse(ar.calibrated); XCTAssertTrue(root.isHidden)
+            XCTAssertEqual(calibrations.count, 2, "cancelled or untracked drags cannot leave a pending confirmation")
+        }
+        ar.trackingNormal = true
+        ar.beginPlacementDrag(); ar.applyPlacement(at: first); ar.suspend(); ar.finishPlacementDrag()
+        XCTAssertFalse(ar.calibrated); XCTAssertFalse(ar.placed)
+        XCTAssertEqual(calibrations.count, 2, "backgrounding discards the pending drag")
+        XCTAssertEqual(poseWrites, 0, "placing a model never records a Pose")
+    }
+
     func testAdjustingCalibratedPlacementCanCommitOrCancel() {
         let ar = ARController()
         var calibrations: [Calibration] = []
@@ -410,7 +539,7 @@ final class AtlasTeachingUITests: XCTestCase {
         ar.trackingNormal = true
         ar.referenceX = 2; ar.referenceY = 3; ar.referenceZ = 0.5
         ar.yaw = 42; ar.roll = 30; ar.pitch = -25
-        ar.applyPlacement(at: SIMD3(0.3, -1, -2)); ar.confirmCalibration()
+        ar.applyPlacement(at: SIMD3(0.3, -1, -2))
         XCTAssertTrue(ar.calibrated); XCTAssertEqual(calibrations.count, 1)
         let root = ar.view.scene.rootNode.childNode(withName: "independent-teaching-object", recursively: true)!.parent!
         root.simdOrientation = simd_quatf(angle: 0.03, axis: SIMD3(0, 1, 0)) * root.simdOrientation
@@ -452,6 +581,48 @@ final class AtlasTeachingUITests: XCTestCase {
         XCTAssertTrue(root.isHidden, "cancellation cannot restore an anchor after the AR session is lost")
     }
 
+    func testAutomaticPlacementFromButtonAndDrag() throws {
+        continueAfterFailure = false
+        guard let fixtureID = ProcessInfo.processInfo.environment["ATLAS_HARDWARE_SESSION"], UUID(uuidString: fixtureID) != nil else {
+            throw XCTSkip("Provide a disposable project for automatic placement testing")
+        }
+        XCUIDevice.shared.orientation = .landscapeLeft
+        let app = XCUIApplication(); app.launch()
+        let project = app.buttons["local-project-\(fixtureID)"]
+        for useDrag in [false, true] {
+            XCTAssertTrue(project.waitForExistence(timeout: 15)); project.tap()
+            let aid = app.switches["ground-assistance"], place = app.buttons["place-model"]
+            XCTAssertTrue(aid.waitForExistence(timeout: 15)); aid.tap()
+            XCTAssertFalse(app.buttons["confirm-model-calibration"].exists)
+            XCTAssertFalse(app.buttons["capture-pose"].isEnabled)
+            XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(
+                predicate: NSPredicate(format: "enabled == true"), object: place)], timeout: 30), .completed)
+            if useDrag {
+                let surface = app.otherElements["teaching-render-surface"]
+                let start = surface.coordinate(withNormalizedOffset: CGVector(dx: 0.48, dy: 0.7))
+                start.press(forDuration: 0.05,
+                    thenDragTo: surface.coordinate(withNormalizedOffset: CGVector(dx: 0.57, dy: 0.73)),
+                    withVelocity: .slow, thenHoldForDuration: 0.2)
+            } else {
+                // Tracking can become normal before LiDAR has a reliable hit
+                // at the reticle. Retry failed hits while depth data warms up.
+                for _ in 0..<6 {
+                    guard place.exists, place.isEnabled else { break }
+                    place.tap()
+                    let captured = XCTNSPredicateExpectation(predicate: NSPredicate(format: "enabled == true"),
+                        object: app.buttons["capture-pose"])
+                    if XCTWaiter.wait(for: [captured], timeout: 2) == .completed { break }
+                }
+            }
+            expectAutomaticPlacement(app)
+            XCTAssertFalse(aid.exists, "ground controls disappear after automatic placement")
+            let screenshot = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+            screenshot.name = useDrag ? "Teaching immediately after placement drag" : "Teaching immediately after Place button"
+            screenshot.lifetime = .keepAlways; add(screenshot)
+            app.buttons["本地项目"].tap()
+        }
+    }
+
     func testAdjustPlacementWhileTeachingWithoutLeavingPage() throws {
         continueAfterFailure = false
         let app = XCUIApplication(); app.launch()
@@ -459,18 +630,19 @@ final class AtlasTeachingUITests: XCTestCase {
         defer { XCUIDevice.shared.orientation = .landscapeLeft }
         // Deliberately never fall back to the user's project: this test records
         // Poses, and requires a disposable copy installed for hardware testing.
-        let project = app.buttons["local-project-8ADA580F-DC16-4ABD-A420-5AB5C5D30872"]
-        guard project.waitForExistence(timeout: 15) else { throw XCTSkip("Install a disposable adjustment fixture before this hardware test") }
+        guard let fixtureID = ProcessInfo.processInfo.environment["ATLAS_HARDWARE_SESSION"], UUID(uuidString: fixtureID) != nil else {
+            throw XCTSkip("Provide a disposable project for placement adjustment testing")
+        }
+        let project = app.buttons["local-project-\(fixtureID)"]
+        XCTAssertTrue(project.waitForExistence(timeout: 15))
         project.tap()
         let aid = app.switches["ground-assistance"], surface = app.otherElements["teaching-render-surface"]
         XCTAssertTrue(aid.waitForExistence(timeout: 15)); aid.tap()
-        let place = app.buttons["place-model"], confirm = app.buttons["confirm-model-calibration"]
+        let place = app.buttons["place-model"], finish = app.buttons["finish-placement-adjustment"]
         let ready = XCTNSPredicateExpectation(predicate: NSPredicate(format: "enabled == true"), object: place)
         XCTAssertEqual(XCTWaiter.wait(for: [ready], timeout: 30), .completed)
         surface.coordinate(withNormalizedOffset: CGVector(dx: 0.48, dy: 0.7)).tap()
-        let placed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "enabled == true"), object: confirm)
-        XCTAssertEqual(XCTWaiter.wait(for: [placed], timeout: 15), .completed)
-        confirm.tap()
+        expectAutomaticPlacement(app)
         let adjust = app.buttons["adjust-model-placement"], capture = app.buttons["capture-pose"]
         XCTAssertTrue(adjust.waitForExistence(timeout: 5)); XCTAssertTrue(adjust.isHittable)
         func recordPose() {
@@ -486,12 +658,12 @@ final class AtlasTeachingUITests: XCTestCase {
         adjust.tap()
         let cancel = app.buttons["cancel-placement-adjustment"]
         XCTAssertTrue(cancel.waitForExistence(timeout: 5))
-        XCTAssertEqual(confirm.label, "确认位置，继续示教")
-        XCTAssertFalse(capture.exists, "pose capture is replaced by explicit confirmation during editing")
+        XCTAssertEqual(finish.label, "完成调整")
+        XCTAssertFalse(capture.exists, "pose capture is replaced by finish/cancel controls during editing")
         XCTAssertEqual(surface.frame, originalFrame, "editing does not resize the camera")
         surface.coordinate(withNormalizedOffset: CGVector(dx: 0.58, dy: 0.74)).tap()
         XCTAssertEqual(app.staticTexts["floating-pose-count"].label, initialCount)
-        confirm.tap()
+        finish.tap()
         XCTAssertTrue(adjust.waitForExistence(timeout: 5)); XCTAssertTrue(capture.isEnabled)
         recordPose() // Second Pose must use the new calibration segment.
         let countAfterMove = app.staticTexts["floating-pose-count"].label
@@ -500,7 +672,7 @@ final class AtlasTeachingUITests: XCTestCase {
         for orientation in [UIDeviceOrientation.landscapeLeft, .portrait] {
             XCUIDevice.shared.orientation = orientation
             adjust.tap()
-            XCTAssertTrue(cancel.waitForExistence(timeout: 5)); XCTAssertTrue(confirm.isHittable)
+            XCTAssertTrue(cancel.waitForExistence(timeout: 5)); XCTAssertTrue(finish.isHittable)
             XCTAssertTrue(app.windows.firstMatch.frame.contains(cancel.frame))
             if orientation.isLandscape {
                 surface.coordinate(withNormalizedOffset: CGVector(dx: 0.46, dy: 0.68)).tap()
@@ -516,7 +688,7 @@ final class AtlasTeachingUITests: XCTestCase {
         app.buttons["expand-teaching-panel"].tap()
         XCTAssertTrue(adjust.isHittable, "the expanded panel has a fixed, visible adjustment entry")
         adjust.tap()
-        XCTAssertTrue(cancel.waitForExistence(timeout: 5)); XCTAssertTrue(confirm.isHittable)
+        XCTAssertTrue(cancel.waitForExistence(timeout: 5)); XCTAssertTrue(finish.isHittable)
         cancel.tap()
         app.buttons["本地项目"].tap()
         XCTAssertTrue(project.waitForExistence(timeout: 10))
@@ -537,6 +709,7 @@ final class AtlasTeachingUITests: XCTestCase {
         // Cancellation must retain that actual transform, not the original hit.
         root.simdPosition += SIMD3(0.02, 0.01, -0.01)
         let original = root.simdTransform
+        ar.beginPlacementAdjustment()
         XCTAssertFalse(ar.groundTargetAvailable)
         XCTAssertTrue(ar.placementActionEnabled, "an existing model can be repositioned even when the center misses the floor")
 
@@ -565,24 +738,31 @@ final class AtlasTeachingUITests: XCTestCase {
         ar.applyPlacement(at: newHit)
         XCTAssertFalse(ar.repositioning); XCTAssertFalse(root.isHidden)
         let expected = TeachingCoordinates.placement(hit: newHit, reference: SIMD3(2, 3, 0.5), yaw: 42, roll: 30, pitch: -25)
-        XCTAssertEqual(root.simdTransform.elements, expected.elements)
+        for column in 0..<4 {
+            for row in 0..<4 { XCTAssertEqual(root.simdTransform[column][row], expected[column][row], accuracy: 0.00001) }
+        }
         XCTAssertNotEqual(root.simdTransform.elements, original.elements, "a valid second hit really moves the model")
         XCTAssertEqual(ar.yaw, 42); XCTAssertEqual(ar.roll, 30); XCTAssertEqual(ar.pitch, -25)
-        ar.calibrated = true
+        ar.confirmCalibration()
         ar.beginRepositioning(); ar.applyPlacement(at: oldHit)
         XCTAssertFalse(ar.repositioning); XCTAssertFalse(ar.placementActionEnabled)
-        XCTAssertEqual(root.simdTransform.elements, expected.elements, "calibrated models require an explicit unlock")
+        for column in 0..<4 {
+            for row in 0..<4 { XCTAssertEqual(root.simdTransform[column][row], expected[column][row], accuracy: 0.00001) }
+        }
         ar.beginCalibration(); ar.beginRepositioning(); ar.suspend()
         XCTAssertFalse(ar.placed); XCTAssertFalse(ar.repositioning); XCTAssertTrue(root.isHidden)
-        XCTAssertEqual(calibrationWrites, 0); XCTAssertEqual(poseWrites, 0)
+        XCTAssertEqual(calibrationWrites, 2); XCTAssertEqual(poseWrites, 0)
     }
 
     func testLiveModelRepositioningAndCancel() throws {
         continueAfterFailure = false
         let app = XCUIApplication(); app.launch()
         XCUIDevice.shared.orientation = .landscapeLeft
-        let project = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "local-project-")).firstMatch
-        guard project.waitForExistence(timeout: 15) else { throw XCTSkip("Requires a local unfinished model on a LiDAR iPad") }
+        guard let fixtureID = ProcessInfo.processInfo.environment["ATLAS_HARDWARE_SESSION"], UUID(uuidString: fixtureID) != nil else {
+            throw XCTSkip("Provide a disposable project for automatic placement testing")
+        }
+        let project = app.buttons["local-project-\(fixtureID)"]
+        XCTAssertTrue(project.waitForExistence(timeout: 15))
         project.tap()
         let aid = app.switches["ground-assistance"], place = app.buttons["place-model"]
         XCTAssertTrue(aid.waitForExistence(timeout: 15))
@@ -593,9 +773,10 @@ final class AtlasTeachingUITests: XCTestCase {
         XCTAssertEqual(XCTWaiter.wait(for: [tracked], timeout: 30), .completed)
         let surface = app.otherElements["teaching-render-surface"]
         surface.coordinate(withNormalizedOffset: CGVector(dx: 0.48, dy: 0.7)).tap()
-        let confirm = app.buttons["confirm-model-calibration"]
-        let placed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "enabled == true"), object: confirm)
-        XCTAssertEqual(XCTWaiter.wait(for: [placed], timeout: 15), .completed)
+        expectAutomaticPlacement(app)
+        app.buttons["adjust-model-placement"].tap()
+        let finish = app.buttons["finish-placement-adjustment"]
+        XCTAssertTrue(finish.waitForExistence(timeout: 5))
         XCTAssertEqual(place.label, "重新放置物体")
         aid.tap()
         XCTAssertTrue(place.isEnabled)
@@ -603,11 +784,11 @@ final class AtlasTeachingUITests: XCTestCase {
         let cancel = app.buttons["cancel-model-repositioning"]
         XCTAssertTrue(cancel.waitForExistence(timeout: 5))
         XCTAssertEqual(place.label, "放到准星位置")
-        XCTAssertFalse(confirm.isEnabled)
-        XCTAssertFalse(app.buttons["capture-pose"].isEnabled)
+        XCTAssertFalse(finish.isEnabled)
+        XCTAssertFalse(app.buttons["capture-pose"].exists, "adjustment hides the recording control")
         XCTAssertNotEqual(app.staticTexts["spatial-level-angle"].label, "—", "device attitude remains available during model relocation")
         cancel.tap()
-        XCTAssertFalse(cancel.exists); XCTAssertTrue(confirm.isEnabled); XCTAssertTrue(place.isEnabled)
+        XCTAssertFalse(cancel.exists); XCTAssertTrue(finish.isEnabled); XCTAssertTrue(place.isEnabled)
         XCTAssertEqual(place.label, "重新放置物体")
         let restored = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
         restored.name = "Cancel relocation restores the existing model"; restored.lifetime = .keepAlways; add(restored)
@@ -623,12 +804,12 @@ final class AtlasTeachingUITests: XCTestCase {
         XCTAssertTrue(cancel.waitForExistence(timeout: 5))
         surface.coordinate(withNormalizedOffset: CGVector(dx: 0.58, dy: 0.74)).tap()
         XCTAssertFalse(cancel.exists, "scene taps must pass through the toolbar's transparent area")
-        XCTAssertTrue(confirm.isEnabled)
+        XCTAssertTrue(finish.isEnabled)
         XCTAssertEqual(place.label, "重新放置物体")
         let moved = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
         moved.name = "Model placed again from measured depth"; moved.lifetime = .keepAlways; add(moved)
-        XCTAssertFalse(app.buttons["capture-pose"].isEnabled)
-        // No calibration confirmation or Pose writes in the user's project.
+        XCTAssertFalse(app.buttons["capture-pose"].exists, "recording resumes only after finishing or cancelling adjustment")
+        app.buttons["cancel-placement-adjustment"].tap() // Preserve the initial placement; no Pose writes.
         app.buttons["本地项目"].tap()
     }
 
@@ -949,10 +1130,11 @@ final class AtlasTeachingUITests: XCTestCase {
         app.launch()
         XCUIDevice.shared.orientation = .landscapeLeft
         defer { XCUIDevice.shared.orientation = .landscapeLeft }
-        let project = ProcessInfo.processInfo.environment["ATLAS_HARDWARE_SESSION"].map {
-            app.buttons["local-project-\($0)"]
-        } ?? app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "local-project-")).firstMatch
-        guard project.waitForExistence(timeout: 15) else { throw XCTSkip("Requires a locally received model on a LiDAR iPad") }
+        guard let fixtureID = ProcessInfo.processInfo.environment["ATLAS_HARDWARE_SESSION"], UUID(uuidString: fixtureID) != nil else {
+            throw XCTSkip("Provide a disposable project for automatic placement testing")
+        }
+        let project = app.buttons["local-project-\(fixtureID)"]
+        XCTAssertTrue(project.waitForExistence(timeout: 15))
         project.tap()
         let collapse = app.buttons["collapse-teaching-panel"], expand = app.buttons["expand-teaching-panel"]
         XCTAssertTrue(collapse.waitForExistence(timeout: 15))
@@ -1002,8 +1184,8 @@ final class AtlasTeachingUITests: XCTestCase {
         XCTAssertTrue(aperture.waitForExistence(timeout: 10))
         let originalAperture = aperture.frame, maskedSurface = surface.frame
 
-        // Place without confirming calibration or writing a Pose. This catches
-        // accidental AR/view recreation during the layout change.
+        // Place automatically in a disposable project without recording a Pose.
+        // This catches accidental AR/view recreation during the layout change.
         var placed = false, tilt = ""
         let place = app.buttons["place-model"]
         let floorReady = XCTNSPredicateExpectation(predicate: NSPredicate(format: "enabled == true"), object: place)
@@ -1012,7 +1194,7 @@ final class AtlasTeachingUITests: XCTestCase {
             app.sliders["model-pitch"].adjust(toNormalizedSliderPosition: 0.54)
             tilt = app.staticTexts["model-pitch-value"].label
             place.tap()
-            let ready = XCTNSPredicateExpectation(predicate: NSPredicate(format: "enabled == true"), object: app.buttons["confirm-model-calibration"])
+            let ready = XCTNSPredicateExpectation(predicate: NSPredicate(format: "enabled == true"), object: capture)
             placed = XCTWaiter.wait(for: [ready], timeout: 10) == .completed
         }
         XCTAssertTrue(collapse.isHittable, "the fixed header stays available when the panel is scrolled")
@@ -1038,7 +1220,7 @@ final class AtlasTeachingUITests: XCTestCase {
             XCTAssertGreaterThan(capture.frame.midX, window.midX)
             XCTAssertGreaterThan(capture.frame.midY, window.height * 0.75)
             XCTAssertLessThan(window.maxX - capture.frame.maxX, 55)
-            XCTAssertFalse(capture.isEnabled, "collapsing cannot bypass calibration")
+            XCTAssertEqual(capture.isEnabled, placed, "collapsing preserves automatic placement state")
             XCTAssertTrue(expand.isHittable)
             XCTAssertEqual(app.staticTexts["floating-pose-count"].label, count)
             XCTAssertEqual(aperture.value as? String, "完整视野")
@@ -1062,9 +1244,11 @@ final class AtlasTeachingUITests: XCTestCase {
         XCTAssertFalse(app.otherElements["floating-pose-controls"].exists)
         XCTAssertEqual(maskToggle.value as? String, "1", "panel visibility preserves viewfinder settings")
         if placed {
-            let ready = XCTNSPredicateExpectation(predicate: NSPredicate(format: "enabled == true"), object: app.buttons["confirm-model-calibration"])
+            let ready = XCTNSPredicateExpectation(predicate: NSPredicate(format: "enabled == true"), object: capture)
             XCTAssertEqual(XCTWaiter.wait(for: [ready], timeout: 10), .completed, "placement survives collapsing and rotating")
+            app.buttons["adjust-model-placement"].tap()
             XCTAssertEqual(app.staticTexts["model-pitch-value"].label, tilt)
+            app.buttons["cancel-placement-adjustment"].tap()
         }
         collapse.tap()
         XCUIDevice.shared.press(.home); app.activate()
@@ -1185,10 +1369,11 @@ final class AtlasTeachingUITests: XCTestCase {
         XCUIDevice.shared.orientation = .landscapeLeft
         defer { XCUIDevice.shared.orientation = .landscapeLeft }
         app.launch()
-        let project = ProcessInfo.processInfo.environment["ATLAS_HARDWARE_SESSION"].map {
-            app.buttons["local-project-\($0)"]
-        } ?? app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "local-project-")).firstMatch
-        guard project.waitForExistence(timeout: 15) else { throw XCTSkip("Requires a locally received model on a LiDAR iPad") }
+        guard let fixtureID = ProcessInfo.processInfo.environment["ATLAS_HARDWARE_SESSION"], UUID(uuidString: fixtureID) != nil else {
+            throw XCTSkip("Provide a disposable project for automatic placement testing")
+        }
+        let project = app.buttons["local-project-\(fixtureID)"]
+        XCTAssertTrue(project.waitForExistence(timeout: 15))
         project.tap()
         let aid = app.switches["ground-assistance"], status = app.staticTexts["ground-status"]
         guard aid.waitForExistence(timeout: 60) else { throw XCTSkip("Requires an unfinished project on a LiDAR iPad") }
@@ -1222,11 +1407,12 @@ final class AtlasTeachingUITests: XCTestCase {
             let tilt = app.staticTexts["model-pitch-value"].label
             XCTAssertNotEqual(tilt, "0.0°")
             place.tap()
-            let confirm = app.buttons["confirm-model-calibration"]
-            let placed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "enabled == true"), object: confirm)
-            XCTAssertEqual(XCTWaiter.wait(for: [placed], timeout: 10), .completed)
+            expectAutomaticPlacement(app)
+            XCTAssertFalse(aid.exists, "automatic placement hides the ground helper")
+            app.buttons["adjust-model-placement"].tap()
             XCTAssertEqual(app.staticTexts["model-pitch-value"].label, tilt, "floor placement preserves the requested tilt")
-            XCTAssertFalse(app.buttons["capture-pose"].isEnabled, "a ground hit still requires explicit calibration")
+            app.buttons["cancel-placement-adjustment"].tap()
+            XCTAssertTrue(app.buttons["capture-pose"].isEnabled)
             let screenshot = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
             screenshot.name = "Live LiDAR floor placement with free tilt"; screenshot.lifetime = .keepAlways; add(screenshot)
             print("Live classified ground target, placement and free tilt verified")
@@ -1237,7 +1423,7 @@ final class AtlasTeachingUITests: XCTestCase {
         XCTAssertTrue(aid.waitForExistence(timeout: 15))
         XCTAssertEqual(aid.value as? String, "1")
         XCTAssertFalse(app.buttons["capture-pose"].isEnabled)
-        XCTAssertFalse(app.buttons["confirm-model-calibration"].isEnabled, "resuming must not reuse a placement from the old AR session")
+        XCTAssertFalse(app.buttons["adjust-model-placement"].exists, "resuming must not reuse a placement from the old AR session")
         app.buttons["本地项目"].tap()
     }
 
@@ -1262,7 +1448,7 @@ final class AtlasTeachingUITests: XCTestCase {
         let measured = XCTNSPredicateExpectation(predicate: NSPredicate(format: "label != %@", "—"), object: angle)
         XCTAssertEqual(XCTWaiter.wait(for: [measured], timeout: 30), .completed,
             "device attitude is available before model placement")
-        XCTAssertFalse(app.buttons["confirm-model-calibration"].isEnabled)
+        XCTAssertFalse(app.buttons["confirm-model-calibration"].exists)
         XCTAssertFalse(capture.isEnabled)
         let toggle = app.buttons["toggle-spatial-level"]
         for orientation in [UIDeviceOrientation.landscapeLeft, .portrait] {
@@ -1300,11 +1486,10 @@ final class AtlasTeachingUITests: XCTestCase {
         XCTAssertNotEqual(app.staticTexts["model-pitch-value"].label, "0.0°")
         XCTAssertNotEqual(app.staticTexts["model-roll-value"].label, "0.0°")
         XCTAssertFalse(capture.isEnabled, "The reference aid never calibrates or records automatically")
-        let confirm = app.buttons["confirm-model-calibration"]
-        XCTAssertFalse(confirm.isEnabled, "device attitude does not invent a model placement")
+        XCTAssertFalse(app.buttons["adjust-model-placement"].exists, "device attitude does not invent a model placement")
         let value = Float(angle.label.replacingOccurrences(of: "°", with: ""))
         XCTAssertNotNil(value); XCTAssertTrue((0...180).contains(value ?? -1))
-        toggle.tap(); XCTAssertFalse(confirm.isEnabled, "Hiding the reference does not change calibration eligibility")
+        toggle.tap(); XCTAssertFalse(capture.isEnabled, "Hiding the reference does not change calibration eligibility")
         toggle.tap()
         let screenshot = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
         screenshot.name = "Live device axes with freely tilted model"; screenshot.lifetime = .keepAlways; add(screenshot)
@@ -1313,8 +1498,8 @@ final class AtlasTeachingUITests: XCTestCase {
         XCTAssertEqual(XCTWaiter.wait(for: [resumed], timeout: 30), .completed,
             "device attitude resumes with fresh tracking even though model calibration was reset")
         XCTAssertFalse(capture.isEnabled)
-        XCTAssertFalse(confirm.isEnabled)
-        // Exit without confirming calibration or creating a Pose in the disposable fixture.
+        XCTAssertFalse(app.buttons["adjust-model-placement"].exists)
+        // Exit without placing a model or creating a Pose in the disposable fixture.
         app.buttons["本地项目"].tap()
     }
 

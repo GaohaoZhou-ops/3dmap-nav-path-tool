@@ -285,15 +285,15 @@ struct TeachingView: View {
             && !completed && ar.calibrated && ar.trackingNormal && renderer.geometry != nil
             && !session.busy && count < maximumSamples && session.error.isEmpty
     }
-    private var canConfirmPlacement: Bool {
-        ar.placed && !ar.repositioning && ar.trackingNormal && renderer.geometry != nil
+    private var canFinishPlacementAdjustment: Bool {
+        ar.adjustingPlacement && ar.placed && !ar.repositioning && ar.trackingNormal && renderer.geometry != nil
             && !session.busy && session.error.isEmpty
     }
     private var viewportMessage: String {
         if sidebarCollapsed && !session.error.isEmpty { return session.error }
         if !liveCamera { return "三维物体预览 · 拖动旋转 / 双指缩放视图" }
         if ar.repositioning || ar.adjustingPlacement { return ar.message }
-        if sidebarCollapsed && !ar.calibrated { return "展开面板，确认物体位置与方向后即可记录 Pose" }
+        if sidebarCollapsed && !ar.calibrated { return "点击或拖动有效表面放置物体，放置后即可记录 Pose" }
         return ar.message
     }
 
@@ -511,7 +511,13 @@ struct TeachingView: View {
     private var placementAdjustmentControls: some View {
         VStack(spacing: 8) {
             if ar.adjustingPlacement {
-                confirmPlacementButton
+                Button {
+                    UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
+                    ar.confirmCalibration()
+                } label: {
+                    Text("完成调整").frame(maxWidth: .infinity, minHeight: 32)
+                }.buttonStyle(.borderedProminent).disabled(!canFinishPlacementAdjustment)
+                    .accessibilityIdentifier("finish-placement-adjustment")
                 Button { ar.cancelPlacementAdjustment() } label: {
                     Text("取消调整").frame(maxWidth: .infinity, minHeight: 32)
                 }.buttonStyle(.bordered).accessibilityIdentifier("cancel-placement-adjustment")
@@ -526,16 +532,6 @@ struct TeachingView: View {
                     .accessibilityIdentifier("adjust-model-placement")
             }
         }.font(.subheadline)
-    }
-    private var confirmPlacementButton: some View {
-        Button {
-            UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
-            ar.confirmCalibration()
-        } label: {
-            Text(ar.adjustingPlacement ? "确认位置，继续示教" : "确认物体位置与方向")
-                .frame(maxWidth: .infinity, minHeight: 32)
-        }.buttonStyle(.borderedProminent).disabled(!canConfirmPlacement)
-            .accessibilityIdentifier("confirm-model-calibration")
     }
     private func modelViewport(in available: CGSize) -> some View {
         let size = zividFieldOfViewEnabled ? fieldOfView?.fittedSize(in: available) ?? available : available
@@ -620,7 +616,7 @@ struct TeachingView: View {
     }
     private var calibrationPanel: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Label(ar.calibrated ? "物体已校准" : ar.adjustingPlacement ? "正在调整物体" : "先校准物体", systemImage: ar.calibrated ? "checkmark.seal" : "scope").foregroundStyle(accent)
+            Label(ar.calibrated ? "物体已放置" : ar.adjustingPlacement ? "正在调整物体" : "先放置物体", systemImage: ar.calibrated ? "checkmark.seal" : "scope").foregroundStyle(accent)
             if !ar.calibrated {
                 Text("模型基准点 / 米（默认底部中心）").font(.caption).foregroundStyle(.secondary)
                 HStack {
@@ -628,7 +624,11 @@ struct TeachingView: View {
                 }.disabled(ar.repositioning)
                     .onChange(of: ar.referenceX) { _, _ in ar.updatePlacement() }
                     .onChange(of: ar.referenceY) { _, _ in ar.updatePlacement() }.onChange(of: ar.referenceZ) { _, _ in ar.updatePlacement() }
-                Text(ar.groundAssistance ? "点击或单指拖动青色地面网格放置物体，双指旋转调整方向。尺寸固定为 1:1，模型可自由倾斜。" : "点击或单指拖动放置物体，双指旋转调整方向。尺寸固定为 1:1，可按现场需要倾斜放置。")
+                Text(ar.adjustingPlacement
+                    ? "点击、拖动或双指旋转调整物体，完成调整后继续示教。尺寸固定为 1:1。"
+                    : ar.groundAssistance
+                        ? "点击或拖动青色地面网格放置物体，松手后自动进入示教。尺寸固定为 1:1，之后可继续调整位置与方向。"
+                        : "点击或拖动实测表面放置物体，松手后自动进入示教。尺寸固定为 1:1，之后可继续调整位置与方向。")
                     .font(.caption).foregroundStyle(.secondary)
                 Button(ar.repositioning ? "放到准星位置" : ar.placed ? "重新放置物体" : "放置物体") {
                     UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
@@ -658,7 +658,6 @@ struct TeachingView: View {
                         tiltControl("前后倾斜", angle: $ar.roll, id: "model-roll")
                     }.font(.caption).disabled(ar.repositioning)
                 }
-                if !ar.adjustingPlacement { confirmPlacementButton }
             }
         }
     }

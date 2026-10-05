@@ -51,6 +51,7 @@ final class ARController: NSObject, ObservableObject, @preconcurrency ARSessionD
         var rotationCorrection: simd_float4x4
     }
     private var placementAdjustment: PlacementAdjustment?
+    private var placementDragActive = false
     private var gestureYaw: Float = 0
     private var lastStatusTime: TimeInterval = 0
     private var lastLevelTime: TimeInterval = 0
@@ -67,6 +68,7 @@ final class ARController: NSObject, ObservableObject, @preconcurrency ARSessionD
         view.scene = SCNScene(); view.session.delegate = self; view.session.delegateQueue = .main
         view.automaticallyUpdatesLighting = false; view.preferredFramesPerSecond = 60
         view.scene.rootNode.addChildNode(objectRoot); objectRoot.addChildNode(markers)
+        markers.name = "recorded-pose-markers"
         modelNode.name = "independent-teaching-object"; objectRoot.addChildNode(modelNode)
         groundRoot.name = "lidar-floor-reference"; view.scene.rootNode.addChildNode(groundRoot)
         groundRoot.isHidden = true
@@ -112,12 +114,12 @@ final class ARController: NSObject, ObservableObject, @preconcurrency ARSessionD
     }
     func stop() {
         running = false; view.session.pause(); trackingNormal = false; depthAvailable = false
-        placementAdjustment = nil; adjustingPlacement = false
+        placementAdjustment = nil; adjustingPlacement = false; placementDragActive = false
         levelReading = nil; cameraFieldOfView = nil; lastLevelTime = 0; lastStatusTime = 0; clearGround()
     }
     func suspend() { stop(); calibrated = false; objectRoot.isHidden = true; placed = false; repositioning = false; hitPoint = nil; segmentID = nil }
     func beginCalibration() {
-        placementAdjustment = nil; adjustingPlacement = false
+        placementAdjustment = nil; adjustingPlacement = false; placementDragActive = false
         calibrated = false; repositioning = false; segmentID = nil
         objectRoot.isHidden = !placed
         removeCalibrationAnchor()
@@ -153,7 +155,7 @@ final class ARController: NSObject, ObservableObject, @preconcurrency ARSessionD
         adoptCurrentPlacement()
         self.segmentID = nil; calibrated = false; adjustingPlacement = true
         updateGroundPreview()
-        message = "点击或拖动调整物体位置，确认后继续示教；已有 Pose 保留"
+        message = "点击或拖动调整物体位置，完成调整后继续示教；已有 Pose 保留"
     }
     func cancelPlacementAdjustment() {
         guard adjustingPlacement, let snapshot = placementAdjustment else { return }
@@ -165,7 +167,7 @@ final class ARController: NSObject, ObservableObject, @preconcurrency ARSessionD
         hitPoint = snapshot.hitPoint; placementRotationCorrection = snapshot.rotationCorrection
         objectRoot.simdTransform = snapshot.transform; objectRoot.isHidden = false
         segmentID = snapshot.segmentID
-        placementAdjustment = nil; adjustingPlacement = false
+        placementAdjustment = nil; adjustingPlacement = false; placementDragActive = false
         addCalibrationAnchor(); updateGroundPreview()
         if let frame = view.session.currentFrame { updateLevel(frame) }
         message = "已恢复原位置，可以继续记录 Pose"
@@ -213,10 +215,39 @@ final class ARController: NSObject, ObservableObject, @preconcurrency ARSessionD
         let updating = placed
         hitPoint = hit; placed = true; repositioning = false; updatePlacement()
         message = updating ? "已更新物体位置，可继续调整方向与倾斜" : "调整物体的方向与倾斜，使模型与现场一致；坐标轴辅助观察 iPad 姿态"
+        if !adjustingPlacement && !placementDragActive { confirmCalibration() }
     }
     @objc private func tapToPlace(_ gesture: UITapGestureRecognizer) { if !calibrated { placeObject(at: gesture.location(in: view)) } }
     @objc private func dragToPlace(_ gesture: UIPanGestureRecognizer) {
-        if !calibrated, gesture.numberOfTouches == 1 { placeObject(at: gesture.location(in: view)) }
+        guard !calibrated else { return }
+        switch gesture.state {
+        case .began:
+            beginPlacementDrag(); placeObject(at: gesture.location(in: view))
+        case .changed:
+            if placementDragActive { placeObject(at: gesture.location(in: view)) }
+        case .ended:
+            if placementDragActive { placeObject(at: gesture.location(in: view)) }
+            finishPlacementDrag()
+        case .cancelled, .failed: finishPlacementDrag(cancelled: true)
+        default: break
+        }
+    }
+    func beginPlacementDrag() {
+        guard !calibrated else { return }
+        placementDragActive = true
+    }
+    func finishPlacementDrag(cancelled: Bool = false) {
+        guard placementDragActive else { return }
+        placementDragActive = false
+        // Keep the ground/model editable until the finger lifts. Adjustment
+        // mode remains a draft until the user chooses Finish or Cancel.
+        guard !adjustingPlacement else { return }
+        if !cancelled { confirmCalibration() }
+        if !calibrated {
+            placed = false; repositioning = false; hitPoint = nil; objectRoot.isHidden = true
+            message = cancelled ? "放置已取消，请重新选择位置" : "尚未完成放置，请等待定位正常后重新选择有效表面"
+            updateGroundPreview()
+        }
     }
     @objc private func rotateObject(_ gesture: UIRotationGestureRecognizer) {
         guard !calibrated, placed, !repositioning else { return }
@@ -238,8 +269,11 @@ final class ARController: NSObject, ObservableObject, @preconcurrency ARSessionD
         if let frame = view.session.currentFrame { updateLevel(frame) }
     }
     func confirmCalibration() {
-        guard placed, trackingNormal, !calibrated, !repositioning, referenceX.isFinite, referenceY.isFinite, referenceZ.isFinite,
+        guard placed, trackingNormal, !calibrated, !repositioning, !placementDragActive, referenceX.isFinite, referenceY.isFinite, referenceZ.isFinite,
               yaw.isFinite, roll.isFinite, pitch.isFinite else { return }
+        if let frame = view.session.currentFrame {
+            guard case .normal = frame.camera.trackingState else { return }
+        }
         updatePlacement()
         let calibration = Calibration(worldFromModel: objectRoot.simdTransform.elements, referencePoint: Point3(reference),
             yawDegrees: yaw, rollDegrees: roll, pitchDegrees: pitch)
@@ -249,7 +283,7 @@ final class ARController: NSObject, ObservableObject, @preconcurrency ARSessionD
         placementAdjustment = nil; adjustingPlacement = false
         calibrated = true; onCalibration?(calibration)
         updateGroundPreview()
-        message = wasAdjusting ? "物体位置已更新，继续记录 Pose" : "物体位置已确认，可以记录 Pose；需要移动时点击「调整物体位置」"
+        message = wasAdjusting ? "物体位置已更新，继续记录 Pose" : "物体已放置，可以记录 Pose；需要移动时点击「调整物体位置」"
     }
     func captureKeyframe() -> TeachingSample? {
         guard calibrated, trackingNormal, let segmentID, let frame = view.session.currentFrame,
@@ -270,9 +304,17 @@ final class ARController: NSObject, ObservableObject, @preconcurrency ARSessionD
         showMarker(sample); message = "已记录示教点"
     }
     private func showMarker(_ sample: TeachingSample) {
-        let sphere = SCNSphere(radius: 0.008); sphere.firstMaterial?.diffuse.contents = UIColor.systemYellow
-        sphere.firstMaterial?.lightingModel = .constant
-        let node = SCNNode(geometry: sphere); node.simdPosition = sample.cameraPose.position.simd; markers.addChildNode(node)
+        // Pose positions are camera centers. A world-sized sphere can fill the
+        // viewport as the camera approaches or leaves a recorded position.
+        // Point primitives keep the exact position while capping the visible size.
+        let point = SCNGeometryElement(indices: [Int32(0)], primitiveType: .point)
+        point.pointSize = 0.016
+        point.minimumPointScreenSpaceRadius = 3; point.maximumPointScreenSpaceRadius = 5
+        let geometry = SCNGeometry(sources: [SCNGeometrySource(vertices: [SCNVector3Zero])], elements: [point])
+        let material = SCNMaterial(); material.diffuse.contents = UIColor.systemYellow; material.lightingModel = .constant
+        material.readsFromDepthBuffer = true; material.writesToDepthBuffer = true
+        geometry.materials = [material]
+        let node = SCNNode(geometry: geometry); node.simdPosition = sample.cameraPose.position.simd; markers.addChildNode(node)
         if markers.childNodes.count > 2000 { markers.childNodes.first?.removeFromParentNode() }
     }
     private func addAxes() {

@@ -52,7 +52,9 @@ xcuserdata/
 *.xcappdata/
 *.xcappdata.zip
 *.xccrashpoint/
+*.xccrashpoint.zip
 *.xcdistributionlogs/
+*.xcdistributionlogs.zip
 *.xcactivitylog
 *.crash
 *.ips
@@ -77,6 +79,11 @@ test-results/
 /test-downloads/
 /ipad/test-artifacts/
 /ipad/screenshots/
+# Packed device-test artifacts can contain the same local project data.
+/test-artifacts.zip
+/test-artifacts-*.zip
+/ipad/test-artifacts.zip
+/ipad/test-artifacts-*.zip
 .playwright/
 .local-browsers/
 ms-playwright/
@@ -90,6 +97,7 @@ playwright/.auth/
 *.xctestproducts.zip
 *.xccovreport
 *.xccovarchive/
+*.xccovarchive.zip
 *.profraw
 *.profdata
 

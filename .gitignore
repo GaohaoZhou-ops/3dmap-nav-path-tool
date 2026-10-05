@@ -39,11 +39,13 @@ xcuserdata/
 *.xccheckout
 *.xcscmblueprint
 *.xcarchive/
+*.xcarchive.zip
 *.app/
 *.xctest/
 *.ipa
 *.dSYM/
 *.dSYM.zip
+*.bcsymbolmap
 
 # Exported iPad app containers and Xcode diagnostics
 # Containers can include local models, poses, and pairing credentials.
@@ -53,6 +55,9 @@ xcuserdata/
 *.xcactivitylog
 *.crash
 *.ips
+*.trace/
+*.trace.zip
+*.memgraph
 
 # Local Apple signing material
 *.mobileprovision
@@ -83,10 +88,16 @@ playwright/.auth/
 *.profraw
 *.profdata
 
-# UI smoke-test captures saved in the repository root
+# UI smoke-test captures; scope device exports so source artwork stays visible.
 /atlas-*.png
 /transfer-*.png
 /atlas-ipad-*.mp4
+/atlas-ipad-*.mov
+/atlas-ipad-*.heic
+/ipad/atlas-ipad-*.png
+/ipad/atlas-ipad-*.mp4
+/ipad/atlas-ipad-*.mov
+/ipad/atlas-ipad-*.heic
 
 # xcresulttool exports UUID-named images, recordings, snapshots and a manifest.
 # Include numbered retry folders such as atlas-ipad-level-shots-2.

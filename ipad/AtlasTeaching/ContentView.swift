@@ -272,6 +272,8 @@ struct TeachingView: View {
     @State private var zividFieldOfViewEnabled = false
     @State private var tiltControlsOpen = false
     @State private var sidebarCollapsed = false
+    @State private var nearbyPoseConfirmation: NearbyPoseConfirmation?
+    @State private var loadedProjectID: String?
     let projectID: String
     let geometry: ModelGeometry
     private var completed: Bool { session.current?.result.completedAt != nil }
@@ -279,7 +281,8 @@ struct TeachingView: View {
     private var liveCamera: Bool { ARController.supported && !completed }
     private var fieldOfView: ZividFieldOfView? { liveCamera ? ar.cameraFieldOfView : .modelPreview }
     private var canRecordPose: Bool {
-        !completed && ar.calibrated && ar.trackingNormal && renderer.geometry != nil
+        scenePhase == .active && !review && session.current?.id == projectID
+            && !completed && ar.calibrated && ar.trackingNormal && renderer.geometry != nil
             && !session.busy && count < maximumSamples && session.error.isEmpty
     }
     private var canConfirmPlacement: Bool {
@@ -410,6 +413,7 @@ struct TeachingView: View {
                     }
                     Button { review = true } label: { Label("查看 / 编辑 Pose", systemImage: "list.bullet.rectangle").frame(maxWidth: .infinity).padding(7) }
                         .buttonStyle(.bordered).disabled(count == 0)
+                        .accessibilityIdentifier("review-poses")
                     if !completed {
                         Button { finishing = true } label: { Label("完成示教", systemImage: "checkmark.circle").frame(maxWidth: .infinity).padding(7) }
                             .buttonStyle(.bordered).disabled(count == 0 || session.busy || ar.adjustingPlacement)
@@ -434,25 +438,52 @@ struct TeachingView: View {
             }
         }
         }.task(id: projectID) {
-            guard let project = session.current else { return }
+            // Returning from full-screen review must retain the live AR session
+            // and its calibration instead of loading and resetting it again.
+            guard loadedProjectID != projectID, let project = session.current else { return }
+            loadedProjectID = projectID
             ar.load(manifest: project.session.manifest, samples: project.result.samples)
             renderer.update(geometry, settings: session.displaySettings)
             coverage.update(model: geometry, samples: project.result.samples)
             ar.onCalibration = { session.addCalibration($0) }
             ar.onSample = { session.addSample($0) }
             if !completed { await ar.start() }
-        }.onDisappear { ar.stop(); renderer.cancel(); coverage.cancel() }
+        }.onDisappear {
+            guard !review || session.current?.id != projectID else { return }
+            loadedProjectID = nil
+            nearbyPoseConfirmation = nil; ar.stop(); renderer.cancel(); coverage.cancel()
+        }
         .onReceive(renderer.$geometry) { ar.display($0); coverage.attach(to: $0) }
         .onReceive(session.$current) { project in
             if let project, project.id == projectID { coverage.update(model: geometry, samples: project.result.samples) }
         }
         .onChange(of: session.displaySettings) { _, settings in renderer.update(geometry, settings: settings) }
+        .onChange(of: canRecordPose) { _, available in
+            if !available { nearbyPoseConfirmation = nil }
+        }
+        .onChange(of: session.current?.result.samples.last?.id) { _, _ in nearbyPoseConfirmation = nil }
         .onChange(of: scenePhase) { _, phase in
-            if phase != .active { ar.suspend(); coverage.cancel(); session.backgroundSave() }
+            if phase != .active { nearbyPoseConfirmation = nil; ar.suspend(); coverage.cancel(); session.backgroundSave() }
             else { coverage.resume(); if !completed { Task { await ar.start() } } }
         }
         .sheet(isPresented: $displaySettingsOpen) { ModelDisplaySettingsView(geometry: geometry, renderer: renderer).environmentObject(session) }
-        .sheet(isPresented: $review, onDismiss: { ar.refreshMarkers(session.current?.result.samples ?? []) }) { PoseReviewView(rendered: renderer.geometry).environmentObject(session) }
+        .fullScreenCover(isPresented: $review, onDismiss: { ar.refreshMarkers(session.current?.result.samples ?? []) }) {
+            PoseReviewView(rendered: renderer.geometry).environmentObject(session)
+        }
+        .alert("当前 Pose 与上一个距离很近", isPresented: Binding(
+            get: { nearbyPoseConfirmation != nil },
+            set: { if !$0 { nearbyPoseConfirmation = nil } }
+        ), presenting: nearbyPoseConfirmation) { confirmation in
+            Button("仍然记录") {
+                guard canRecordPose,
+                      session.current?.result.samples.last?.id == confirmation.previousSampleID else { return }
+                ar.recordKeyframe(confirmation.sample)
+            }.accessibilityIdentifier("confirm-nearby-pose")
+            Button("取消", role: .cancel) { nearbyPoseConfirmation = nil }
+                .accessibilityIdentifier("cancel-nearby-pose")
+        } message: { confirmation in
+            Text(confirmation.message)
+        }
         .confirmationDialog("完成后将锁定本次 Pose；你可以现在同步，或离线保存后再同步。", isPresented: $finishing, titleVisibility: .visible) {
             Button("完成并同步到电脑") { ar.stop(); Task { await session.finish(sync: true) } }
             Button("仅完成并保存在 iPad") { ar.stop(); Task { await session.finish(sync: false) } }
@@ -465,12 +496,16 @@ struct TeachingView: View {
     }
     private var recordPoseButton: some View {
         Button {
-            guard canRecordPose else { return }
-            ar.recordKeyframe()
+            guard canRecordPose, nearbyPoseConfirmation == nil, let sample = ar.captureKeyframe() else { return }
+            if let confirmation = NearbyPoseConfirmation(sample: sample, previousSample: session.current?.result.samples.last) {
+                nearbyPoseConfirmation = confirmation
+            } else {
+                ar.recordKeyframe(sample)
+            }
         } label: {
             Label("记录 Pose", systemImage: "plus.viewfinder").font(.title3)
                 .frame(maxWidth: .infinity).padding(.vertical, 16)
-        }.buttonStyle(.borderedProminent).disabled(!canRecordPose)
+        }.buttonStyle(.borderedProminent).disabled(!canRecordPose || nearbyPoseConfirmation != nil)
             .accessibilityIdentifier("capture-pose")
     }
     private var placementAdjustmentControls: some View {
@@ -742,42 +777,201 @@ struct PoseReviewView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var selectedID: String?
     @State private var poseName = ""
+    @State private var selectingForDeletion = false
+    @State private var deletionIDs: Set<String> = []
+    @FocusState private var poseNameFocused: Bool
     let rendered: SCNGeometry?
     private var samples: [TeachingSample] { session.current?.result.samples ?? [] }
     private var selected: TeachingSample? { samples.first { $0.id == selectedID } ?? samples.first }
     private var completed: Bool { session.current?.result.completedAt != nil }
     var body: some View {
         NavigationStack {
-            HStack(spacing: 0) {
-                List(samples) { sample in
-                    Button { selectedID = sample.id; poseName = sample.name } label: {
-                        VStack(alignment: .leading, spacing: 7) {
-                            Text(sample.name.isEmpty ? "Pose" : sample.name).foregroundStyle(sample.id == selected?.id ? accent : .primary)
-                            Text(sample.capturedAt).font(.caption2).foregroundStyle(.secondary)
-                        }.padding(.vertical, 5)
+            GeometryReader { viewport in
+                if viewport.size.width >= 1000 && viewport.size.width > viewport.size.height {
+                    HStack(spacing: 0) {
+                        VStack(spacing: 0) {
+                            poseList
+                            Divider()
+                            ScrollView { poseEditor.padding(20) }
+                                .frame(maxHeight: 290)
+                        }.frame(width: 280)
+                        Divider()
+                        posePreview
                     }
-                }.frame(width: 230)
-                if let selected {
-                    VStack(alignment: .leading, spacing: 16) {
-                        Text("该 Pose 下的虚拟物体视角").font(.headline)
-                        PosePreviewView(rendered: rendered, sample: selected).aspectRatio(CGFloat(selected.previewAspect ?? (4.0 / 3.0)), contentMode: .fit)
-                        let p = selected.cameraPose.position
-                        Text("X \(p.x, specifier: "%.4f")  Y \(p.y, specifier: "%.4f")  Z \(p.z, specifier: "%.4f") m")
-                            .font(.system(.caption, design: .monospaced)).textSelection(.enabled)
-                        if !completed {
-                            TextField("Pose 名称", text: $poseName).textFieldStyle(.roundedBorder)
-                            HStack {
-                                Button("保存名称") { session.renameSample(selected.id, name: poseName) }.buttonStyle(.bordered)
-                                Spacer()
-                                Button("删除此 Pose", role: .destructive) { session.deleteSample(selected.id); selectedID = nil; poseName = samples.first?.name ?? "" }.buttonStyle(.bordered)
+                } else {
+                    VStack(spacing: 0) {
+                        posePreview.frame(height: max(180, viewport.size.height * 0.62))
+                        Divider()
+                        if viewport.size.width >= 600 {
+                            HStack(spacing: 0) {
+                                poseList.frame(width: viewport.size.width * 0.38)
+                                Divider()
+                                ScrollView { poseEditor.padding(20) }
+                            }
+                        } else {
+                            VStack(spacing: 0) {
+                                poseList
+                                ScrollView { poseEditor.padding(12) }.frame(maxHeight: 190)
                             }
                         }
-                        Text(completed ? "本次示教已完成，Pose 已锁定。" : "保存后继续示教，即可记录下一个 Pose。").font(.caption).foregroundStyle(.secondary)
-                    }.padding(22)
-                } else { ContentUnavailableView("还没有 Pose", systemImage: "viewfinder") }
-            }.navigationTitle("逐个 Pose 示教").navigationBarTitleDisplayMode(.inline)
-                .toolbar { ToolbarItem(placement: .confirmationAction) { Button("返回示教") { dismiss() } } }
+                    }
+                }
+            }
+            .background(Color(red: 0.025, green: 0.05, blue: 0.065))
+            .accessibilityElement(children: .contain).accessibilityIdentifier("pose-review-page")
+            .navigationTitle("查看 / 编辑 Pose").navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("返回示教") { poseNameFocused = false; dismiss() }.accessibilityIdentifier("close-pose-review")
+                }
+            }
         }.onAppear { poseName = selected?.name ?? "" }
+            .onChange(of: samples.map(\.id)) { _, ids in
+                deletionIDs.formIntersection(ids)
+                if ids.isEmpty {
+                    endDeletionSelection(); selectedID = nil; poseName = ""
+                }
+            }
+            .onChange(of: completed) { _, locked in
+                if locked { endDeletionSelection() }
+            }
+    }
+
+    private var poseList: some View {
+        VStack(spacing: 0) {
+            if selectingForDeletion {
+                HStack {
+                    Button {
+                        deletionIDs = allPosesSelected ? [] : Set(samples.map(\.id))
+                    } label: {
+                        Label("全选", systemImage: allPosesSelected ? "checkmark.square.fill" : deletionIDs.isEmpty ? "square" : "minus.square.fill")
+                    }.accessibilityIdentifier("select-all-poses")
+                        .accessibilityValue(allPosesSelected ? "已全选" : deletionIDs.isEmpty ? "未选择" : "部分选择")
+                    Spacer()
+                    Text("已选 \(deletionIDs.count)/\(samples.count)").font(.caption).foregroundStyle(.secondary)
+                        .accessibilityIdentifier("selected-poses-count")
+                }
+                .padding(.horizontal, 20).frame(minHeight: 48)
+                Divider()
+            }
+            List {
+                Section {
+                    ForEach(samples) { sample in
+                        poseRow(sample)
+                    }
+                } header: {
+                    Text("\(samples.count) 个 Pose").accessibilityIdentifier("pose-review-count")
+                }
+            }.listStyle(.plain).scrollDismissesKeyboard(.interactively)
+                .accessibilityIdentifier("pose-review-list")
+        }
+    }
+
+    private var allPosesSelected: Bool { !samples.isEmpty && deletionIDs.count == samples.count }
+
+    private func poseRow(_ sample: TeachingSample) -> some View {
+        let highlighted = selectingForDeletion ? deletionIDs.contains(sample.id) : sample.id == selected?.id
+        return Button {
+            poseNameFocused = false; selectedID = sample.id; poseName = sample.name
+            if selectingForDeletion {
+                if deletionIDs.contains(sample.id) { deletionIDs.remove(sample.id) }
+                else { deletionIDs.insert(sample.id) }
+            }
+        } label: {
+            HStack(spacing: 12) {
+                if selectingForDeletion {
+                    Image(systemName: deletionIDs.contains(sample.id) ? "checkmark.square.fill" : "square")
+                        .font(.title3).foregroundStyle(accent)
+                }
+                VStack(alignment: .leading, spacing: 7) {
+                    Text(sample.name.isEmpty ? "Pose" : sample.name)
+                        .foregroundStyle(highlighted ? accent : .primary)
+                    Text(sample.capturedAt).font(.caption2).foregroundStyle(.secondary)
+                }
+                Spacer(minLength: 0)
+            }.padding(.vertical, 5).contentShape(Rectangle())
+        }.listRowBackground(highlighted ? accent.opacity(0.12) : Color.clear)
+            .accessibilityIdentifier("review-pose-\(sample.id)")
+            .accessibilityValue(selectingForDeletion ? (deletionIDs.contains(sample.id) ? "已勾选" : "未勾选") : "")
+            .accessibilityAddTraits(highlighted ? .isSelected : [])
+            .swipeActions(edge: .leading, allowsFullSwipe: false) {
+                if !completed && !selectingForDeletion {
+                    Button("删除", role: .destructive) { deletePoses([sample.id]) }
+                        .tint(.red)
+                        .accessibilityIdentifier("swipe-delete-pose-\(sample.id)")
+                }
+            }
+    }
+
+    private var posePreview: some View {
+        Group {
+            if let selected {
+                let aspect = selected.previewAspect ?? (4.0 / 3.0)
+                PosePreviewView(rendered: rendered, sample: selected)
+                    .aspectRatio(CGFloat(aspect.isFinite && aspect > 0 ? aspect : 4.0 / 3.0), contentMode: .fit)
+                    .accessibilityLabel("\(selected.name) 的物体视角")
+                    .accessibilityIdentifier("pose-review-preview")
+            } else { ContentUnavailableView("还没有 Pose", systemImage: "viewfinder") }
+        }.frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(.black.opacity(0.25))
+            .accessibilityElement(children: .contain).accessibilityIdentifier("pose-review-viewport")
+    }
+
+    @ViewBuilder private var poseEditor: some View {
+        if selectingForDeletion {
+            VStack(alignment: .leading, spacing: 14) {
+                Text("选择要删除的 Pose").font(.headline)
+                Text("勾选列表中的 Pose，或使用全选。点击 Pose 可同时查看对应视角。")
+                    .font(.caption).foregroundStyle(.secondary)
+                Button("删除所选（\(deletionIDs.count)）", role: .destructive) {
+                    deletePoses(deletionIDs)
+                    endDeletionSelection()
+                }.buttonStyle(.borderedProminent).tint(.red)
+                    .disabled(deletionIDs.isEmpty || session.busy)
+                    .accessibilityIdentifier("delete-selected-poses")
+                Button("取消多选") { endDeletionSelection() }.buttonStyle(.bordered)
+                    .accessibilityIdentifier("cancel-pose-selection")
+            }.frame(maxWidth: .infinity, alignment: .leading)
+        } else if let selected {
+            VStack(alignment: .leading, spacing: 14) {
+                Text(selected.name.isEmpty ? "Pose" : selected.name).font(.headline)
+                let p = selected.cameraPose.position
+                Text("X \(p.x, specifier: "%.4f") m\nY \(p.y, specifier: "%.4f") m\nZ \(p.z, specifier: "%.4f") m")
+                    .font(.system(.caption, design: .monospaced)).textSelection(.enabled)
+                if !completed {
+                    TextField("Pose 名称", text: $poseName).textFieldStyle(.roundedBorder)
+                        .focused($poseNameFocused)
+                        .accessibilityIdentifier("review-pose-name")
+                    HStack {
+                        Button("保存名称") { session.renameSample(selected.id, name: poseName); poseNameFocused = false }
+                            .accessibilityIdentifier("save-pose-name")
+                        Spacer()
+                        Button("删除", role: .destructive) {
+                            poseNameFocused = false
+                            deletionIDs = []; selectingForDeletion = true
+                        }.accessibilityIdentifier("delete-review-pose")
+                    }.buttonStyle(.bordered)
+                }
+                Text(completed ? "本次示教已完成，Pose 已锁定。" : "保存后返回示教，即可记录下一个 Pose。")
+                    .font(.caption).foregroundStyle(.secondary)
+                if !session.error.isEmpty { Text(session.error).font(.caption).foregroundStyle(.orange) }
+            }.frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    private func deletePoses(_ ids: Set<String>) {
+        guard !completed, !session.busy, !ids.isEmpty else { return }
+        poseNameFocused = false
+        let viewedID = selected?.id
+        session.deleteSamples(ids)
+        deletionIDs.subtract(ids)
+        if let viewedID, ids.contains(viewedID) {
+            selectedID = nil; poseName = samples.first?.name ?? ""
+        }
+    }
+
+    private func endDeletionSelection() {
+        selectingForDeletion = false; deletionIDs = []
     }
 }
 

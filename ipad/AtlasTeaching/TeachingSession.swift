@@ -69,11 +69,15 @@ final class TeachingSession: ObservableObject {
         current?.displaySettings = settings
         scheduleSave(force: true)
     }
-    func addSample(_ sample: TeachingSample) {
-        guard current?.result.completedAt == nil, let count = current?.result.samples.count, count < maximumSamples else { return }
+    @discardableResult
+    func addSample(_ sample: TeachingSample) -> Bool {
+        guard !busy, error.isEmpty, let project = current, project.result.completedAt == nil,
+              project.result.samples.count < maximumSamples,
+              !project.result.samples.contains(where: { $0.id == sample.id }) else { return false }
         var named = sample
-        named.name = String(format: "Pose %03d", count + 1)
+        named.name = String(format: "Pose %03d", project.result.samples.count + 1)
         current?.result.samples.append(named); scheduleSave(force: true)
+        return true
     }
     func renameSample(_ id: String, name: String) {
         guard current?.result.completedAt == nil, let index = current?.result.samples.firstIndex(where: { $0.id == id }) else { return }
@@ -81,8 +85,14 @@ final class TeachingSession: ObservableObject {
         if !value.isEmpty { current?.result.samples[index].name = value; scheduleSave(force: true) }
     }
     func deleteSample(_ id: String) {
-        guard current?.result.completedAt == nil else { return }
-        current?.result.samples.removeAll { $0.id == id }; scheduleSave(force: true)
+        deleteSamples([id])
+    }
+    func deleteSamples(_ ids: Set<String>) {
+        guard !busy, !ids.isEmpty, let project = current, project.result.completedAt == nil else { return }
+        let remaining = project.result.samples.filter { !ids.contains($0.id) }
+        guard remaining.count != project.result.samples.count else { return }
+        current?.result.samples = remaining
+        scheduleSave(force: true)
     }
     private func scheduleSave(force: Bool = false) {
         guard let project = current, force || Date().timeIntervalSince(lastSaved) >= 1 else { return }

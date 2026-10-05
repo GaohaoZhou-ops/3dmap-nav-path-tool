@@ -55,7 +55,7 @@ final class ARController: NSObject, ObservableObject, @preconcurrency ARSessionD
     private var lastStatusTime: TimeInterval = 0
     private var lastLevelTime: TimeInterval = 0
     private var running = false
-    var onSample: ((TeachingSample) -> Void)?
+    var onSample: ((TeachingSample) -> Bool)?
     var onCalibration: ((Calibration) -> Void)?
     static var supported: Bool {
         UIDevice.current.userInterfaceIdiom == .pad && ARWorldTrackingConfiguration.isSupported
@@ -251,19 +251,23 @@ final class ARController: NSObject, ObservableObject, @preconcurrency ARSessionD
         updateGroundPreview()
         message = wasAdjusting ? "物体位置已更新，继续记录 Pose" : "物体位置已确认，可以记录 Pose；需要移动时点击「调整物体位置」"
     }
-    func recordKeyframe() { capture(kind: "keyframe") }
-    private func capture(kind: String) {
+    func captureKeyframe() -> TeachingSample? {
         guard calibrated, trackingNormal, let segmentID, let frame = view.session.currentFrame,
-              case .normal = frame.camera.trackingState else { return }
+              case .normal = frame.camera.trackingState else { return nil }
         let worldFromModel = objectRoot.simdTransform
-        let sample = TeachingSample(segmentId: segmentID, kind: kind,
+        return TeachingSample(segmentId: segmentID, kind: "keyframe",
             cameraPose: TeachingCoordinates.opticalPose(camera: frame.camera.transform, worldFromModel: worldFromModel),
             surfacePoint: surfaceWorldPoint().map { TeachingCoordinates.modelPoint($0, worldFromModel: worldFromModel) },
             previewCameraTransform: view.pointOfView.map { (worldFromModel.inverse * $0.simdWorldTransform).elements },
             previewProjection: view.pointOfView?.camera.map { simd_float4x4($0.projectionTransform).elements },
             previewAspect: Float(view.bounds.width / view.bounds.height))
-        if kind == "keyframe" { showMarker(sample); message = "已记录示教点" }
-        onSample?(sample)
+    }
+    func recordKeyframe(_ sample: TeachingSample) {
+        // Confirmation commits the original frame, never a new camera sample.
+        // A stopped/recalibrated session must not accept an old alert's action.
+        guard calibrated, trackingNormal, sample.segmentId == segmentID,
+              onSample?(sample) == true else { return }
+        showMarker(sample); message = "已记录示教点"
     }
     private func showMarker(_ sample: TeachingSample) {
         let sphere = SCNSphere(radius: 0.008); sphere.firstMaterial?.diffuse.contents = UIColor.systemYellow

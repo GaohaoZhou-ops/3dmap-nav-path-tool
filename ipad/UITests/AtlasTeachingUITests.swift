@@ -5,6 +5,321 @@ import SceneKit
 
 @MainActor
 final class AtlasTeachingUITests: XCTestCase {
+    func testPoseSwipeAndBulkDeletion() throws {
+        continueAfterFailure = false
+        guard let fixtureID = ProcessInfo.processInfo.environment["ATLAS_REVIEW_FIXTURE_ID"],
+              UUID(uuidString: fixtureID) != nil else {
+            throw XCTSkip("Provide a disposable project with at least six Poses for deletion testing")
+        }
+        XCUIDevice.shared.orientation = .landscapeLeft
+        let app = XCUIApplication(); app.launch()
+        let project = app.buttons["local-project-\(fixtureID)"]
+        XCTAssertTrue(project.waitForExistence(timeout: 15)); project.tap()
+        let review = app.buttons["review-poses"]
+        XCTAssertTrue(review.waitForExistence(timeout: 30)); review.tap()
+        let close = app.buttons["close-pose-review"]
+        XCTAssertTrue(close.waitForExistence(timeout: 10))
+        let count = app.staticTexts["pose-review-count"]
+        let initialCount = try XCTUnwrap(Int(count.label.split(separator: " ").first ?? ""))
+        XCTAssertGreaterThanOrEqual(initialCount, 6)
+        func expectCount(_ expected: Int) {
+            XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(
+                predicate: NSPredicate(format: "label BEGINSWITH %@", "\(expected) "), object: count)], timeout: 5), .completed)
+        }
+        func screenshot(_ name: String) {
+            let attachment = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+            attachment.name = name; attachment.lifetime = .keepAlways; add(attachment)
+        }
+        let rows = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "review-pose-"))
+        let firstID = rows.element(boundBy: 0).identifier
+        let secondID = rows.element(boundBy: 1).identifier
+        let thirdID = rows.element(boundBy: 2).identifier
+        let first = app.buttons[firstID]
+        first.swipeRight()
+        let swipeDelete = app.buttons["swipe-delete-pose-\(firstID.dropFirst("review-pose-".count))"]
+        XCTAssertTrue(swipeDelete.waitForExistence(timeout: 5))
+        expectCount(initialCount)
+        XCTAssertTrue(first.exists, "even a full right swipe only reveals the delete button")
+        screenshot("Right swipe reveals single Pose delete")
+        swipeDelete.tap()
+        expectCount(initialCount - 1)
+        XCTAssertFalse(first.exists)
+        XCTAssertTrue(app.otherElements["pose-review-preview"].exists, "deleting the current Pose selects a remaining preview")
+
+        let enter = app.buttons["delete-review-pose"], bulk = app.buttons["delete-selected-poses"]
+        let all = app.buttons["select-all-poses"], selectedCount = app.staticTexts["selected-poses-count"]
+        enter.tap()
+        XCTAssertTrue(all.waitForExistence(timeout: 5))
+        XCTAssertEqual(selectedCount.label, "已选 0/\(initialCount - 1)")
+        XCTAssertFalse(bulk.isEnabled)
+        expectCount(initialCount - 1)
+        app.buttons[secondID].tap(); app.buttons[thirdID].tap()
+        XCTAssertEqual(selectedCount.label, "已选 2/\(initialCount - 1)")
+        XCTAssertEqual(app.buttons[secondID].value as? String, "已勾选")
+        XCTAssertEqual(app.buttons[thirdID].value as? String, "已勾选")
+        screenshot("Landscape Pose selection")
+        app.buttons["cancel-pose-selection"].tap()
+        expectCount(initialCount - 1)
+        XCTAssertFalse(all.exists)
+        XCTAssertTrue(app.buttons[secondID].exists); XCTAssertTrue(app.buttons[thirdID].exists)
+
+        enter.tap()
+        XCTAssertEqual(selectedCount.label, "已选 0/\(initialCount - 1)", "cancel clears selection without deleting")
+        all.tap()
+        XCTAssertEqual(selectedCount.label, "已选 \(initialCount - 1)/\(initialCount - 1)", "select all includes offscreen rows")
+        XCTAssertEqual(all.value as? String, "已全选")
+        app.buttons[thirdID].tap()
+        XCTAssertEqual(selectedCount.label, "已选 \(initialCount - 2)/\(initialCount - 1)")
+        XCTAssertEqual(all.value as? String, "部分选择")
+        all.tap(); XCTAssertEqual(all.value as? String, "已全选")
+        all.tap(); XCTAssertEqual(all.value as? String, "未选择")
+        XCTAssertFalse(bulk.isEnabled)
+        app.buttons[secondID].tap(); app.buttons[thirdID].tap()
+        XCUIDevice.shared.orientation = .portrait
+        XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            app.windows.firstMatch.frame.height > app.windows.firstMatch.frame.width
+        }, object: nil)], timeout: 10), .completed)
+        XCTAssertTrue(all.isHittable); XCTAssertTrue(bulk.isHittable)
+        XCTAssertEqual(selectedCount.label, "已选 2/\(initialCount - 1)")
+        screenshot("Portrait Pose selection")
+        bulk.tap()
+        expectCount(initialCount - 3)
+        XCTAssertFalse(app.buttons[secondID].exists); XCTAssertFalse(app.buttons[thirdID].exists)
+        XCTAssertFalse(all.exists)
+        XCTAssertTrue(app.otherElements["pose-review-preview"].exists)
+        close.tap()
+        app.buttons["本地项目"].tap()
+        XCTAssertTrue(project.waitForExistence(timeout: 10))
+        app.terminate(); app.launch()
+        XCTAssertTrue(project.waitForExistence(timeout: 15)); project.tap()
+        XCTAssertTrue(review.waitForExistence(timeout: 30)); review.tap()
+        XCTAssertTrue(close.waitForExistence(timeout: 10))
+        expectCount(initialCount - 3)
+        XCTAssertFalse(app.buttons[firstID].exists)
+        XCTAssertFalse(app.buttons[secondID].exists); XCTAssertFalse(app.buttons[thirdID].exists)
+        XCTAssertFalse(all.exists, "selection mode does not persist across sessions")
+
+        enter.tap(); all.tap(); bulk.tap()
+        expectCount(0)
+        XCTAssertTrue(app.staticTexts["还没有 Pose"].exists)
+        XCTAssertFalse(app.otherElements["pose-review-preview"].exists)
+        XCTAssertFalse(all.exists); XCTAssertFalse(enter.exists)
+        screenshot("Pose review after deleting all")
+        close.tap()
+        XCTAssertFalse(review.isEnabled)
+        app.buttons["本地项目"].tap()
+        XCTAssertTrue(project.waitForExistence(timeout: 10))
+    }
+
+    func testFullScreenPoseReviewLayoutEditingAndReturn() throws {
+        continueAfterFailure = false
+        guard let fixtureID = ProcessInfo.processInfo.environment["ATLAS_REVIEW_FIXTURE_ID"],
+              UUID(uuidString: fixtureID) != nil else {
+            throw XCTSkip("Provide a disposable project with at least two Poses for full-screen review testing")
+        }
+        XCUIDevice.shared.orientation = .portrait
+        let app = XCUIApplication(); app.launch()
+        let project = app.buttons["local-project-\(fixtureID)"]
+        XCTAssertTrue(project.waitForExistence(timeout: 15)); project.tap()
+        let aid = app.switches["ground-assistance"]
+        XCTAssertTrue(aid.waitForExistence(timeout: 30)); aid.tap()
+        let place = app.buttons["place-model"], confirm = app.buttons["confirm-model-calibration"]
+        XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: NSPredicate(format: "enabled == true"), object: place)], timeout: 30), .completed)
+        app.otherElements["teaching-render-surface"].coordinate(withNormalizedOffset: CGVector(dx: 0.48, dy: 0.7)).tap()
+        XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: NSPredicate(format: "enabled == true"), object: confirm)], timeout: 15), .completed)
+        confirm.tap()
+        let capture = app.buttons["capture-pose"]
+        XCTAssertTrue(capture.isEnabled)
+        app.buttons["review-poses"].tap()
+        let page = app.otherElements["pose-review-page"], viewport = app.otherElements["pose-review-viewport"]
+        let preview = app.otherElements["pose-review-preview"], close = app.buttons["close-pose-review"]
+        XCTAssertTrue(close.waitForExistence(timeout: 10)); XCTAssertTrue(page.exists)
+        func checkFullScreen(_ orientation: UIDeviceOrientation) {
+            XCUIDevice.shared.orientation = orientation
+            XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+                let frame = app.windows.firstMatch.frame
+                return orientation.isLandscape ? frame.width > frame.height : frame.height > frame.width
+            }, object: nil)], timeout: 10), .completed)
+            let window = app.windows.firstMatch.frame
+            XCTAssertEqual(page.frame.width, window.width, accuracy: 2, "review must use the full app width")
+            XCTAssertGreaterThan(page.frame.height, window.height * 0.8, "review must fill the screen below its toolbar")
+            XCTAssertTrue(window.contains(close.frame)); XCTAssertTrue(close.isHittable)
+            XCTAssertTrue(preview.exists); XCTAssertGreaterThan(preview.frame.width, 300)
+            if orientation.isLandscape {
+                XCTAssertGreaterThan(viewport.frame.width, window.width * 0.7)
+                XCTAssertGreaterThan(viewport.frame.height, window.height * 0.8)
+            } else {
+                XCTAssertEqual(viewport.frame.width, window.width, accuracy: 2, "portrait preview spans the whole row")
+            }
+            let screenshot = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+            screenshot.name = "Full-screen Pose review \(orientation.isLandscape ? "landscape" : "portrait")"
+            screenshot.lifetime = .keepAlways; add(screenshot)
+        }
+        checkFullScreen(.portrait)
+        let name = app.textFields["review-pose-name"]
+        XCTAssertTrue(name.exists); name.tap()
+        let priorName = name.value as? String ?? ""
+        name.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: priorName.count) + "Review renamed Pose")
+        XCTAssertEqual(name.value as? String, "Review renamed Pose")
+        app.buttons["save-pose-name"].tap()
+        let renamed = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@ AND label CONTAINS %@", "review-pose-", "Review renamed Pose")).firstMatch
+        XCTAssertTrue(renamed.exists, "rename updates the list without leaving review")
+        checkFullScreen(.landscapeLeft)
+        let rows = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "review-pose-"))
+        XCTAssertGreaterThanOrEqual(rows.count, 2)
+        let secondID = rows.element(boundBy: 1).identifier
+        app.buttons[secondID].tap()
+        XCTAssertFalse(preview.label.contains("Review renamed Pose"), "selecting another Pose changes the preview")
+        app.buttons["delete-review-pose"].tap()
+        app.buttons[secondID].tap()
+        app.buttons["delete-selected-poses"].tap()
+        XCTAssertFalse(app.buttons[secondID].exists, "delete updates the list immediately")
+        XCTAssertTrue(renamed.exists)
+        close.tap()
+        XCTAssertTrue(capture.waitForExistence(timeout: 10))
+        XCTAssertTrue(capture.isEnabled, "returning from full-screen review must preserve calibration and rendering")
+        XCTAssertTrue(app.buttons["adjust-model-placement"].exists)
+        app.buttons["review-poses"].tap()
+        XCTAssertTrue(close.waitForExistence(timeout: 10)); XCTAssertTrue(renamed.exists)
+        XCTAssertFalse(app.buttons[secondID].exists, "edits survive closing and reopening review")
+        close.tap()
+        XCTAssertTrue(capture.isEnabled)
+        app.buttons["本地项目"].tap()
+        XCTAssertTrue(project.waitForExistence(timeout: 10))
+    }
+
+    func testFullScreenPoseReviewBackgroundRequiresRecalibration() throws {
+        continueAfterFailure = false
+        guard let fixtureID = ProcessInfo.processInfo.environment["ATLAS_REVIEW_FIXTURE_ID"],
+              UUID(uuidString: fixtureID) != nil else {
+            throw XCTSkip("Provide a disposable Pose review fixture for the hardware lifecycle test")
+        }
+        XCUIDevice.shared.orientation = .portrait
+        let app = XCUIApplication(); app.launch()
+        let project = app.buttons["local-project-\(fixtureID)"]
+        XCTAssertTrue(project.waitForExistence(timeout: 15)); project.tap()
+        let aid = app.switches["ground-assistance"]
+        XCTAssertTrue(aid.waitForExistence(timeout: 30)); aid.tap()
+        let place = app.buttons["place-model"], confirm = app.buttons["confirm-model-calibration"]
+        XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: NSPredicate(format: "enabled == true"), object: place)], timeout: 30), .completed)
+        app.otherElements["teaching-render-surface"].coordinate(withNormalizedOffset: CGVector(dx: 0.48, dy: 0.7)).tap()
+        XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: NSPredicate(format: "enabled == true"), object: confirm)], timeout: 15), .completed)
+        confirm.tap()
+        XCTAssertTrue(app.buttons["capture-pose"].isEnabled)
+        app.buttons["review-poses"].tap()
+        let close = app.buttons["close-pose-review"]
+        XCTAssertTrue(close.waitForExistence(timeout: 10))
+        XCUIDevice.shared.press(.home); app.activate()
+        XCTAssertTrue(close.waitForExistence(timeout: 10))
+        XCTAssertTrue(app.otherElements["pose-review-preview"].exists)
+        close.tap()
+        XCTAssertFalse(app.buttons["capture-pose"].isEnabled, "backgrounding during review still requires recalibration")
+        XCTAssertTrue(place.waitForExistence(timeout: 10))
+        XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: NSPredicate(format: "enabled == true"), object: place)], timeout: 30), .completed,
+            "the live camera must resume so the user can recalibrate")
+        app.buttons["本地项目"].tap()
+        XCTAssertTrue(project.waitForExistence(timeout: 10))
+    }
+
+    func testNearbyPoseConfirmationOnDevice() throws {
+        continueAfterFailure = false
+        guard let fixtureID = ProcessInfo.processInfo.environment["ATLAS_PROXIMITY_FIXTURE_ID"],
+              UUID(uuidString: fixtureID) != nil else {
+            throw XCTSkip("Provide a disposable empty fixture for the Pose proximity hardware test")
+        }
+        XCUIDevice.shared.orientation = .portrait
+        let app = XCUIApplication(); app.launch()
+        XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            app.windows.firstMatch.frame.height > app.windows.firstMatch.frame.width
+        }, object: nil)], timeout: 10), .completed)
+        let project = app.buttons["local-project-\(fixtureID)"]
+        XCTAssertTrue(project.waitForExistence(timeout: 15)); project.tap()
+        let aid = app.switches["ground-assistance"]
+        XCTAssertTrue(aid.waitForExistence(timeout: 15)); aid.tap()
+        let place = app.buttons["place-model"], confirm = app.buttons["confirm-model-calibration"]
+        XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: NSPredicate(format: "enabled == true"), object: place)], timeout: 30), .completed)
+        app.otherElements["teaching-render-surface"].coordinate(withNormalizedOffset: CGVector(dx: 0.48, dy: 0.7)).tap()
+        XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: NSPredicate(format: "enabled == true"), object: confirm)], timeout: 15), .completed)
+        confirm.tap()
+        let capture = app.buttons["capture-pose"], alert = app.alerts["当前 Pose 与上一个距离很近"]
+        XCTAssertTrue(capture.isEnabled); capture.tap()
+        XCTAssertFalse(alert.exists, "the first Pose must record directly")
+        app.buttons["collapse-teaching-panel"].tap()
+        let count = app.staticTexts["floating-pose-count"]
+        XCTAssertEqual(count.label, "1 个 Pose")
+        capture.tap(); XCTAssertTrue(alert.waitForExistence(timeout: 5))
+        XCTAssertTrue(alert.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", "小于 10 cm")).firstMatch.exists)
+        let screenshot = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+        screenshot.name = "Nearby Pose distance confirmation"; screenshot.lifetime = .keepAlways; add(screenshot)
+        alert.buttons["取消"].tap()
+        XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: alert)], timeout: 5), .completed)
+        XCTAssertEqual(count.label, "1 个 Pose", "cancel does not append a Pose")
+        capture.tap(); XCTAssertTrue(alert.waitForExistence(timeout: 5)); alert.buttons["仍然记录"].tap()
+        XCTAssertEqual(count.label, "2 个 Pose", "confirmation appends exactly one Pose")
+
+        app.buttons["expand-teaching-panel"].tap()
+        capture.tap(); XCTAssertTrue(alert.waitForExistence(timeout: 5)); alert.buttons["取消"].tap()
+        capture.tap(); XCTAssertTrue(alert.waitForExistence(timeout: 5)); alert.buttons["仍然记录"].tap()
+        app.buttons["collapse-teaching-panel"].tap()
+        XCTAssertEqual(count.label, "3 个 Pose", "expanded and collapsed buttons share the same confirmation")
+        capture.tap(); XCTAssertTrue(alert.waitForExistence(timeout: 5))
+        XCUIDevice.shared.press(.home); app.activate()
+        XCTAssertTrue(capture.waitForExistence(timeout: 10))
+        XCTAssertFalse(alert.exists, "backgrounding discards an unconfirmed capture")
+        XCTAssertFalse(capture.isEnabled, "resume still requires recalibration")
+        XCTAssertEqual(count.label, "3 个 Pose")
+        app.buttons["expand-teaching-panel"].tap()
+        app.buttons["本地项目"].tap()
+        XCTAssertTrue(project.waitForExistence(timeout: 10))
+    }
+
+    func testFrozenPoseCommitRequiresCurrentCalibrationAndAcceptedSave() throws {
+        let ar = ARController()
+        var calibrations: [Calibration] = [], accepted: [TeachingSample] = []
+        ar.onCalibration = { calibrations.append($0) }
+        ar.onSample = { sample in
+            guard !accepted.contains(where: { $0.id == sample.id }) else { return false }
+            accepted.append(sample); return true
+        }
+        ar.trackingNormal = true
+        ar.applyPlacement(at: SIMD3(0, -1, -2)); ar.confirmCalibration()
+        let calibration = try XCTUnwrap(calibrations.last)
+        let sample = TeachingSample(segmentId: calibration.id, kind: "keyframe",
+            cameraPose: CameraPose(position: Point3(SIMD3(0.03, 0.04, 0)), quaternion: Rotation4(simd_quatf())),
+            surfacePoint: Point3(SIMD3(1, 2, 3)), previewCameraTransform: matrix_identity_float4x4.elements,
+            previewProjection: matrix_identity_float4x4.elements, previewAspect: 4.0 / 3.0)
+        let previous = TeachingSample(segmentId: calibration.id, kind: "keyframe",
+            cameraPose: CameraPose(position: Point3(.zero), quaternion: Rotation4(simd_quatf())))
+        let confirmation = try XCTUnwrap(NearbyPoseConfirmation(sample: sample, previousSample: previous))
+        XCTAssertTrue(accepted.isEmpty, "preparing an alert cannot save a sample")
+        let model = try XCTUnwrap(ar.view.scene.rootNode.childNode(withName: "independent-teaching-object", recursively: true))
+        let root = try XCTUnwrap(model.parent)
+        let markerRoot = try XCTUnwrap(root.childNodes.first { $0 !== model && $0.name != "virtual-origin-axes" })
+        XCTAssertTrue(markerRoot.childNodes.isEmpty, "pending/cancelled poses have no marker")
+        root.simdPosition += SIMD3(0.5, 0, 0)
+        ar.recordKeyframe(confirmation.sample)
+        let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
+        XCTAssertEqual(try encoder.encode(accepted.first), try encoder.encode(Optional(sample)),
+            "a later AR transform must not change the captured pose or preview")
+        XCTAssertEqual(markerRoot.childNodes.count, 1)
+        ar.recordKeyframe(confirmation.sample)
+        XCTAssertEqual(accepted.count, 1); XCTAssertEqual(markerRoot.childNodes.count, 1, "rejected saves add no duplicate marker")
+
+        var next = sample; next.id = UUID().uuidString
+        ar.trackingNormal = false; ar.recordKeyframe(next)
+        XCTAssertEqual(accepted.count, 1, "tracking loss blocks a pending confirmation")
+        ar.trackingNormal = true; ar.beginPlacementAdjustment(); ar.recordKeyframe(next)
+        XCTAssertEqual(accepted.count, 1, "placement adjustment blocks recording")
+        ar.confirmCalibration(); ar.recordKeyframe(next)
+        XCTAssertEqual(accepted.count, 1, "recalibration invalidates the old sample")
+        next.segmentId = try XCTUnwrap(calibrations.last?.id)
+        ar.onSample = { _ in false }; ar.recordKeyframe(next)
+        XCTAssertEqual(markerRoot.childNodes.count, 1, "a failed save cannot show a recorded marker")
+        ar.onSample = { accepted.append($0); return true }
+        ar.suspend(); ar.recordKeyframe(next)
+        XCTAssertEqual(accepted.count, 1, "suspension invalidates a pending sample")
+    }
+
     func testAdjustingCalibratedPlacementCanCommitOrCancel() {
         let ar = ARController()
         var calibrations: [Calibration] = []
@@ -75,7 +390,12 @@ final class AtlasTeachingUITests: XCTestCase {
         confirm.tap()
         let adjust = app.buttons["adjust-model-placement"], capture = app.buttons["capture-pose"]
         XCTAssertTrue(adjust.waitForExistence(timeout: 5)); XCTAssertTrue(adjust.isHittable)
-        capture.tap() // First Pose at the original confirmed placement.
+        func recordPose() {
+            capture.tap()
+            let nearby = app.alerts["当前 Pose 与上一个距离很近"]
+            if nearby.waitForExistence(timeout: 1) { nearby.buttons["仍然记录"].tap() }
+        }
+        recordPose() // First Pose at the original confirmed placement.
         app.buttons["collapse-teaching-panel"].tap()
         XCTAssertTrue(adjust.isHittable)
         let initialCount = app.staticTexts["floating-pose-count"].label
@@ -90,7 +410,7 @@ final class AtlasTeachingUITests: XCTestCase {
         XCTAssertEqual(app.staticTexts["floating-pose-count"].label, initialCount)
         confirm.tap()
         XCTAssertTrue(adjust.waitForExistence(timeout: 5)); XCTAssertTrue(capture.isEnabled)
-        capture.tap() // Second Pose must use the new calibration segment.
+        recordPose() // Second Pose must use the new calibration segment.
         let countAfterMove = app.staticTexts["floating-pose-count"].label
         XCTAssertNotEqual(countAfterMove, initialCount)
 
@@ -109,7 +429,7 @@ final class AtlasTeachingUITests: XCTestCase {
             XCTAssertEqual(app.staticTexts["floating-pose-count"].label, countAfterMove)
         }
         XCUIDevice.shared.orientation = .landscapeLeft
-        capture.tap() // Cancellation resumes the second calibration segment.
+        recordPose() // Cancellation resumes the second calibration segment.
         app.buttons["expand-teaching-panel"].tap()
         XCTAssertTrue(adjust.isHittable, "the expanded panel has a fixed, visible adjustment entry")
         adjust.tap()
@@ -123,7 +443,7 @@ final class AtlasTeachingUITests: XCTestCase {
         let ar = ARController()
         var calibrationWrites = 0, poseWrites = 0
         ar.onCalibration = { _ in calibrationWrites += 1 }
-        ar.onSample = { _ in poseWrites += 1 }
+        ar.onSample = { _ in poseWrites += 1; return true }
         ar.trackingNormal = true
         ar.referenceX = 2; ar.referenceY = 3; ar.referenceZ = 0.5
         ar.yaw = 42; ar.roll = 30; ar.pitch = -25
@@ -148,7 +468,7 @@ final class AtlasTeachingUITests: XCTestCase {
         ar.trackingNormal = true
         ar.applyPlacement(at: SIMD3(.nan, -1, -2))
         ar.placeObject() // No camera frame/ground hit in this isolated controller.
-        ar.confirmCalibration(); ar.recordKeyframe()
+        ar.confirmCalibration(); XCTAssertNil(ar.captureKeyframe())
         XCTAssertTrue(ar.repositioning); XCTAssertFalse(ar.calibrated)
         XCTAssertFalse(ar.placementActionEnabled, "no observed floor means no placement at the center")
         ar.cancelRepositioning()

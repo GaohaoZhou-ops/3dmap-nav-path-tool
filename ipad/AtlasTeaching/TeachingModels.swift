@@ -130,6 +130,29 @@ struct TeachingSample: Codable, Identifiable {
     var previewProjection: [Float]?
     var previewAspect: Float?
 }
+// Camera positions are stored in the same model frame, including across
+// calibration segments. Keep the entire captured sample while asking the user.
+struct NearbyPoseConfirmation: Identifiable {
+    static let distanceThresholdMeters: Float = 0.10
+    let sample: TeachingSample
+    let previousSampleID: String
+    let distanceMeters: Float
+    var id: String { sample.id }
+
+    init?(sample: TeachingSample, previousSample: TeachingSample?) {
+        guard let previousSample else { return nil }
+        let distance = simd_distance(sample.cameraPose.position.simd, previousSample.cameraPose.position.simd)
+        guard distance.isFinite, distance < Self.distanceThresholdMeters else { return nil }
+        self.sample = sample
+        previousSampleID = previousSample.id
+        distanceMeters = distance
+    }
+
+    var message: String {
+        String(format: "与上一个 Pose 相距 %.1f cm，小于 %.0f cm。是否仍然记录？\n将保存点击「记录 Pose」时的位置和姿态。",
+            distanceMeters * 100, Self.distanceThresholdMeters * 100)
+    }
+}
 struct TeachingDevice: Codable {
     var model = "iPad Pro"
     var lidar = true

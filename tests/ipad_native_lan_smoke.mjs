@@ -32,6 +32,10 @@ try {
   const tiltedResult = JSON.parse(await readFile(coordinatesResult, 'utf8'));
   assert.doesNotThrow(() => validateIPadResult(tiltedResult, { modelHash: tiltedResult.modelHash }, tiltedResult.sessionId),
     'the server accepts native Pose data with arbitrary model tilt');
+  const proximityBinary = path.join(directory, 'pose-proximity-test');
+  await run('xcrun', ['swiftc', '-parse-as-library', 'ipad/AtlasTeaching/TeachingModels.swift',
+    'ipad/Tests/PoseProximityTests.swift', '-o', proximityBinary]);
+  await run(proximityBinary, []);
   const groundBinary = path.join(directory, 'ground-test');
   await run('xcrun', ['swiftc', '-parse-as-library', 'ipad/AtlasTeaching/TeachingModels.swift',
     'ipad/AtlasTeaching/GroundPlane.swift', 'ipad/Tests/GroundPlaneTests.swift', '-o', groundBinary]);

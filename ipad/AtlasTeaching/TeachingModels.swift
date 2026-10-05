@@ -212,20 +212,38 @@ extension simd_float4x4 {
     var translation: SIMD3<Float> { SIMD3(columns.3.x, columns.3.y, columns.3.z) }
 }
 
-// A read-only comparison of the model's XY reference plane and the iPad screen.
-// It uses the displayed camera basis, never gravity or a required target angle.
+// Display-only iPad body frame: X forward through the rear camera, Y toward
+// screen-left, Z toward screen-top. ARKit's gravity-aligned world has +Y up;
+// the reference below converts it to a right-handed frame with +Z up.
+// Neither model placement nor the stored optical-camera Pose is modified.
 struct SpatialLevelReading: Equatable {
-    let normalInScreen: SIMD3<Float>
-    var planeDegrees: Float { atan2(simd_length(SIMD2(normalInScreen.x, normalInScreen.y)), abs(normalInScreen.z)) * 180 / .pi }
-    var horizontalDegrees: Float { atan2(normalInScreen.x, simd_length(SIMD2(normalInScreen.y, normalInScreen.z))) * 180 / .pi }
-    var verticalDegrees: Float { atan2(normalInScreen.y, simd_length(SIMD2(normalInScreen.x, normalInScreen.z))) * 180 / .pi }
+    static let alignmentToleranceDegrees: Float = 1.5
+    let deviceAxesInReference: simd_float3x3
+    var zDeviationDegrees: Float {
+        let z = deviceAxesInReference.columns.2
+        return atan2(simd_length(SIMD2(z.x, z.y)), z.z) * 180 / .pi
+    }
+    var isAligned: Bool {
+        // Allow only float round-off at the inclusive boundary, not display rounding.
+        zDeviationDegrees <= Self.alignmentToleranceDegrees + 0.00001
+    }
 
-    static func measure(worldFromModel: simd_float4x4, screenFromWorld: simd_float4x4) -> SpatialLevelReading? {
-        let modelZ = worldFromModel.columns.2
-        let vector = screenFromWorld * SIMD4(modelZ.x, modelZ.y, modelZ.z, 0)
-        let normal = SIMD3(vector.x, vector.y, vector.z), length = simd_length(normal)
-        guard normal.x.isFinite, normal.y.isFinite, normal.z.isFinite, length.isFinite, length > 0.000001 else { return nil }
-        return SpatialLevelReading(normalInScreen: normal / length)
+    static func measure(screenFromWorld: simd_float4x4) -> SpatialLevelReading? {
+        let columns = (0..<3).map { SIMD3(screenFromWorld[$0].x, screenFromWorld[$0].y, screenFromWorld[$0].z) }
+        guard columns.allSatisfy({ $0.x.isFinite && $0.y.isFinite && $0.z.isFinite
+            && abs(simd_length($0) - 1) < 0.001 }) else { return nil }
+        let rotation = simd_float3x3(columns: (columns[0], columns[1], columns[2]))
+        guard abs(simd_dot(columns[0], columns[1])) < 0.001,
+              abs(simd_dot(columns[0], columns[2])) < 0.001,
+              abs(simd_dot(columns[1], columns[2])) < 0.001,
+              simd_determinant(rotation) > 0.999 else { return nil }
+        let screenFromDevice = simd_float3x3(columns: (SIMD3(0, 0, -1), SIMD3(-1, 0, 0), SIMD3(0, 1, 0)))
+        let worldFromReference = TeachingCoordinates.zUpToAR
+        let referenceFromWorld = simd_float3x3(columns: (
+            SIMD3(worldFromReference.columns.0.x, worldFromReference.columns.0.y, worldFromReference.columns.0.z),
+            SIMD3(worldFromReference.columns.1.x, worldFromReference.columns.1.y, worldFromReference.columns.1.z),
+            SIMD3(worldFromReference.columns.2.x, worldFromReference.columns.2.y, worldFromReference.columns.2.z))).transpose
+        return SpatialLevelReading(deviceAxesInReference: referenceFromWorld * rotation.transpose * screenFromDevice)
     }
 }
 

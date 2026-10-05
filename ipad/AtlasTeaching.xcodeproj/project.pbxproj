@@ -3,6 +3,7 @@
 D23EBC3F1EFA4D3E91896612 = { isa = PBXBuildFile; fileRef = 66EF169DA41CA8C94FB6F6D0; };
 D23EBC3F1EFA4D3E91896613 = { isa = PBXBuildFile; fileRef = D23EBC3F1EFA4D3E91896604; };
 D23EBC3F1EFA4D3E91896614 = { isa = PBXBuildFile; fileRef = D23EBC3F1EFA4D3E91896606; };
+D23EBC3F1EFA4D3E91896615 = { isa = PBXBuildFile; fileRef = D23EBC3F1EFA4D3E91896602; };
 D23EBC3F1EFA4D3E91896610 = { isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TeachingCoverage.swift; sourceTree = "<group>"; };
 D23EBC3F1EFA4D3E91896611 = { isa = PBXBuildFile; fileRef = D23EBC3F1EFA4D3E91896610; };
 D23EBC3F1EFA4D3E91896606 = { isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ZividFieldOfView.swift; sourceTree = "<group>"; };
@@ -31,7 +32,7 @@ BB1C917F63F9738B6459EB4E = { isa = PBXFileReference; lastKnownFileType = sourcec
 4B9D9ECE8BF27BC82CDAF15C = { isa = PBXBuildFile; fileRef = BB1C917F63F9738B6459EB4E; };
 4D805372C7788730A442D754 = { isa = PBXGroup; children = (BB1C917F63F9738B6459EB4E); path = UITests; sourceTree = "<group>"; };
 93B29C63186928624CCE7B68 = { isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = AtlasTeachingUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
-6AD5D292D15FD66B4DB37194 = { isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (4B9D9ECE8BF27BC82CDAF15C, D23EBC3F1EFA4D3E91896600, D23EBC3F1EFA4D3E91896601, D23EBC3F1EFA4D3E91896612, D23EBC3F1EFA4D3E91896613, D23EBC3F1EFA4D3E91896614); runOnlyForDeploymentPostprocessing = 0; };
+6AD5D292D15FD66B4DB37194 = { isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (4B9D9ECE8BF27BC82CDAF15C, D23EBC3F1EFA4D3E91896600, D23EBC3F1EFA4D3E91896601, D23EBC3F1EFA4D3E91896612, D23EBC3F1EFA4D3E91896613, D23EBC3F1EFA4D3E91896614, D23EBC3F1EFA4D3E91896615); runOnlyForDeploymentPostprocessing = 0; };
 91D9BD03D723BF0123C9DD1D = { isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
 98F775ACC2BC91B12FF68F75 = { isa = PBXContainerItemProxy; containerPortal = 244210E48437B6556980A702; proxyType = 1; remoteGlobalIDString = 34A04005BCAF206EEC990BD9; remoteInfo = AtlasTeaching; };
 44A58A16A18609BC3079A032 = { isa = PBXTargetDependency; target = 34A04005BCAF206EEC990BD9; targetProxy = 98F775ACC2BC91B12FF68F75; };

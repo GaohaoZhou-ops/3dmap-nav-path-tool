@@ -52,6 +52,7 @@ xcuserdata/
 *.xcappdata/
 *.xcappdata.zip
 *.xccrashpoint/
+*.xcdistributionlogs/
 *.xcactivitylog
 *.crash
 *.ips
@@ -85,6 +86,10 @@ playwright/.auth/
 *.xcresult/
 *.xcresult.zip
 *.xctestrun
+*.xctestproducts
+*.xctestproducts.zip
+*.xccovreport
+*.xccovarchive/
 *.profraw
 *.profdata
 
@@ -134,6 +139,14 @@ playwright/.auth/
 /atlas-clean-build-*/
 /ipad/atlas-native-ipad-*/
 /ipad/atlas-clean-build-*/
+
+# Pairing/discovery smoke-test workspaces when TMPDIR is inside the repository.
+/atlas-pairing-code-*/
+/atlas-pairing-qr-*/
+/atlas-discovery-*/
+/ipad/atlas-pairing-code-*/
+/ipad/atlas-pairing-qr-*/
+/ipad/atlas-discovery-*/
 
 # ABX contract-test source copies, temporary imports and UI captures
 /atlas-abx-export-*/

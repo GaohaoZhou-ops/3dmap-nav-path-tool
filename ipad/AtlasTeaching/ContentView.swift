@@ -326,10 +326,10 @@ struct TeachingView: View {
                         Text(ar.depthAvailable ? "LiDAR 已就绪" : "等待 LiDAR").foregroundStyle(.secondary)
                         if ARController.supported && !completed {
                             Button { levelVisible.toggle() } label: {
-                                Image(systemName: "scope").frame(minWidth: 20, minHeight: 32)
+                                Image(systemName: "move.3d").frame(minWidth: 20, minHeight: 32)
                             }
                                 .buttonStyle(.bordered).tint(levelVisible ? accent : .secondary)
-                                .accessibilityLabel(levelVisible ? "隐藏水平仪" : "显示水平仪")
+                                .accessibilityLabel(levelVisible ? "隐藏姿态坐标轴" : "显示姿态坐标轴")
                                 .accessibilityIdentifier("toggle-spatial-level")
                         }
                         Button { displaySettingsOpen = true } label: {
@@ -347,7 +347,7 @@ struct TeachingView: View {
                             VStack(alignment: .leading, spacing: 10) {
                                 if !ar.calibrated { groundAssistancePanel }
                                 if levelVisible {
-                                    SpatialLevelView(reading: ar.levelReading, placed: ar.placed && !ar.repositioning).allowsHitTesting(false)
+                                    SpatialLevelView(reading: ar.levelReading).allowsHitTesting(false)
                                 }
                             }.frame(width: 232)
                             Spacer(minLength: 0)
@@ -628,7 +628,7 @@ struct TeachingView: View {
                 }.disabled(ar.repositioning)
                     .onChange(of: ar.referenceX) { _, _ in ar.updatePlacement() }
                     .onChange(of: ar.referenceY) { _, _ in ar.updatePlacement() }.onChange(of: ar.referenceZ) { _, _ in ar.updatePlacement() }
-                Text(ar.groundAssistance ? "点击或单指拖动青色地面网格放置物体，双指旋转调整方向。尺寸固定为 1:1，模型可自由倾斜。" : "点击或单指拖动放置物体，双指旋转调整方向。尺寸固定为 1:1；可按现场需要倾斜放置，水平仪仅供参考。")
+                Text(ar.groundAssistance ? "点击或单指拖动青色地面网格放置物体，双指旋转调整方向。尺寸固定为 1:1，模型可自由倾斜。" : "点击或单指拖动放置物体，双指旋转调整方向。尺寸固定为 1:1，可按现场需要倾斜放置。")
                     .font(.caption).foregroundStyle(.secondary)
                 Button(ar.repositioning ? "放到准星位置" : ar.placed ? "重新放置物体" : "放置物体") {
                     UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
@@ -894,7 +894,7 @@ struct PoseReviewView: View {
             .accessibilityIdentifier("review-pose-\(sample.id)")
             .accessibilityValue(selectingForDeletion ? (deletionIDs.contains(sample.id) ? "已勾选" : "未勾选") : "")
             .accessibilityAddTraits(highlighted ? .isSelected : [])
-            .swipeActions(edge: .leading, allowsFullSwipe: false) {
+            .swipeActions(edge: .trailing, allowsFullSwipe: false) {
                 if !completed && !selectingForDeletion {
                     Button("删除", role: .destructive) { deletePoses([sample.id]) }
                         .tint(.red)

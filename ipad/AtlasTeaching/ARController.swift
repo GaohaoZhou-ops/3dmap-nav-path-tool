@@ -181,7 +181,7 @@ final class ARController: NSObject, ObservableObject, @preconcurrency ARSessionD
     func beginRepositioning() {
         guard placed, !calibrated, !repositioning else { return }
         repositioning = true
-        objectRoot.isHidden = true; levelReading = nil
+        objectRoot.isHidden = true
         updateGroundPreview()
         message = groundAssistance ? "点击青色地面网格选择新位置，或将准星对准地面后放置；取消可恢复原位置"
             : "点击实测表面选择新位置，或将准星对准目标后放置；取消可恢复原位置"
@@ -212,7 +212,7 @@ final class ARController: NSObject, ObservableObject, @preconcurrency ARSessionD
               referenceX.isFinite, referenceY.isFinite, referenceZ.isFinite, yaw.isFinite, roll.isFinite, pitch.isFinite else { return }
         let updating = placed
         hitPoint = hit; placed = true; repositioning = false; updatePlacement()
-        message = updating ? "已更新物体位置，可继续调整方向与倾斜" : "调整物体的方向与倾斜，使模型与现场一致；水平仪仅供参考"
+        message = updating ? "已更新物体位置，可继续调整方向与倾斜" : "调整物体的方向与倾斜，使模型与现场一致；坐标轴辅助观察 iPad 姿态"
     }
     @objc private func tapToPlace(_ gesture: UITapGestureRecognizer) { if !calibrated { placeObject(at: gesture.location(in: view)) } }
     @objc private func dragToPlace(_ gesture: UIPanGestureRecognizer) {
@@ -454,14 +454,13 @@ final class ARController: NSObject, ObservableObject, @preconcurrency ARSessionD
         if cameraFieldOfView != fieldOfView { cameraFieldOfView = fieldOfView }
     }
     private func updateLevel(_ frame: ARFrame) {
-        guard running, placed, !repositioning, case .normal = frame.camera.trackingState,
+        guard running, case .normal = frame.camera.trackingState,
               let orientation = view.window?.windowScene?.interfaceOrientation, orientation != .unknown else {
             levelReading = nil; return
         }
-        // viewMatrix(for:) includes portrait/landscape rotation, so the dial's
-        // left/right and up/down follow the visible screen rather than the camera sensor.
-        levelReading = SpatialLevelReading.measure(worldFromModel: objectRoot.simdTransform,
-            screenFromWorld: frame.camera.viewMatrix(for: orientation))
+        // Use the visible screen orientation for the iPad body axes. This stays
+        // available before placement and while relocating or tilting the model.
+        levelReading = SpatialLevelReading.measure(screenFromWorld: frame.camera.viewMatrix(for: orientation))
     }
     func sessionWasInterrupted(_ session: ARSession) {
         suspend(); message = "相机会话已中断。返回现场后重新校准，已有示教点保留"

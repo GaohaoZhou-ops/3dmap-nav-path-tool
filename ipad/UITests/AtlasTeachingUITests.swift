@@ -2,9 +2,40 @@ import XCTest
 import CryptoKit
 import UIKit
 import SceneKit
+import SwiftUI
 
 @MainActor
 final class AtlasTeachingUITests: XCTestCase {
+    func testSpatialAxesAlignmentRendering() throws {
+        func reading(_ angle: Float) -> SpatialLevelReading {
+            SpatialLevelReading.measure(screenFromWorld: simd_float4x4(simd_quatf(angle: angle * .pi / 180, axis: SIMD3(0, 0, 1))).inverse)!
+        }
+        let cases: [(String, SpatialLevelReading?, Bool)] = [
+            ("Upright", reading(0), true), ("Inclusive 1.50 degree boundary", reading(1.5), true),
+            ("Outside 1.51 degree boundary", reading(1.51), false), ("Tilted 35 degrees", reading(35), false),
+            ("Inverted 180 degrees", reading(180), false), ("Tracking unavailable", nil, false)
+        ]
+        for (name, value, expectedGreen) in cases {
+            let renderer = ImageRenderer(content: SpatialLevelView(reading: value).frame(width: 232)
+                .environment(\.colorScheme, .dark).padding(16).background(Color.black))
+            renderer.scale = 2
+            let image = try XCTUnwrap(renderer.uiImage)
+            let cgImage = try XCTUnwrap(image.cgImage)
+            let colorSpace = try XCTUnwrap(CGColorSpace(name: CGColorSpace.sRGB))
+            let context = try XCTUnwrap(CGContext(data: nil, width: cgImage.width, height: cgImage.height,
+                bitsPerComponent: 8, bytesPerRow: cgImage.width * 4, space: colorSpace,
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue | CGBitmapInfo.byteOrder32Big.rawValue))
+            context.draw(cgImage, in: CGRect(x: 0, y: 0, width: cgImage.width, height: cgImage.height))
+            let pixels = try XCTUnwrap(context.data).assumingMemoryBound(to: UInt8.self)
+            let offset = ((cgImage.height / 2) * cgImage.width + 24 * 2) * 4
+            let red = Double(pixels[offset]), green = Double(pixels[offset + 1]), blue = Double(pixels[offset + 2])
+            XCTAssertEqual(green > red * 1.5 && green > blue * 1.5, expectedGreen,
+                "\(name): the card itself is green only when gravity alignment is valid")
+            let attachment = XCTAttachment(image: image)
+            attachment.name = "Device axes - \(name)"; attachment.lifetime = .keepAlways; add(attachment)
+        }
+    }
+
     func testPoseSwipeAndBulkDeletion() throws {
         continueAfterFailure = false
         guard let fixtureID = ProcessInfo.processInfo.environment["ATLAS_REVIEW_FIXTURE_ID"],
@@ -35,12 +66,12 @@ final class AtlasTeachingUITests: XCTestCase {
         let secondID = rows.element(boundBy: 1).identifier
         let thirdID = rows.element(boundBy: 2).identifier
         let first = app.buttons[firstID]
-        first.swipeRight()
+        first.swipeLeft()
         let swipeDelete = app.buttons["swipe-delete-pose-\(firstID.dropFirst("review-pose-".count))"]
         XCTAssertTrue(swipeDelete.waitForExistence(timeout: 5))
         expectCount(initialCount)
-        XCTAssertTrue(first.exists, "even a full right swipe only reveals the delete button")
-        screenshot("Right swipe reveals single Pose delete")
+        XCTAssertTrue(first.exists, "even a full left swipe only reveals the delete button")
+        screenshot("Left swipe reveals single Pose delete")
         swipeDelete.tap()
         expectCount(initialCount - 1)
         XCTAssertFalse(first.exists)
@@ -107,6 +138,58 @@ final class AtlasTeachingUITests: XCTestCase {
         screenshot("Pose review after deleting all")
         close.tap()
         XCTAssertFalse(review.isEnabled)
+        app.buttons["本地项目"].tap()
+        XCTAssertTrue(project.waitForExistence(timeout: 10))
+    }
+
+    func testPoseLeftSwipeAcrossRowAndRefresh() throws {
+        continueAfterFailure = false
+        guard let fixtureID = ProcessInfo.processInfo.environment["ATLAS_REVIEW_FIXTURE_ID"], UUID(uuidString: fixtureID) != nil else {
+            throw XCTSkip("Provide a disposable Pose project for swipe regression")
+        }
+        XCUIDevice.shared.orientation = .landscapeLeft
+        let app = XCUIApplication(); app.launch()
+        let project = app.buttons["local-project-\(fixtureID)"]
+        XCTAssertTrue(project.waitForExistence(timeout: 15)); project.tap()
+        XCTAssertTrue(app.buttons["display-settings"].waitForExistence(timeout: 30))
+        // Reproduce the user's full-resolution Mesh rather than just the opening preview.
+        app.buttons["display-settings"].tap()
+        let quality = app.buttons["mesh-quality"]
+        XCTAssertTrue(quality.waitForExistence(timeout: 10)); quality.tap(); app.buttons["全量"].tap()
+        XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"),
+            object: app.progressIndicators["model-render-progress"])], timeout: 60), .completed)
+        app.buttons["close-display-settings"].tap()
+        app.buttons["review-poses"].tap()
+        let close = app.buttons["close-pose-review"]
+        XCTAssertTrue(close.waitForExistence(timeout: 10))
+        let count = app.staticTexts["pose-review-count"].label
+        let rows = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "review-pose-"))
+        let ids = (0..<2).map { rows.element(boundBy: $0).identifier }
+        for (index, startX) in [0.92, 0.6, 0.35].enumerated() {
+            let row = app.buttons[ids[index % 2]]
+            row.tap()
+            let rowFrame = row.frame
+            let start = row.coordinate(withNormalizedOffset: CGVector(dx: startX, dy: 0.5))
+            start.press(forDuration: 0.05, thenDragTo: start.withOffset(CGVector(dx: -72, dy: 0)),
+                withVelocity: .slow, thenHoldForDuration: 0.1)
+            let action = app.buttons["swipe-delete-pose-\(row.identifier.dropFirst("review-pose-".count))"]
+            XCTAssertTrue(action.waitForExistence(timeout: 5), "left swipe starting at \(startX) must reveal delete")
+            XCTAssertTrue(action.isHittable)
+            let hidden = XCTNSPredicateExpectation(predicate: NSPredicate(format: "hittable == false"), object: action)
+            hidden.isInverted = true
+            XCTAssertEqual(XCTWaiter.wait(for: [hidden], timeout: 1.5), .completed,
+                "background AR attitude updates must not close the swipe action")
+            XCTAssertEqual(app.staticTexts["pose-review-count"].label, count, "swiping never deletes")
+            let attachment = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+            attachment.name = "Slow left swipe from row \(startX)"; attachment.lifetime = .keepAlways; add(attachment)
+            // Once revealed, the native cell extends offscreen; use its original visible position to close it.
+            let closeStart = app.coordinate(withNormalizedOffset: .zero).withOffset(
+                CGVector(dx: rowFrame.minX + rowFrame.width * 0.3, dy: rowFrame.midY))
+            closeStart.press(forDuration: 0.05, thenDragTo: closeStart.withOffset(CGVector(dx: 100, dy: 0)),
+                withVelocity: .slow, thenHoldForDuration: 0.1)
+            XCTAssertFalse(action.isHittable)
+        }
+        close.tap()
         app.buttons["本地项目"].tap()
         XCTAssertTrue(project.waitForExistence(timeout: 10))
     }
@@ -522,7 +605,7 @@ final class AtlasTeachingUITests: XCTestCase {
         XCTAssertEqual(place.label, "放到准星位置")
         XCTAssertFalse(confirm.isEnabled)
         XCTAssertFalse(app.buttons["capture-pose"].isEnabled)
-        XCTAssertEqual(app.staticTexts["spatial-level-angle"].label, "—")
+        XCTAssertNotEqual(app.staticTexts["spatial-level-angle"].label, "—", "device attitude remains available during model relocation")
         cancel.tap()
         XCTAssertFalse(cancel.exists); XCTAssertTrue(confirm.isEnabled); XCTAssertTrue(place.isEnabled)
         XCTAssertEqual(place.label, "重新放置物体")
@@ -1158,16 +1241,17 @@ final class AtlasTeachingUITests: XCTestCase {
         app.buttons["本地项目"].tap()
     }
 
-    func testSpatialLevelReferenceAndFreePlacement() throws {
+    func testSpatialLevelDeviceAxesAndLifecycle() throws {
         continueAfterFailure = false
         let app = XCUIApplication()
         XCUIDevice.shared.orientation = .landscapeLeft
         defer { XCUIDevice.shared.orientation = .landscapeLeft }
         app.launch()
-        let project = ProcessInfo.processInfo.environment["ATLAS_HARDWARE_SESSION"].map {
-            app.buttons["local-project-\($0)"]
-        } ?? app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "local-project-")).firstMatch
-        guard project.waitForExistence(timeout: 15) else { throw XCTSkip("Requires a locally received model on a LiDAR iPad") }
+        guard let fixtureID = ProcessInfo.processInfo.environment["ATLAS_HARDWARE_SESSION"], UUID(uuidString: fixtureID) != nil else {
+            throw XCTSkip("Provide a disposable project for live device attitude testing")
+        }
+        let project = app.buttons["local-project-\(fixtureID)"]
+        XCTAssertTrue(project.waitForExistence(timeout: 15))
         project.tap()
         let capture = app.buttons["capture-pose"]
         XCTAssertTrue(capture.waitForExistence(timeout: 60), app.debugDescription)
@@ -1175,7 +1259,10 @@ final class AtlasTeachingUITests: XCTestCase {
         if groundAid.exists, groundAid.value as? String == "1" { groundAid.tap() }
         let angle = app.staticTexts["spatial-level-angle"]
         XCTAssertTrue(angle.waitForExistence(timeout: 15))
-        XCTAssertEqual(angle.label, "—", "No angle is invented before the model is placed")
+        let measured = XCTNSPredicateExpectation(predicate: NSPredicate(format: "label != %@", "—"), object: angle)
+        XCTAssertEqual(XCTWaiter.wait(for: [measured], timeout: 30), .completed,
+            "device attitude is available before model placement")
+        XCTAssertFalse(app.buttons["confirm-model-calibration"].isEnabled)
         XCTAssertFalse(capture.isEnabled)
         let toggle = app.buttons["toggle-spatial-level"]
         for orientation in [UIDeviceOrientation.landscapeLeft, .portrait] {
@@ -1190,48 +1277,44 @@ final class AtlasTeachingUITests: XCTestCase {
             XCTAssertTrue(window.contains(toggle.frame))
             toggle.tap(); XCTAssertFalse(angle.exists)
             toggle.tap(); XCTAssertTrue(angle.waitForExistence(timeout: 5))
+            XCTAssertTrue(app.staticTexts["X 前  ·  Y 左  ·  Z 上"].exists)
             let screenshot = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
-            screenshot.name = orientation.isLandscape ? "Spatial level landscape" : "Spatial level portrait"
+            screenshot.name = orientation.isLandscape ? "Device attitude axes landscape" : "Device attitude axes portrait"
             screenshot.lifetime = .keepAlways; add(screenshot)
         }
-        XCUIDevice.shared.orientation = .landscapeLeft
-        app.buttons["model-tilt-controls"].tap()
+        let sidebar = app.scrollViews.firstMatch
+        func reveal(_ element: XCUIElement) {
+            for _ in 0..<5 {
+                if element.exists, element.isHittable,
+                   sidebar.frame.insetBy(dx: 0, dy: 16).contains(element.frame) { return }
+                sidebar.swipeUp()
+            }
+            XCTAssertTrue(element.isHittable, "sidebar control must be visible before tapping")
+        }
+        let tilt = app.buttons["model-tilt-controls"]
+        reveal(tilt); tilt.tap()
         let pitch = app.sliders["model-pitch"], roll = app.sliders["model-roll"]
         XCTAssertTrue(pitch.waitForExistence(timeout: 5), app.debugDescription)
-        pitch.adjust(toNormalizedSliderPosition: 0.6)
-        roll.adjust(toNormalizedSliderPosition: 0.4)
+        reveal(pitch); pitch.adjust(toNormalizedSliderPosition: 0.6)
+        reveal(roll); roll.adjust(toNormalizedSliderPosition: 0.4)
         XCTAssertNotEqual(app.staticTexts["model-pitch-value"].label, "0.0°")
         XCTAssertNotEqual(app.staticTexts["model-roll-value"].label, "0.0°")
         XCTAssertFalse(capture.isEnabled, "The reference aid never calibrates or records automatically")
-        let place = app.buttons["place-model"]
-        let tracked = XCTNSPredicateExpectation(predicate: NSPredicate(format: "enabled == true"), object: place)
-        guard XCTWaiter.wait(for: [tracked], timeout: 30) == .completed else {
-            app.buttons["本地项目"].tap()
-            throw XCTSkip("Reference UI passed; live placement requires normal AR tracking")
-        }
-        place.tap()
-        let measured = XCTNSPredicateExpectation(predicate: NSPredicate(format: "label != %@", "—"), object: angle)
-        guard XCTWaiter.wait(for: [measured], timeout: 10) == .completed else {
-            app.buttons["本地项目"].tap()
-            throw XCTSkip("Reference UI passed; live placement requires an observed surface within LiDAR range")
-        }
         let confirm = app.buttons["confirm-model-calibration"]
-        let ready = XCTNSPredicateExpectation(predicate: NSPredicate(format: "enabled == true"), object: confirm)
-        XCTAssertEqual(XCTWaiter.wait(for: [ready], timeout: 30), .completed,
-            "Tilted placement can be confirmed without seeking a level angle")
+        XCTAssertFalse(confirm.isEnabled, "device attitude does not invent a model placement")
         let value = Float(angle.label.replacingOccurrences(of: "°", with: ""))
-        XCTAssertNotNil(value); XCTAssertTrue((0...90).contains(value ?? -1))
-        toggle.tap(); XCTAssertTrue(confirm.isEnabled, "Hiding the reference does not change calibration eligibility")
+        XCTAssertNotNil(value); XCTAssertTrue((0...180).contains(value ?? -1))
+        toggle.tap(); XCTAssertFalse(confirm.isEnabled, "Hiding the reference does not change calibration eligibility")
         toggle.tap()
         let screenshot = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
-        screenshot.name = "Live spatial level with freely tilted model"; screenshot.lifetime = .keepAlways; add(screenshot)
+        screenshot.name = "Live device axes with freely tilted model"; screenshot.lifetime = .keepAlways; add(screenshot)
         XCUIDevice.shared.press(.home); app.activate()
-        let reset = XCTNSPredicateExpectation(predicate: NSPredicate(format: "label == %@", "—"), object: angle)
-        XCTAssertEqual(XCTWaiter.wait(for: [reset], timeout: 10), .completed,
-            "Returning from a paused session must not show an old angle")
+        let resumed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "label != %@", "—"), object: angle)
+        XCTAssertEqual(XCTWaiter.wait(for: [resumed], timeout: 30), .completed,
+            "device attitude resumes with fresh tracking even though model calibration was reset")
         XCTAssertFalse(capture.isEnabled)
         XCTAssertFalse(confirm.isEnabled)
-        // Exit without confirming calibration or creating a Pose in the user's draft.
+        // Exit without confirming calibration or creating a Pose in the disposable fixture.
         app.buttons["本地项目"].tap()
     }
 

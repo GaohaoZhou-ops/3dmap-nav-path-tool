@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+    <key>CFBundleDisplayName</key><string>Atlas 空间示教</string>
+    <key>CFBundleExecutable</key><string>$(EXECUTABLE_NAME)</string>
+    <key>CFBundleIdentifier</key><string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
+    <key>CFBundleName</key><string>$(PRODUCT_NAME)</string>
+    <key>CFBundlePackageType</key><string>APPL</string>
+    <key>CFBundleShortVersionString</key><string>1.0.0</string>
+    <key>CFBundleVersion</key><string>1</string>
+    <key>NSLocalNetworkUsageDescription</key><string>连接电脑上的 Atlas 示教服务，接收模型并同步完成的 Pose。</string>
+    <key>NSBonjourServices</key><array><string>_atlas-teach._tcp</string></array>
+    <key>NSWorldSensingUsageDescription</key><string>识别现场水平面，将真实尺寸的示教模型放置在周围环境中。</string>
+    <key>NSAppTransportSecurity</key><dict><key>NSAllowsLocalNetworking</key><true/></dict>
+    <key>UIApplicationSceneManifest</key><dict>
+        <key>UIApplicationSupportsMultipleScenes</key><true/>
+        <key>UIApplicationPreferredDefaultSceneSessionRole</key><string>UIWindowSceneSessionRoleApplication</string>
+        <key>UISceneConfigurations</key><dict>
+            <key>UISceneSessionRoleImmersiveSpaceApplication</key><array><dict>
+                <key>UISceneInitialImmersionStyle</key><string>UIImmersionStyleMixed</string>
+            </dict></array>
+        </dict>
+    </dict>
+</dict></plist>

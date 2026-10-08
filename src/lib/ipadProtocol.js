@@ -4,6 +4,8 @@ export const MAX_MODEL_BYTES = 192 * 1024 * 1024;
 export const MAX_MODEL_VERTICES = 5000000;
 export const MAX_MODEL_INDICES = 30000000;
 export const MAX_SAMPLES = 50000;
+export const VISION_HEAD_FRAME = 'visionpro_head_optical_frame';
+export const mobileDeviceLabel = (result) => result?.device?.platform === 'visionOS' ? 'Vision Pro' : 'iPad';
 
 const check = (condition, message) => { if (!condition) throw new Error(message); };
 const finiteVector = (v, keys) => v && keys.every((key) => Number.isFinite(v[key]));
@@ -27,7 +29,14 @@ export function validateIPadResult(result, manifest, sessionId) {
   check(result.sessionId === sessionId && result.modelHash === manifest.modelHash, '示教结果与发送的模型不匹配');
   check(typeof result.id === 'string' && /^[a-zA-Z0-9-]{1,80}$/.test(result.id), '结果标识无效');
   check(result.coordinateFrame === 'virtual_origin', '示教坐标系必须是 virtual_origin');
-  check(result.device?.lidar === true && typeof result.device?.model === 'string', '结果缺少 LiDAR 设备信息');
+  const vision = result.device?.platform === 'visionOS';
+  check(typeof result.device?.model === 'string' && result.device.model.length > 0 && result.device.model.length <= 80, '结果缺少采集设备信息');
+  if (vision) {
+    check(result.device.poseSource === 'deviceAnchor' && result.device.lidar === false, 'Vision Pro 结果必须标明头显参考位姿来源');
+  } else {
+    check((result.device.platform == null || result.device.platform === 'iPadOS') && result.device.lidar === true,
+      '结果缺少 LiDAR 设备信息或设备平台不支持');
+  }
   check(validDate(result.createdAt) && validDate(result.completedAt), '示教时间无效');
   check(Array.isArray(result.calibrations) && result.calibrations.length > 0 && result.calibrations.length <= 1000, '缺少空间校准');
   const segments = new Set();
@@ -57,7 +66,7 @@ export function validateIPadResult(result, manifest, sessionId) {
     check(finiteVector(sample.cameraPose?.position, xyz) && finiteVector(sample.cameraPose?.quaternion, [...xyz, 'w']), '相机位姿无效');
     const q = sample.cameraPose.quaternion;
     check(Math.abs(Math.hypot(q.x, q.y, q.z, q.w) - 1) < 0.002, '相机旋转四元数未归一化');
-    check(sample.cameraPose.frameName === 'ipad_camera_optical_frame', '相机轴约定无效');
+    check(sample.cameraPose.frameName === (vision ? VISION_HEAD_FRAME : 'ipad_camera_optical_frame'), '相机轴约定与采集设备不一致');
     check(sample.surfacePoint == null || finiteVector(sample.surfacePoint, xyz), '表面点无效');
   }
   return result;

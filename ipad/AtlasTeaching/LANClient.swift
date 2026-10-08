@@ -8,16 +8,16 @@ struct ModelFileIdentity: Codable {
     static func read(from url: URL) throws -> ModelFileIdentity {
         let file: FileHandle
         do { file = try FileHandle(forReadingFrom: url) }
-        catch { throw TeachingError("无法读取 iPad 本地模型文件，已停止同步；本地 Pose 仍保留") }
+        catch { throw TeachingError("无法读取 \(TeachingDevice.storageName) 本地模型文件，已停止同步；本地 Pose 仍保留") }
         defer { try? file.close() }
         var digest = SHA256(), byteLength = 0
         while let chunk = try file.read(upToCount: 1024 * 1024), !chunk.isEmpty {
             try Task.checkCancellation()
             byteLength += chunk.count
-            guard byteLength <= maximumModelBytes else { throw TeachingError("iPad 本地模型文件大小异常，已停止同步") }
+            guard byteLength <= maximumModelBytes else { throw TeachingError("\(TeachingDevice.storageName) 本地模型文件大小异常，已停止同步") }
             digest.update(data: chunk)
         }
-        guard byteLength >= 48 else { throw TeachingError("iPad 本地模型文件不完整，已停止同步") }
+        guard byteLength >= 48 else { throw TeachingError("\(TeachingDevice.storageName) 本地模型文件不完整，已停止同步") }
         return ModelFileIdentity(modelHash: digest.finalize().map { String(format: "%02x", $0) }.joined(), byteLength: byteLength)
     }
 }
@@ -182,7 +182,7 @@ struct LANClient {
         let (url, response) = try await Self.session.download(for: request("sessions/\(paired.id)/model", token: paired.deviceToken))
         defer { try? FileManager.default.removeItem(at: url) }
         let size = try url.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0
-        guard size <= maximumModelBytes else { throw TeachingError("物体超过 iPad 传输上限（192 MiB）") }
+        guard size <= maximumModelBytes else { throw TeachingError("物体超过 移动端传输上限（192 MiB）") }
         let data = try Data(contentsOf: url); try check(response, data: data); return data
     }
     func upload(_ project: LocalProject, modelURL: URL, onModelVerified: @MainActor () -> Void = {}) async throws {
@@ -193,7 +193,7 @@ struct LANClient {
         guard identity.modelHash == project.session.manifest.modelHash,
               identity.byteLength == project.session.manifest.byteLength,
               identity.modelHash == project.result.modelHash else {
-            throw TeachingError("iPad 本地模型内容与配对时不一致，已停止同步；请恢复原模型，本地 Pose 仍保留")
+            throw TeachingError("\(TeachingDevice.storageName) 本地模型内容与配对时不一致，已停止同步；请恢复原模型，本地 Pose 仍保留")
         }
         let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
         // Send only the model fingerprint first. No poses are sent until both files match.

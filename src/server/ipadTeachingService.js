@@ -72,7 +72,7 @@ export function createIPadTeachingService({ directory, serverId = randomUUID(), 
     if (!/^[a-f0-9]{64}$/.test(identity?.modelHash) || !Number.isInteger(identity?.byteLength)
       || identity.byteLength < 48 || identity.byteLength > MAX_MODEL_BYTES) fail(400, '模型校验信息无效');
     if (identity.modelHash !== session.manifest.modelHash || identity.byteLength !== session.manifest.byteLength) {
-      fail(409, 'iPad 与电脑配对任务中的模型内容不一致，已停止同步；请确认使用的是同一模型');
+      fail(409, '设备与电脑配对任务中的模型内容不一致，已停止同步；请确认使用的是同一模型');
     }
     // Re-read the actual frozen model. Names, project metadata and all poses are excluded.
     const digest = createHash('sha256'); let byteLength = 0;
@@ -143,7 +143,7 @@ export function createIPadTeachingService({ directory, serverId = randomUUID(), 
             if (!equal(session.pairingCodeHash, hash(code))) fail(404, '配对码已更新，请使用电脑显示的新配对码');
             if (now > session.pairingExpiresAt) fail(410, '配对码已过期，请在电脑上重新生成');
             if (!['ready', 'paired'].includes(session.status)) fail(409, '该任务当前不可配对');
-            if (session.deviceId && session.deviceId !== body.deviceId) fail(409, '配对码已被另一台 iPad 使用');
+            if (session.deviceId && session.deviceId !== body.deviceId) fail(409, '配对码已被另一台设备使用');
             const deviceToken = secret();
             Object.assign(session, { status: 'paired', deviceId: body.deviceId, deviceName: String(body.deviceName || 'iPad Pro').slice(0, 80),
               deviceTokenHash: hash(deviceToken), pairedAt: new Date().toISOString() });
@@ -218,7 +218,7 @@ export function createIPadTeachingService({ directory, serverId = randomUUID(), 
           await save(session); return json(res, 200, { id: result.id, received: true, sampleCount: session.sampleCount });
         }
         if (action === 'result' && req.method === 'GET') {
-          if (!session.resultHash) fail(409, 'iPad 尚未提交完成结果');
+          if (!session.resultHash) fail(409, '设备尚未提交完成结果');
           return json(res, 200, JSON.parse(await readFile(path.join(directory, id, 'result.json'), 'utf8')));
         }
         if (action === 'imported' && req.method === 'POST') {

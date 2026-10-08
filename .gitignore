@@ -78,6 +78,7 @@ test-results/
 /screenshots/
 /test-downloads/
 /ipad/test-artifacts/
+/vision/test-artifacts/
 /ipad/screenshots/
 # Packed device-test artifacts can contain the same local project data.
 /test-artifacts.zip

@@ -2,9 +2,13 @@
 
 **机器人虚拟示教工程 · 从局部工位示教到完整地图任务编排**
 
-在三维场景中调整机器人位姿、记录停车点与机械臂 Pose、检查视觉参考，并完成任务回放和工程导出。提供 **浏览器工作台** 与配套 **iPad AR 应用**。
+在三维场景中调整机器人位姿、记录停车点与机械臂 Pose、检查视觉参考，并完成任务回放和工程导出。提供 **浏览器工作台**、**iPad AR 应用** 与 **Vision Pro 空间示教应用**。
 
-[GitHub 仓库](https://github.com/GaohaoZhou-ops/robot-virtual-teaching) · [快速启动](#快速启动) · [示教流程](#虚拟示教流程) · [iPad AR 示教](#ipad-pro-ar-逐-pose-示教)
+[GitHub 仓库](https://github.com/GaohaoZhou-ops/robot-virtual-teaching) · [快速启动](#快速启动) · [示教流程](#虚拟示教流程) · [iPad AR 示教](#ipad-pro-ar-逐-pose-示教) · [Vision Pro 空间示教](#vision-pro-空间示教)
+
+![地图示教工作台：三维工位、机器人姿态、停车点任务树与 Zivid 仿真视图](images/map-teaching.png)
+
+*地图示教工作台：在同一场景中调整机器人姿态、组织停车点任务，并检查相机取景。*
 
 <a id="文档导航"></a>
 
@@ -15,6 +19,7 @@
 | 了解工程并开始使用 | [核心能力](#核心能力) · [快速启动](#快速启动) · [虚拟示教流程](#虚拟示教流程) |
 | 在电脑上操作机器人 | [工作台详细操作](#工作台详细操作) · [相机大图交互](#相机大图交互) |
 | 在局部工位与地图之间转换 | [独立示教与地图示教转换](#独立示教与地图示教转换) |
+| 使用 Vision Pro 采集空间 Pose | [Vision Pro 空间示教](#vision-pro-空间示教) · [真机接入](vision/README.md#真机接入) |
 | 使用 iPad 采集相机 Pose | [iPad Pro AR 逐 Pose 示教](#ipad-pro-ar-逐-pose-示教) |
 | 保存工程或对接机器人 | [工作会话自动保护](#工作会话自动保护) · [机器人示教数据导出](#机器人示教数据导出) |
 | 使用计算扩展与维护工具 | [停车点集群计算](#停车点集群计算) · [Isaac Sim / PhysX](#可选-isaac-sim--physx-物理后端) · [清理缓存](#清理编译产物与缓存) |
@@ -310,6 +315,10 @@ npm install
 | 停车点合并 | XY 近邻聚类后重规划光学位姿；XYZ 默认容差 **5 cm**，RPY 默认 **5°** |
 | Pose 预览 | 还原基座与全身关节，仅绘制机器人、参考网格和坐标轴 |
 
+![示教数据中心：任务与停车点数据树、姿态详情及机器人 3D 预览](images/map-teaching-datas.png)
+
+*示教数据中心：按“任务 → 停车点 → Pose”检查记录，查看关节值与机器人姿态。*
+
 <details>
 <summary>采集数据、回放轨迹与停车点合并</summary>
 
@@ -461,6 +470,10 @@ npm install
 
 Zivid 视图根据机器人光学坐标投影当前地图，用于虚拟示教中的取景与姿态检查。
 
+![Zivid 2 M70 相机大图：仿真取景、相机位姿控制与主 3D 视角](images/map-teaching-zivid.png)
+
+*相机大图：左侧检查局部取景，右侧调整相机位姿并查看机器人与工件的空间关系。*
+
 | 区域 / 参数 | 说明 |
 | --- | --- |
 | 左侧主画面 | Zivid RGB / XYZ，原生 `1944×1200`，比例 **1.62:1**，留边适配 |
@@ -607,6 +620,10 @@ Zivid 视图根据机器人光学坐标投影当前地图，用于虚拟示教�
 ## 📱 iPad Pro AR 逐 Pose 示教
 
 在独立示教工作台点击 **iPad 运行**，把物体传到 iPad 后按 1:1 比例放入现场，绕物体移动并逐个记录相机 Pose。iPad 端不加载机器人。
+
+![iPad Pro 上的 AR 示教界面：工件模型、已示教区域与 Pose 记录面板](images/iPad.png)
+
+*iPad AR 示教：在现场查看工件模型与已示教区域，逐个记录和管理相机 Pose。*
 
 ### 设备与采集流程
 
@@ -906,6 +923,16 @@ open ipad/AtlasTeaching.xcodeproj
 
 </details>
 
+<a id="vision-pro-空间示教"></a>
+
+## 🥽 Vision Pro 空间示教
+
+![Apple Vision Pro 设备示意](images/vision-pro.png)
+
+原生 visionOS 应用支持将独立示教物体以 **1:1** 比例放入空间，校准后逐个记录**头显参考 Pose**，支持离线保存并同步回电脑。
+
+工程入口、操作流程、编译验证与真机接入步骤见 [Vision Pro 开发与联调文档](vision/README.md)。目前已完成编译和模拟器预检，待接入设备进行真机联调。
+
 <a id="工作会话自动保护"></a>
 
 ## 💾 工作会话自动保护
@@ -1192,6 +1219,8 @@ ATLAS_PHYSICS_BACKEND=isaac ./scripts/start.sh
 
 | 范围 | 入口 |
 | --- | --- |
+| Vision Pro 原生坐标、网络与工程往返 | `npm run test:vision`（macOS） |
+| visionOS 构建与模拟器流程 | `./scripts/check-vision.sh --ui`（macOS + Xcode） |
 | iPad 模型 / 协议 / 配对 | `npm run test:ipad` |
 | iPad 原生网络、坐标与几何 | `npm run test:ipad:native`（macOS） |
 | 二维码配对 | `npm run test:ipad:qr` |

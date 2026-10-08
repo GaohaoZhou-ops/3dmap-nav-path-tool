@@ -1,0 +1,13 @@
+{
+  "info": {
+    "author": "xcode",
+    "version": 1
+  },
+  "images": [
+    {
+      "idiom": "universal",
+      "scale": "2x",
+      "filename": "Atlas.png"
+    }
+  ]
+}

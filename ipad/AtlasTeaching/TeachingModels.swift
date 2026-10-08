@@ -156,6 +156,26 @@ struct NearbyPoseConfirmation: Identifiable {
 struct TeachingDevice: Codable {
     var model = "iPad Pro"
     var lidar = true
+    // Optional fields keep existing iPad archives byte-compatible when decoded.
+    var platform: String? = nil
+    var poseSource: String? = nil
+
+    static let visionPro = TeachingDevice(model: "Apple Vision Pro", lidar: false,
+        platform: "visionOS", poseSource: "deviceAnchor")
+    static var current: TeachingDevice {
+        #if os(visionOS)
+        return .visionPro
+        #else
+        return TeachingDevice()
+        #endif
+    }
+    static var storageName: String {
+        #if os(visionOS)
+        return "Vision Pro"
+        #else
+        return "iPad"
+        #endif
+    }
 }
 struct TeachingResult: Codable, Identifiable {
     var `protocol` = teachingProtocol
@@ -165,7 +185,7 @@ struct TeachingResult: Codable, Identifiable {
     var coordinateFrame = "virtual_origin"
     var createdAt = timestamp()
     var completedAt: String?
-    var device = TeachingDevice()
+    var device = TeachingDevice.current
     var calibrations: [Calibration] = []
     var samples: [TeachingSample] = []
 }

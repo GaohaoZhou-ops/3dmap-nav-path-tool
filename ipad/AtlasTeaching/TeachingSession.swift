@@ -32,7 +32,7 @@ final class TeachingSession: ObservableObject {
             if let qr { try qr.validate(); serverAddress = qr.address; code = PairingCode.normalize(qr.code) }
             let client = try LANClient(address: qr?.address ?? serverAddress)
             status = "连接电脑并配对…"
-            let paired = try await client.pair(code: code, deviceID: deviceID, name: "iPad Pro", qr: qr)
+            let paired = try await client.pair(code: code, deviceID: deviceID, name: TeachingDevice.current.model, qr: qr)
             status = "通过局域网下载物体…"
             let data = try await client.download(paired)
             let geometry = try await Task.detached { try ModelGeometry(data: data, manifest: paired.manifest) }.value
@@ -44,7 +44,7 @@ final class TeachingSession: ObservableObject {
             try await ProjectStore.shared.saveModel(data, id: paired.id)
             try await ProjectStore.shared.save(project)
             UserDefaults.standard.set(client.baseURL.absoluteString, forKey: "serverAddress")
-            self.geometry = geometry; current = project; status = "物体已保存到 iPad，可以断开网络"
+            self.geometry = geometry; current = project; status = "物体已保存到 \(TeachingDevice.storageName)，可以断开网络"
             await reload()
         } catch { self.error = "接收失败：\(error.localizedDescription)"; status = "请检查局域网地址、配对码与本地网络权限" }
     }
@@ -73,6 +73,7 @@ final class TeachingSession: ObservableObject {
     func addSample(_ sample: TeachingSample) -> Bool {
         guard !busy, error.isEmpty, let project = current, project.result.completedAt == nil,
               project.result.samples.count < maximumSamples,
+              project.result.calibrations.contains(where: { $0.id == sample.segmentId }),
               !project.result.samples.contains(where: { $0.id == sample.id }) else { return false }
         var named = sample
         named.name = String(format: "Pose %03d", project.result.samples.count + 1)
@@ -100,7 +101,7 @@ final class TeachingSession: ObservableObject {
         let prior = saveTask
         saveTask = Task {
             await prior?.value
-            do { try await ProjectStore.shared.save(project); status = "已自动保存到 iPad · \(project.result.samples.count) 个采样" }
+            do { try await ProjectStore.shared.save(project); status = "已自动保存到 \(TeachingDevice.storageName) · \(project.result.samples.count) 个采样" }
             catch { self.error = "本地保存失败：\(error.localizedDescription)" }
         }
     }
@@ -123,6 +124,9 @@ final class TeachingSession: ObservableObject {
         guard !busy, var project = current, !project.result.samples.isEmpty else { return }
         busy = true; error = ""; defer { busy = false }
         do {
+            guard !sync || project.result.device.platform != "visionOS-simulator" else {
+                throw TeachingError("模拟演练数据只能保存在本机，不能同步")
+            }
             await saveTask?.value
             if project.result.completedAt == nil { project.result.completedAt = timestamp() }
             // Freeze before any network call. A failed/ambiguous upload can retry the same bytes.
@@ -131,15 +135,15 @@ final class TeachingSession: ObservableObject {
                 let client = try LANClient(address: serverAddress)
                 project.serverURL = client.baseURL.absoluteString; current = project
                 try await ProjectStore.shared.save(project)
-                status = "正在核对 iPad 与电脑的模型文件…"
+                status = "正在核对 \(TeachingDevice.storageName) 与电脑的模型文件…"
                 let modelURL = try await ProjectStore.shared.modelURL(project.id)
                 try await client.upload(project, modelURL: modelURL) {
                     self.status = "模型一致，正在通过局域网上传 Pose…"
                 }
                 project.syncedAt = timestamp(); current = project; try await ProjectStore.shared.save(project)
                 status = "同步成功，请在电脑端点击「检查完成状态」并接收结果"
-            } else { status = "示教已完成并保存在 iPad，返回局域网后点击同步" }
+            } else { status = "示教已完成并保存在 \(TeachingDevice.storageName)，返回局域网后点击同步" }
             await reload()
-        } catch { self.error = "结果保留在 iPad，可重试：\(error.localizedDescription)"; status = "尚未确认同步成功" }
+        } catch { self.error = "结果保留在 \(TeachingDevice.storageName)，可重试：\(error.localizedDescription)"; status = "尚未确认同步成功" }
     }
 }

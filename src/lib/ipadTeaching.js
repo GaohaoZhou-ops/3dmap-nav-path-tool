@@ -1,5 +1,5 @@
 import { sha256Bytes } from './hash.js';
-import { IPAD_PROTOCOL, MAX_MODEL_BYTES, MAX_MODEL_VERTICES, MAX_MODEL_INDICES, validateIPadResult } from './ipadProtocol.js';
+import { IPAD_PROTOCOL, MAX_MODEL_BYTES, MAX_MODEL_VERTICES, MAX_MODEL_INDICES, validateIPadResult, mobileDeviceLabel } from './ipadProtocol.js';
 
 export const IPAD_API = '/__atlas/ipad';
 const ticketKey = 'atlas-ipad-handoffs-v1';
@@ -72,9 +72,9 @@ export async function ipadResultTask(result, ticket, mapData) {
   // Compare actual geometry with the transferred model, never names, IDs or teaching poses.
   const { manifest } = await packIPadModel(mapData);
   if (manifest.modelHash !== ticket.manifest.modelHash || manifest.byteLength !== ticket.manifest.byteLength) {
-    throw new Error('当前独立示教物体与 iPad 的模型内容不一致，即使文件同名也无法接收；请打开配对时的模型');
+    throw new Error('当前独立示教物体与采集设备的模型内容不一致，即使文件同名也无法接收；请打开配对时的模型');
   }
-  return { id: `ipad-${result.id}`, name: `iPad 示教 · ${ticket.manifest.name}`,
+  return { id: `ipad-${result.id}`, name: `${mobileDeviceLabel(result)} 示教 · ${ticket.manifest.name}`,
     createdAt: result.createdAt, updatedAt: result.completedAt, coordinateFrame: 'virtual_origin',
     robot: {}, map: { id: mapData.mapId, fileName: mapData.name, sourceHash: mapData.sourceHash,
       teachingSpaceMode: 'independent', coordinateFrame: 'virtual_origin' },

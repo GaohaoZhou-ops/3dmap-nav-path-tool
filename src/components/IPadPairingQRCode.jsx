@@ -32,11 +32,11 @@ export default function IPadPairingQRCode({ ticket, address, disabled, copied, o
       <span className="ipad-qr__eyebrow">SCAN TO CONNECT</span>
       <h3>打开 iPad App，扫码配对</h3>
       <p>在「Atlas 示教」欢迎页点击「扫码配对」，对准左侧二维码，即可连接电脑并接收当前物体。</p>
-      <small>电脑与 iPad 需连接同一局域网。二维码随配对码一起更新。</small>
+      <small>Vision Pro 请搜索电脑或输入下方地址与 4 位码。两台设备需在同一局域网。</small>
       <div className="ipad-qr__manual"><div><small>也可手动输入 4 位配对码</small><strong className="ipad-code">{ticket.pairingCode}</strong></div>
         <button aria-label="复制 iPad 配对码" disabled={disabled || expired} onClick={onCopy}>{copied ? <Check size={16} /> : <Copy size={16} />}</button>
       </div>
-      <small>有效期至 {new Date(ticket.pairingExpiresAt).toLocaleTimeString()} · 仅限一台 iPad</small>
+      <small>有效期至 {new Date(ticket.pairingExpiresAt).toLocaleTimeString()} · 仅限一台采集设备</small>
       <div role="status">{expired ? '二维码已过期，请点击下方「更新配对码」。'
         : !address ? '连接局域网后即可生成二维码。' : disabled ? '正在更新配对信息…' : !image && !error ? '正在生成二维码…' : ''}</div>
       {error && <><p className="ipad-error" role="alert">{error}</p><button disabled={disabled} onClick={() => setRetry((value) => value + 1)}><RefreshCw size={14} />重新生成二维码</button></>}

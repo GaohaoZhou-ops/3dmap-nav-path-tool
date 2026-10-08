@@ -41,6 +41,7 @@ import TeachingTransferDialog from './components/TeachingTransferDialog.jsx';
 import IPadTeachingDialog from './components/IPadTeachingDialog.jsx';
 import AbxTeachingExportDialog from './components/AbxTeachingExportDialog.jsx';
 import { ipadResultTask } from './lib/ipadTeaching.js';
+import { mobileDeviceLabel } from './lib/ipadProtocol.js';
 import { extractTeachingWorkspace, placeTeachingWorkspace, writeBackTeachingWorkspace } from './lib/teachingTransfer.js';
 import { inspectConnectivity } from './lib/graph.js';
 import {
@@ -4194,7 +4195,7 @@ export default function App() {
     setTeachingTasks(next); setActiveTeachingTaskId(task.id); setActiveTeachingParkingPointId(null);
     await persistWorkspaceNow();
     if (!sessionReadyRef.current) throw new Error('接收结果尚未保存成功，请重试；服务端仍保留结果');
-    notify(`已接收 iPad 示教：${result.samples.length} 个 Pose`, 'success');
+    notify(`已接收 ${mobileDeviceLabel(result)} 示教：${result.samples.length} 个 Pose`, 'success');
   };
 
   const applyTeachingTransfer = async (options) => {
@@ -4332,9 +4333,9 @@ export default function App() {
             onSelect={handleSelectRobot}
           />
           {isIndependentTeachingSpace && <button type="button" className="action-button ipad-teaching-action"
-            aria-label="移动到 iPad 上运行" disabled={!mapData?.geometry || loadState.loading || sessionState.status !== 'ready'}
+            aria-label="移动到 iPad 或 Vision Pro 上运行" disabled={!mapData?.geometry || loadState.loading || sessionState.status !== 'ready'}
             onClick={() => { stopTeachingTaskPlayback(false); setRobotControlEnabled(false); setIPadTeachingOpen(true); }}>
-            <Tablet size={15}/><span>iPad 运行</span>
+            <Tablet size={15}/><span>iPad / Vision Pro</span>
           </button>}
           <SpaceMouseControl
             inputRef={spaceMouseInputRef}

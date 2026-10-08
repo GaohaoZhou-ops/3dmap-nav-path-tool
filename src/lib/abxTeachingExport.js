@@ -142,7 +142,7 @@ const instructions = [
   '5. 基础姿态库不额外新增模板；任务、停车点与 Pose 的名称、顺序以及关节目标保留。',
   '   导入由大脑分配新任务 ID，source-mapping.json 记录源项目到包内任务和 Pose 的对应关系。',
   '   RGB/XYZ 视觉参考仍在完整工程中，不作为真机拍摄记录，也不自动触发相机。',
-  '   iPad 相机 Pose 须先求解为机器人关节姿态，独立示教须先转换到地图坐标后再导出。',
+  '   移动设备 Pose（iPad / Vision Pro） 须先求解为机器人关节姿态，独立示教须先转换到地图坐标后再导出。',
   '6. 导出为当前快照；修改示教数据后请重新导出。原工程 ZIP 继续用于完整备份和恢复。',
   '',
 ];
@@ -165,7 +165,7 @@ const compileExport = async (payload, robotPackage) => {
   const navigationTasks = [];
   for (const task of ordered(payload.virtualTeaching?.tasks || [], '任务')) {
     const name = text(task.name, '任务名称');
-    requireExport(!task.mobileCapture?.samples?.length, `任务 ${name}包含 iPad 相机 Pose，尚未转换成机器人关节姿态`);
+    requireExport(!task.mobileCapture?.samples?.length, `任务 ${name}包含 ${task.mobileCapture?.device?.platform === 'visionOS' ? 'Vision Pro 头显 Pose' : 'iPad 相机 Pose'}，尚未转换成机器人关节姿态`);
     requireExport((task.coordinateFrame || 'map') === 'map' && task.map?.teachingSpaceMode !== 'independent', `任务 ${name}不是地图示教`);
     requireExport(!task.map?.sourceHash || !payload.map?.sourceHash || task.map.sourceHash === payload.map.sourceHash,
       `任务 ${name}与当前地图摘要不一致`);

@@ -1,3 +1,9 @@
+# 初始需求记录（历史）
+
+本文件保留项目早期的地图浏览与导航路径编辑需求。项目现定位为 **Robot Virtual Teaching（机器人虚拟示教工程）**，当前功能、启动方式和示教流程见 [README.md](README.md)，仓库地址为 [GaohaoZhou-ops/robot-virtual-teaching](https://github.com/GaohaoZhou-ops/robot-virtual-teaching)。
+
+## 原始需求
+
 你需要在当前目录下实现一个web页面，功能如下：
 
 1. 提供加载地图文件的按钮，点击后在3D交互区域对地图文件进行显示；

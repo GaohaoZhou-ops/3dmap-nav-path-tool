@@ -1,6 +1,8 @@
-# Atlas 停车点 Server 合并任务
+# Robot Virtual Teaching · 停车点集群计算
 
-该目录是由“示教数据中心 → 合并停车点-Server → 导出”生成的只读计算快照。
+本计算包用于 [Robot Virtual Teaching（机器人虚拟示教工程）](https://github.com/GaohaoZhou-ops/robot-virtual-teaching) 的停车点合并：在“示教数据中心”选中任务后，通过“合并停车点-Server → 导出”生成包含冻结任务、环境几何、机器人资源与算法脚本的 ZIP。
+
+本说明随计算包导出。以下命令在 ZIP 解压后的任务目录执行，该目录中的输入是导出时的只读计算快照。
 
 ## 一键执行
 
@@ -18,6 +20,8 @@ bash run_cluster.sh
 
 - `parking-merge-…-result.zip`：推荐带回网页导入；
 - `parking-merge-…-result.json`：内容相同的单文件结果。
+
+将结果带回虚拟示教平台，在原任务的“合并停车点-Server”窗口导入；校验通过后，在合并结果页选择近邻簇并确认合并。
 
 可选参数：
 

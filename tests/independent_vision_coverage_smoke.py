@@ -499,7 +499,8 @@ def run():
               const dock = document.querySelector(
                 '[aria-label="示教任务轨迹播放控制"]'
               );
-              return dock?.dataset.playbackStatus === 'completed'
+              return dock?.dataset.playbackStatus === 'playing'
+                && dock?.dataset.playbackPhase === 'hold'
                 && dock?.dataset.playbackReachedPose === '2/2'
                 && Number(canvas?.dataset.visionCoverageReachedPoseCount) === 2
                 && Number(canvas?.dataset.visionCoverageFrameCount) === 4;
@@ -507,16 +508,34 @@ def run():
             """,
             timeout=90_000,
         )
-        completed_playback_metrics = coverage_metrics(canvas)
-        assert completed_playback_metrics["generation_mode"] == "pose-arrival-progressive"
-        assert completed_playback_metrics["playback_status"] == "completed"
-        assert completed_playback_metrics["reached_poses"] == 2
-        assert completed_playback_metrics["frames"] == 4
-        assert completed_playback_metrics["optical_pose_signature"] == (
+        page.get_by_role("button", name="暂停示教轨迹播放", exact=True).click()
+        page.wait_for_function(
+            "document.querySelector('.three-canvas')?.dataset.visionCoveragePlaybackStatus === 'paused'"
+        )
+        full_lap_metrics = coverage_metrics(canvas)
+        assert full_lap_metrics["generation_mode"] == "pose-arrival-progressive"
+        assert full_lap_metrics["playback_status"] == "paused"
+        assert full_lap_metrics["reached_poses"] == 2
+        assert full_lap_metrics["frames"] == 4
+        assert full_lap_metrics["optical_pose_signature"] == (
             captured_optical_pose_signature
         )
+        page.get_by_role("button", name="继续示教轨迹播放", exact=True).click()
+        # These two captures share a robot pose, so the next lap immediately
+        # reaches its first hold and must show only that pose's two frames.
+        page.wait_for_function(
+            """() => {
+              const canvas = document.querySelector('.three-canvas');
+              const dock = document.querySelector('.teaching-playback-dock');
+              return Number(dock?.dataset.playbackCycle) >= 2
+                && dock?.dataset.playbackReachedPose === '1/2'
+                && Number(canvas?.dataset.visionCoverageReachedPoseCount) === 1
+                && Number(canvas?.dataset.visionCoverageFrameCount) === 2;
+            }""",
+            timeout=30_000,
+        )
         page.get_by_role(
-            "button", name="关闭示教轨迹播放控制", exact=True
+            "button", name="停止示教轨迹播放", exact=True
         ).click()
         playback_dock.wait_for(state="detached")
         page.wait_for_function(
@@ -569,7 +588,7 @@ def run():
         print("moved_coverage_metrics=", moved_metrics)
         print("playback_waiting_metrics=", waiting_metrics)
         print("playback_first_arrival_metrics=", first_arrival_metrics)
-        print("playback_completed_metrics=", completed_playback_metrics)
+        print("playback_full_lap_metrics=", full_lap_metrics)
         print("surface_tint_points=", first_surface_tint_count)
         print("zivid_first_difference=", first_camera_difference)
         print("zivid_overlap_difference=", overlap_camera_difference)

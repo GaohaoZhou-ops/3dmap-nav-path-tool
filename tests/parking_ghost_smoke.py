@@ -18,6 +18,17 @@ def read_robot_pose(canvas):
     }
 
 
+def wait_for_pose(page, expected):
+    page.wait_for_function(
+        """target => {
+          const canvas = document.querySelector('.three-canvas');
+          return canvas && Object.entries(target).every(([axis, value]) =>
+            Math.abs(Number(canvas.getAttribute(`data-robot-${axis}`)) - value) < 1e-5);
+        }""",
+        arg=expected,
+    )
+
+
 def run():
     errors = []
     with sync_playwright() as playwright:
@@ -54,6 +65,7 @@ def run():
             "treeitem", name="选择当前停车点 停车点 P01"
         )
         first_stop.wait_for()
+        first_stop_pose = read_robot_pose(canvas)
 
         viewer_tool(page, name="定位机器人模型").click()
         page.wait_for_function(
@@ -62,8 +74,13 @@ def run():
         page.keyboard.press("w")
         page.keyboard.press("w")
         page.keyboard.press("a")
+        page.keyboard.press("ArrowLeft")
         page.wait_for_function(
-            "Math.hypot(Number(document.querySelector('.three-canvas')?.dataset.robotX), Number(document.querySelector('.three-canvas')?.dataset.robotY)) > 0.05"
+            """() => {
+              const canvas = document.querySelector('.three-canvas');
+              return Math.hypot(Number(canvas?.dataset.robotX), Number(canvas?.dataset.robotY)) > 0.05
+                && Number(canvas?.dataset.robotYaw) > 4;
+            }"""
         )
         page.get_by_role("button", name="新增停车点", exact=True).click()
         second_stop = tree.get_by_role(
@@ -128,10 +145,73 @@ def run():
         assert page.locator(".point-cloud-view").get_attribute(
             "data-parking-ghost-state"
         ) == "hidden"
+
+        # Moving applies the selected parking pose, while keeping joints edited
+        # after the ghost was created, and allows capture under that stop.
+        first_stop.click()
+        ghost_card.wait_for()
+        target_id = ghost_card.get_attribute("data-parking-point-id")
+        page.get_by_role("button", name="打开全关节浮动窗口").click()
+        joint = page.get_by_role("spinbutton", name="right_J1 关节值")
+        joint.fill("35")
+        joint.press("Enter")
+        page.get_by_role("button", name="关闭全关节浮动窗口").click()
+        page.wait_for_function(
+            "JSON.parse(document.querySelector('.three-canvas').dataset.robotJointValues).right_J1 === 35"
+        )
+        joints_before_move = json.loads(canvas.get_attribute("data-robot-joint-values"))
+        move_button = ghost_card.get_by_role("button", name="移动到当前停车点", exact=True)
+        assert move_button.is_enabled()
+        move_button.click()
+        ghost_card.wait_for(state="detached")
+        wait_for_pose(page, first_stop_pose)
+        assert json.loads(canvas.get_attribute("data-robot-joint-values")) == joints_before_move
+        assert first_stop.get_attribute("aria-current") == "true"
+        assert first_stop.get_attribute("data-ghost-preview") == "false"
+        assert tree.get_attribute("data-active-parking-point") == target_id
+        assert canvas.get_attribute("data-synchronized-focus-type") == "robot"
+
+        capture_button = page.get_by_role("button", name="记录当前机械臂姿态", exact=True)
+        assert capture_button.is_enabled()
+        capture_button.click()
+        page.wait_for_function(
+            "document.querySelector('[aria-label=\"虚拟示教\"]')?.dataset.teachingPointCount === '1'"
+        )
+        assert first_stop.locator("small").inner_text() == "1 姿态"
+        assert second_stop.locator("small").inner_text() == "0 姿态"
+
+        second_stop.click()
+        ghost_card.get_by_role("button", name="移动到当前停车点", exact=True).click()
+        wait_for_pose(page, before_preview)
+        capture_button.click()
+        page.wait_for_function(
+            "document.querySelector('[aria-label=\"虚拟示教\"]')?.dataset.teachingPointCount === '2'"
+        )
+        assert second_stop.locator("small").inner_text() == "1 姿态"
+
+        # An explicit move must stop looping playback so later frames cannot
+        # pull the robot away from the selected operating position.
+        page.get_by_role("button", name="打开示教数据管理页").click()
+        page.get_by_role("button", name="选择示教任务 示教任务 01", exact=True).click()
+        page.get_by_role("button", name="播放示教任务 示教任务 01", exact=True).click()
+        dock = page.get_by_label("示教任务轨迹播放控制", exact=True)
+        dock.wait_for()
+        assert dock.get_attribute("data-playback-status") == "playing"
+        second_stop.click()
+        ghost_card.get_by_role("button", name="移动到当前停车点", exact=True).click()
+        dock.wait_for(state="detached")
+        ghost_card.wait_for(state="detached")
+        wait_for_pose(page, before_preview)
+        page.wait_for_timeout(700)
+        assert read_robot_pose(canvas) == before_preview
+        assert json.loads(canvas.get_attribute("data-robot-joint-values")) == joints_before_move
+        assert page.locator(".point-cloud-view").get_attribute("data-robot-trajectory-active") == "false"
+        assert second_stop.get_attribute("aria-current") == "true"
+        assert capture_button.is_enabled()
         assert not errors, errors
         browser.close()
 
-    print("parking_ghost=created,current-pose-preserved,live-distance,cleared")
+    print("parking_ghost=created,current-pose-preserved,live-distance,cleared,moved,joints-preserved,captured,playback-stopped")
 
 
 if __name__ == "__main__":

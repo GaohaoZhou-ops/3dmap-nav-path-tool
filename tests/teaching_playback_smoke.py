@@ -130,8 +130,10 @@ def run():
                 ...(project.virtualTeaching || {}),
                 tasks: [task],
               };
-              project.robot.origin = pose(0.12);
-              project.robot.joints = { ...baseJoints, right_J1: -20 };
+              // Start away from the final pose to detect any jump back to the
+              // original starting state at a loop boundary.
+              project.robot.origin = pose(0.3);
+              project.robot.joints = { ...baseJoints, right_J1: -10 };
               record.config.ui.activeTeachingTaskId = task.id;
               record.config.ui.activeTeachingParkingPointId = 'playback-stop-2';
               await new Promise((resolve, reject) => {
@@ -141,7 +143,7 @@ def run():
                 transaction.onerror = () => reject(transaction.error);
               });
               database.close();
-              return { secondStopPose: pose(0.12), rightJoint: -20 };
+              return { secondStopPose: pose(0.12), rightJoint: -10 };
             }
             """
         )
@@ -152,12 +154,15 @@ def run():
             timeout=180_000,
         )
         page.wait_for_function(
-            "Math.abs(JSON.parse(document.querySelector('.three-canvas')?.dataset.robotJointValues || '{}').right_J1 + 20) < 0.001"
+            "Math.abs(JSON.parse(document.querySelector('.three-canvas')?.dataset.robotJointValues || '{}').right_J1 + 10) < 0.001"
         )
         second_stop_pose = {
             **fixture["secondStopPose"]["position"],
             **fixture["secondStopPose"]["rpy"],
         }
+        height_range = page.locator(".height-range")
+        initial_slice = [height_range.get_attribute(f"data-slice-{edge}") for edge in ("min", "max")]
+        assert page.get_by_role("button", name="收起 Z 截面").get_attribute("aria-expanded") == "true"
 
         page.get_by_role("button", name="打开示教数据管理页").click()
         page.locator('[data-app-page="teaching-data"]').wait_for()
@@ -173,6 +178,9 @@ def run():
         assert dock.get_attribute("data-playback-status") == "playing"
         assert dock.get_attribute("data-playback-task")
         assert dock.get_attribute("data-playback-pose").endswith("/3")
+        assert dock.get_attribute("data-playback-cycle") == "1"
+        assert page.get_by_role("button", name="展开 Z 截面").get_attribute("aria-expanded") == "false"
+        assert [height_range.get_attribute(f"data-slice-{edge}") for edge in ("min", "max")] == initial_slice
         assert page.locator(".point-cloud-view").get_attribute(
             "data-robot-trajectory-active"
         ) == "true"
@@ -180,6 +188,23 @@ def run():
         page.get_by_role("combobox", name="示教轨迹播放速度").select_option("0.5")
         page.wait_for_timeout(700)
         page.screenshot(path="/tmp/atlas-teaching-playback-active.png", full_page=True)
+
+        # The dock retracts towards its left edge without interrupting playback.
+        expanded_box = dock.bounding_box()
+        elapsed_before_collapse = int(dock.get_attribute("data-playback-elapsed-ms"))
+        page.get_by_role("button", name="向左收起播放控制条").click()
+        page.wait_for_timeout(350)
+        collapsed_box = dock.bounding_box()
+        assert abs(collapsed_box["x"] - expanded_box["x"]) < 1
+        assert collapsed_box["width"] <= 32
+        assert dock.get_attribute("data-playback-status") == "playing"
+        assert int(dock.get_attribute("data-playback-elapsed-ms")) > elapsed_before_collapse
+        assert page.get_by_role("button", name="暂停示教轨迹播放").count() == 0
+        page.screenshot(path="/tmp/atlas-teaching-playback-collapsed.png", full_page=True)
+        expand_dock = page.get_by_role("button", name="展开播放控制条")
+        assert expand_dock.get_attribute("aria-expanded") == "false"
+        expand_dock.press("Enter")
+        page.get_by_role("button", name="暂停示教轨迹播放").wait_for()
 
         page.wait_for_function(
             """
@@ -189,7 +214,7 @@ def run():
               if (dock?.dataset.playbackPhase !== 'joints' || !canvas) return false;
               const ordinal = Number((dock.dataset.playbackPose || '').split('/')[0]);
               const value = Number(JSON.parse(canvas.dataset.robotJointValues || '{}').right_J1);
-              const ranges = { 1: [-20, 0], 2: [0, 30], 3: [-20, 30] };
+              const ranges = { 1: [-10, 0], 2: [0, 30], 3: [-20, 30] };
               const range = ranges[ordinal];
               return range && value > range[0] + 0.02 && value < range[1] - 0.02;
             }
@@ -208,8 +233,32 @@ def run():
         assert abs(scene_joint(page, "right_J1") - paused_joint) < 0.0001
         assert abs(scene_pose(page)["x"] - paused_pose["x"]) < 0.0001
 
+        # Manually opening the slice stays possible, and both controls fit even
+        # at the app's minimum supported viewport width.
+        page.get_by_role("button", name="展开 Z 截面").click()
+        assert page.get_by_role("slider", name="截面中心高度", exact=True).is_visible()
+        for width in (1440, 1180, 980):
+            page.set_viewport_size({"width": width, "height": 900})
+            page.wait_for_timeout(250)
+            dock_box = dock.bounding_box()
+            slice_box = height_range.bounding_box()
+            assert dock_box["width"] <= 520
+            assert dock_box["x"] + dock_box["width"] + 8 <= slice_box["x"]
+            assert page.locator(".teaching-playback-dock__content").evaluate(
+                "element => element.scrollWidth <= element.clientWidth"
+            )
+            for control in ("暂停示教轨迹播放", "继续示教轨迹播放", "停止示教轨迹播放"):
+                button = page.get_by_role("button", name=control)
+                if button.count():
+                    box = button.bounding_box()
+                    assert box["x"] >= dock_box["x"]
+                    assert box["x"] + box["width"] <= dock_box["x"] + dock_box["width"]
+            page.screenshot(path=f"/tmp/atlas-teaching-playback-width-{width}.png", full_page=True)
+        page.set_viewport_size({"width": 1440, "height": 900})
         page.get_by_role("combobox", name="示教轨迹播放速度").select_option("2")
         page.get_by_role("button", name="继续示教轨迹播放").click()
+        assert page.get_by_role("button", name="展开 Z 截面").get_attribute("aria-expanded") == "false"
+        assert [height_range.get_attribute(f"data-slice-{edge}") for edge in ("min", "max")] == initial_slice
         print(
             "playback_plan=",
             dock.get_attribute("data-playback-segment"),
@@ -219,7 +268,10 @@ def run():
             flush=True,
         )
         page.wait_for_function(
-            "document.querySelector('[aria-label=\"示教任务轨迹播放控制\"]')?.dataset.playbackStatus === 'completed'",
+            """() => {
+              const data = document.querySelector('.teaching-playback-dock')?.dataset;
+              return data?.playbackPose === '3/3' && data.playbackPhase === 'hold';
+            }""",
             timeout=90_000,
         )
         completed_joint = scene_joint(page, "right_J1")
@@ -227,26 +279,65 @@ def run():
         final_pose = scene_pose(page)
         assert abs(final_pose["x"] - second_stop_pose["x"]) < 0.001
         assert abs(final_pose["y"] - second_stop_pose["y"]) < 0.001
-        assert page.locator(".point-cloud-view").get_attribute(
-            "data-robot-trajectory-active"
-        ) == "false"
-        assert viewer_tool(page, name="定位机器人模型").is_enabled()
+        loop_boundary = page.wait_for_function(
+            """() => {
+              const dock = document.querySelector('.teaching-playback-dock');
+              const canvas = document.querySelector('.three-canvas');
+              if (Number(dock?.dataset.playbackCycle) < 2 || !canvas) return false;
+              return {
+                ...dock.dataset,
+                x: Number(canvas.dataset.robotX),
+                joint: JSON.parse(canvas.dataset.robotJointValues).right_J1,
+              };
+            }""",
+            timeout=30_000,
+        ).json_value()
+        assert loop_boundary["playbackStatus"] == "playing"
+        assert loop_boundary["playbackCycle"] == "2"
+        assert loop_boundary["playbackSpeed"] == "2"
+        assert loop_boundary["playbackReachedPose"] == "0/3"
+        assert abs(loop_boundary["x"] - second_stop_pose["x"]) < 0.01
+        assert abs(loop_boundary["joint"] + 20) < 0.001
+        assert page.locator(".point-cloud-view").get_attribute("data-robot-trajectory-active") == "true"
+        assert viewer_tool(page, name="定位机器人模型").is_disabled()
 
-        page.get_by_role("button", name="重新播放当前示教任务").click()
+        # The next cycle reaches the first pose again and also loops while hidden.
         page.wait_for_function(
-            "document.querySelector('[aria-label=\"示教任务轨迹播放控制\"]')?.dataset.playbackStatus === 'playing'"
+            """() => {
+              const data = document.querySelector('.teaching-playback-dock')?.dataset;
+              return data?.playbackCycle === '2' && data.playbackPose === '1/3'
+                && data.playbackPhase === 'hold';
+            }""",
+            timeout=30_000,
         )
+        assert abs(scene_joint(page, "right_J1")) < 0.001
+        assert abs(scene_pose(page)["x"]) < 0.001
+        page.get_by_role("button", name="向左收起播放控制条").click()
+        page.wait_for_function(
+            "Number(document.querySelector('.teaching-playback-dock')?.dataset.playbackCycle) >= 3",
+            timeout=30_000,
+        )
+        assert dock.get_attribute("data-collapsed") == "true"
+        assert dock.get_attribute("data-playback-status") == "playing"
+        page.get_by_role("button", name="展开播放控制条").click()
         page.get_by_role("button", name="停止示教轨迹播放").click()
         dock.wait_for(state="detached")
         assert page.locator(".point-cloud-view").get_attribute(
             "data-robot-trajectory-active"
         ) == "false"
+        stopped_pose = scene_pose(page)
+        stopped_joint = scene_joint(page, "right_J1")
+        page.wait_for_timeout(700)
+        assert scene_pose(page) == stopped_pose
+        assert scene_joint(page, "right_J1") == stopped_joint
+        assert viewer_tool(page, name="定位机器人模型").is_enabled()
 
         page.screenshot(path="/tmp/atlas-teaching-playback.png", full_page=True)
         assert not errors, errors
         print("pose_count=3")
         print("paused_joint=", round(paused_joint, 4))
         print("completed_joint=", round(completed_joint, 4))
+        print("loop_boundary=", loop_boundary)
         print("page_errors=", errors)
         browser.close()
 

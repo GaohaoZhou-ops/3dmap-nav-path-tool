@@ -130,6 +130,7 @@ const createIdleTeachingPlayback = () => ({
   overallProgress: 0,
   segmentProgress: 0,
   speed: 1,
+  cycle: 0,
 });
 
 const teachingPlaybackStateFromRuntime = (runtime, status = runtime?.status || 'idle') => {
@@ -167,6 +168,7 @@ const teachingPlaybackStateFromRuntime = (runtime, status = runtime?.status || '
       : 1,
     segmentProgress,
     speed: runtime.speed,
+    cycle: runtime.cycle,
   };
 };
 
@@ -457,6 +459,7 @@ export default function App() {
   const [mapData, setMapData] = useState(null);
   const [teachingSpaceMode, setTeachingSpaceMode] = useState('map');
   const [heightRange, setHeightRange] = useState([0, 1]);
+  const [heightRangeCollapsed, setHeightRangeCollapsed] = useState(false);
   const [waypoints, setWaypoints] = useState([]);
   const [edges, setEdges] = useState([]);
   const [mode, setMode] = useState('select');
@@ -2776,22 +2779,6 @@ export default function App() {
     notify(`${removed?.name || '停车点'} 已删除`, 'info');
   }, [activeTeachingParkingPointId, notify, teachingTasks]);
 
-  const applyTeachingParkingPoint = useCallback(
-    (taskId, parkingPointId) => {
-      const task = teachingTasks.find((item) => item.id === taskId);
-      const parkingPoint = task?.parkingPoints?.find((item) => item.id === parkingPointId);
-      if (!task || !parkingPoint) return;
-      if (robotLoadState.status !== 'loaded' || !teachingContextMatches(task)) {
-        notify('当前地图或机器人与该停车点不一致，无法应用', 'warning');
-        return;
-      }
-      setRobotControlEnabled(false);
-      setRobotPose(normalizeRobotPose(parkingPoint.mapPose));
-      notify(`${parkingPoint.name} 已应用 · 机器人底盘已恢复到停车位置`, 'success');
-    },
-    [notify, robotLoadState.status, teachingContextMatches, teachingTasks],
-  );
-
   const captureTeachingPoint = useCallback(async (options = {}) => {
     const createParkingPoint = options?.createParkingPoint === true;
     const task = teachingTasks.find((item) => item.id === activeTeachingTaskId);
@@ -3700,24 +3687,21 @@ export default function App() {
       runtime.segmentElapsedMs -= activeSegment.durationMs;
       runtime.segmentIndex += 1;
       crossedBoundary = true;
-    }
 
-    if (runtime.segmentIndex >= runtime.plan.segments.length) {
-      const finalSegment = runtime.plan.segments.at(-1);
-      runtime.segmentIndex = Math.max(0, runtime.plan.segments.length - 1);
-      runtime.segmentElapsedMs = finalSegment?.durationMs || 0;
-      runtime.status = 'completed';
-      const completedState = teachingPlaybackStateFromRuntime(runtime, 'completed');
-      setTeachingPlayback({
-        ...completedState,
-        elapsedDurationMs: runtime.plan.totalDurationMs,
-        overallProgress: 1,
-        segmentProgress: 1,
-      });
-      teachingPlaybackRuntimeRef.current = null;
-      teachingPlaybackFrameRef.current = null;
-      notify(`${runtime.plan.taskName} 播放完成 · ${runtime.plan.poseCount} 个姿态已按规划到达`, 'success');
-      return;
+      if (runtime.segmentIndex >= runtime.plan.segments.length) {
+        // Plan from the last pose so the next lap never jumps back to the
+        // original playback position, including for continuous joints.
+        runtime.plan = buildTeachingTaskTrajectory({
+          task: runtime.task,
+          currentRobotPose: runtime.plan.finalRobotPose,
+          currentJointValues: runtime.plan.finalJointValues,
+          jointDefinitions: runtime.jointDefinitions,
+        });
+        runtime.segmentIndex = 0;
+        runtime.cycle += 1;
+        runtime.reachedPoseIds.clear();
+        runtime.activeParkingPointId = null;
+      }
     }
 
     const segment = runtime.plan.segments[runtime.segmentIndex];
@@ -3744,7 +3728,7 @@ export default function App() {
     }
 
     teachingPlaybackFrameRef.current = window.requestAnimationFrame(advancePlayback);
-  }, [notify]);
+  }, []);
 
   const startTeachingTaskPlayback = useCallback((taskId) => {
     const task = teachingTasks.find((item) => item.id === taskId);
@@ -3774,6 +3758,8 @@ export default function App() {
     }
     const runtime = {
       plan,
+      task,
+      jointDefinitions: robotLoadState.movableJoints || [],
       status: 'playing',
       segmentIndex: 0,
       segmentElapsedMs: 0,
@@ -3782,6 +3768,7 @@ export default function App() {
       activeParkingPointId: null,
       reachedPoseIds: new Set(),
       speed: 1,
+      cycle: 1,
       context: {
         mapId: mapData?.mapId || mapData?.sourceHash || mapData?.name || '',
         robotId: selectedRobot?.id || selectedRobot?.relativePath || '',
@@ -3793,6 +3780,7 @@ export default function App() {
     setActiveTeachingTaskId(task.id);
     setActiveTeachingParkingPointId(plan.segments[0]?.target?.parkingPointId || null);
     setRobotControlEnabled(false);
+    setHeightRangeCollapsed(true);
     setCollapsedPanel((currentPanel) => currentPanel === '3d' ? null : currentPanel);
     focusRevisionRef.current += 1;
     setSynchronizedFocus({
@@ -3803,7 +3791,7 @@ export default function App() {
     navigateAppPage(APP_PAGE_WORKBENCH);
     teachingPlaybackFrameRef.current = window.requestAnimationFrame(advanceTeachingPlayback);
     notify(
-      `${plan.taskName} 开始播放 · ${plan.populatedParkingPointCount} 个停车点 / ${plan.poseCount} 个姿态`,
+      `${plan.taskName} 开始循环播放 · ${plan.populatedParkingPointCount} 个停车点 / ${plan.poseCount} 个姿态`,
       'info',
     );
   }, [
@@ -3836,6 +3824,7 @@ export default function App() {
     if (!runtime || runtime.status !== 'paused') return;
     runtime.status = 'playing';
     runtime.lastTimestamp = null;
+    setHeightRangeCollapsed(true);
     setTeachingPlayback(teachingPlaybackStateFromRuntime(runtime, 'playing'));
     teachingPlaybackFrameRef.current = window.requestAnimationFrame(advanceTeachingPlayback);
   }, [advanceTeachingPlayback]);
@@ -3852,8 +3841,38 @@ export default function App() {
     if (announce && wasRunning) notify('示教轨迹播放已停止，机器人保留在当前位置', 'info');
   }, [notify]);
 
+  const applyTeachingParkingPoint = useCallback(
+    (taskId, parkingPointId) => {
+      const task = teachingTasks.find((item) => item.id === taskId);
+      const parkingPoint = task?.parkingPoints?.find((item) => item.id === parkingPointId);
+      if (!task || !parkingPoint) return;
+      if (robotLoadState.status !== 'loaded' || !teachingContextMatches(task)) {
+        notify('当前地图或机器人与该停车点不一致，无法应用', 'warning');
+        return;
+      }
+      stopTeachingTaskPlayback(false);
+      setRobotControlEnabled(false);
+      setRobotPose(normalizeRobotPose(parkingPoint.mapPose));
+      setActiveTeachingTaskId(task.id);
+      setActiveTeachingParkingPointId(parkingPoint.id);
+      setTeachingCaptureState({ status: 'idle', message: '' });
+      setRobotParkingGhost(null);
+      requestSynchronizedFocus('robot', selectedRobot?.id || selectedRobot?.relativePath || 'active-robot');
+      notify(`已移动到 ${parkingPoint.name} · 可继续示教操作并记录姿态`, 'success');
+    },
+    [
+      notify,
+      requestSynchronizedFocus,
+      robotLoadState.status,
+      selectedRobot,
+      stopTeachingTaskPlayback,
+      teachingContextMatches,
+      teachingTasks,
+    ],
+  );
+
   const changeTeachingPlaybackSpeed = useCallback((requestedSpeed) => {
-    const speed = [0.5, 1, 1.5, 2].includes(Number(requestedSpeed))
+    const speed = [0.5, 1, 1.5, 2, 5].includes(Number(requestedSpeed))
       ? Number(requestedSpeed)
       : 1;
     const runtime = teachingPlaybackRuntimeRef.current;
@@ -4483,6 +4502,7 @@ export default function App() {
                 onParkingMergePlannerChange={handleParkingMergePlannerChange}
                 onCollisionProtectionChange={handleRobotCollisionProtectionChange}
                 onClearRobotParkingGhost={clearRobotParkingGhost}
+                onMoveToParkingPoint={applyTeachingParkingPoint}
                 isActive={appPage === APP_PAGE_WORKBENCH && !teachingTransferDialog && !ipadTeachingOpen}
               />
               <HeightRange
@@ -4490,13 +4510,15 @@ export default function App() {
                 value={heightRange}
                 onChange={setHeightRange}
                 disabled={!mapData?.geometry}
+                collapsed={heightRangeCollapsed}
+                onCollapsedChange={setHeightRangeCollapsed}
               />
               <TeachingPlaybackDock
+                key={teachingPlayback.taskId}
                 playback={teachingPlayback}
                 onPause={pauseTeachingTaskPlayback}
                 onResume={resumeTeachingTaskPlayback}
                 onStop={() => stopTeachingTaskPlayback()}
-                onReplay={() => startTeachingTaskPlayback(teachingPlayback.taskId)}
                 onSpeedChange={changeTeachingPlaybackSpeed}
               />
               {!mapData && (

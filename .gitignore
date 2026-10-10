@@ -1,3 +1,9 @@
+# Ignore dependencies, generated output, local runtime state, device diagnostics,
+# and exported teaching data. Keep source, dependency lockfiles, shared Xcode
+# configuration, design artwork, documented environment examples and test fixtures.
+# Scope captures and temporary workspaces by path so source assets stay visible.
+# Ignoring a path does not delete local data or untrack an existing Git file.
+
 # JavaScript dependencies and package-manager caches
 node_modules/
 .npm-cache/
@@ -80,11 +86,14 @@ test-results/
 /ipad/test-artifacts/
 /vision/test-artifacts/
 /ipad/screenshots/
+/vision/screenshots/
 # Packed device-test artifacts can contain the same local project data.
 /test-artifacts.zip
 /test-artifacts-*.zip
 /ipad/test-artifacts.zip
 /ipad/test-artifacts-*.zip
+/vision/test-artifacts.zip
+/vision/test-artifacts-*.zip
 .playwright/
 .local-browsers/
 ms-playwright/
@@ -148,6 +157,18 @@ playwright/.auth/
 /atlas-clean-build-*/
 /ipad/atlas-native-ipad-*/
 /ipad/atlas-clean-build-*/
+# Node mkdtemp appends six random characters to the iPad / Vision Pro prefix.
+/atlas-ipad-??????/
+/ipad/atlas-ipad-??????/
+/atlas-vision-??????/
+/vision/atlas-vision-??????/
+
+# Project import/export and server-result smoke-test workspaces.
+/atlas-load-modes-*/
+/atlas-project-directory-*/
+/atlas-file-picker-*/
+/atlas-portable-test-*/
+/atlas-server-result-*/
 
 # Pairing/discovery smoke-test workspaces when TMPDIR is inside the repository.
 /atlas-pairing-code-*/
@@ -266,13 +287,17 @@ robots/
 !tests/fixtures/**/*.[pP][lL][yY]
 !ipad/Tests/Fixtures/*.[pP][lL][yY]
 !ipad/Tests/Fixtures/**/*.[pP][lL][yY]
+!vision/Tests/Fixtures/*.[pP][lL][yY]
+!vision/Tests/Fixtures/**/*.[pP][lL][yY]
 
-# Local iPad model-transfer payloads; keep deliberate test fixtures trackable.
+# Local iPad / Vision Pro model-transfer payloads; keep test fixtures trackable.
 *.atls
 !tests/fixtures/*.atls
 !tests/fixtures/**/*.atls
 !ipad/Tests/Fixtures/*.atls
 !ipad/Tests/Fixtures/**/*.atls
+!vision/Tests/Fixtures/*.atls
+!vision/Tests/Fixtures/**/*.atls
 
 # Locally recovered/exported projects may contain hundreds of MB of map data
 recovered-projects/
@@ -288,6 +313,7 @@ robot-free-navigation-*.json
 *.abxteach.ndjson
 !tests/fixtures/**/*.abxteach.ndjson
 !ipad/Tests/Fixtures/**/*.abxteach.ndjson
+!vision/Tests/Fixtures/**/*.abxteach.ndjson
 /virtual-teaching-*/
 parking-merge-server-*.zip
 parking-merge-server-*/

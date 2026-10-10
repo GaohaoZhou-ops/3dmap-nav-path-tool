@@ -4,12 +4,11 @@ import { getSliceControlBounds } from '../lib/sliceRange.js';
 
 const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
 
-export default function HeightRange({ bounds, value, onChange, disabled }) {
+export default function HeightRange({ bounds, value, onChange, disabled, collapsed, onCollapsedChange }) {
   const controlsId = useId();
   const railRef = useRef(null);
   const dragPointerRef = useRef(null);
   const [dragging, setDragging] = useState(false);
-  const [collapsed, setCollapsed] = useState(false);
   const controlBounds = getSliceControlBounds(bounds);
   const {
     min,
@@ -135,7 +134,7 @@ export default function HeightRange({ bounds, value, onChange, disabled }) {
         title={collapsed
           ? `展开 Z 截面：当前 ${sliceMin.toFixed(2)} 至 ${sliceMax.toFixed(2)} m`
           : '收起 Z 截面'}
-        onClick={() => setCollapsed((current) => !current)}
+        onClick={() => onCollapsedChange(!collapsed)}
       >
         <Layers3 size={14} />
         <span>Z 截面</span>

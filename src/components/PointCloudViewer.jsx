@@ -1472,6 +1472,7 @@ export default function PointCloudViewer({
   onParkingMergePlannerChange,
   onCollisionProtectionChange,
   onClearRobotParkingGhost,
+  onMoveToParkingPoint,
   onCollisionProtectionStatus,
   isActive = true,
 }) {
@@ -6928,7 +6929,7 @@ export default function PointCloudViewer({
           )}
           {robotParkingGhostVisible && robotParkingGhostMetrics && (
             <aside
-              className={`robot-parking-ghost-readout ${collisionProtectionEnabled ? 'has-collision-readout' : ''}`}
+              className="robot-parking-ghost-readout"
               role="status"
               aria-live="polite"
               aria-label="停车点机器人虚影"
@@ -6955,6 +6956,16 @@ export default function PointCloudViewer({
               </div>
               <button
                 type="button"
+                className="robot-parking-ghost-readout__move"
+                title={`移动到 ${robotParkingGhost.parkingPointName || '当前停车点'} 的位置与朝向，保留当前关节姿态`}
+                onClick={() => onMoveToParkingPoint?.(robotParkingGhost.taskId, robotParkingGhost.parkingPointId)}
+                disabled={!onMoveToParkingPoint}
+              >
+                <MapPin size={12} /> 移动到当前停车点
+              </button>
+              <button
+                type="button"
+                className="robot-parking-ghost-readout__close"
                 aria-label="清除停车点机器人虚影"
                 title="移除停车点机器人虚影与距离连线"
                 onClick={() => onClearRobotParkingGhost?.()}

@@ -95,13 +95,23 @@ test-results/
 /vision/test-artifacts/
 /ipad/screenshots/
 /vision/screenshots/
-# Packed device-test artifacts can contain the same local project data.
+# Packed test artifacts can contain the same local project data.
 /test-artifacts.zip
 /test-artifacts-*.zip
+/tests/test-artifacts.zip
+/tests/test-artifacts-*.zip
 /ipad/test-artifacts.zip
 /ipad/test-artifacts-*.zip
 /vision/test-artifacts.zip
 /vision/test-artifacts-*.zip
+# Compressed browser reports / recordings stay local; fixture ZIPs stay visible.
+/playwright-report.zip
+/blob-report.zip
+/test-results.zip
+/test-traces.zip
+/test-videos.zip
+/tests/test-traces.zip
+/tests/test-videos.zip
 .playwright/
 .local-browsers/
 ms-playwright/

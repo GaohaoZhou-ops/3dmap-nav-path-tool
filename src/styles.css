@@ -5065,7 +5065,7 @@ input[type="number"]::-webkit-inner-spin-button {
 
 .teaching-archive-tree {
   display: grid;
-  grid-template-rows: 56px minmax(650px, auto);
+  grid-template-rows: minmax(56px, auto) minmax(650px, auto);
   min-width: 0;
   color: #b7c6c4;
   background: #071115;
@@ -5073,11 +5073,12 @@ input[type="number"]::-webkit-inner-spin-button {
 
 .teaching-tree-toolbar {
   display: grid;
-  grid-template-columns: minmax(190px, 1fr) auto auto auto;
+  grid-auto-flow: column;
+  grid-template-columns: minmax(190px, 1fr);
   align-items: center;
   gap: 7px;
   min-width: 0;
-  padding: 0 10px;
+  padding: 10px;
   border-bottom: 1px solid rgba(137, 177, 179, 0.14);
   background: #091419;
 }

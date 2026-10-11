@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
+    "test:playback": "node tests/teaching_playback_smoke.mjs",
     "test:archive": "node tests/project_archive_smoke.mjs",
     "test:directory": "node tests/project_directory_smoke.mjs",
     "test:abx": "node tests/abx_teaching_export_smoke.mjs",

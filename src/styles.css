@@ -5940,6 +5940,36 @@ input[type="number"]::-webkit-inner-spin-button {
   color: #b98582;
 }
 
+.teaching-playback-dock__controls button.teaching-playback-dock__follow[aria-checked="true"] {
+  border-color: rgba(89, 219, 232, 0.6);
+  color: var(--cyan);
+  background: rgba(89, 219, 232, 0.12);
+}
+
+.teaching-playback-dock__switch {
+  position: relative;
+  width: 19px;
+  height: 11px;
+  flex-shrink: 0;
+  border: 1px solid currentColor;
+  border-radius: 8px;
+}
+
+.teaching-playback-dock__switch::after {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: currentColor;
+  content: '';
+}
+
+.teaching-playback-dock__follow[aria-checked="true"] .teaching-playback-dock__switch::after {
+  transform: translateX(8px);
+}
+
 .teaching-playback-dock__controls label {
   padding-left: 7px;
 }

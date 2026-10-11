@@ -131,6 +131,7 @@ const createIdleTeachingPlayback = () => ({
   segmentProgress: 0,
   speed: 1,
   cycle: 0,
+  followRobot: false,
 });
 
 const teachingPlaybackStateFromRuntime = (runtime, status = runtime?.status || 'idle') => {
@@ -169,6 +170,7 @@ const teachingPlaybackStateFromRuntime = (runtime, status = runtime?.status || '
     segmentProgress,
     speed: runtime.speed,
     cycle: runtime.cycle,
+    followRobot: Boolean(runtime.followRobot),
   };
 };
 
@@ -3689,14 +3691,9 @@ export default function App() {
       crossedBoundary = true;
 
       if (runtime.segmentIndex >= runtime.plan.segments.length) {
-        // Plan from the last pose so the next lap never jumps back to the
-        // original playback position, including for continuous joints.
-        runtime.plan = buildTeachingTaskTrajectory({
-          task: runtime.task,
-          currentRobotPose: runtime.plan.finalRobotPose,
-          currentJointValues: runtime.plan.finalJointValues,
-          jointDefinitions: runtime.jointDefinitions,
-        });
+        // Each lap starts at the first recording without an extra return path.
+        setRobotPose(normalizeRobotPose(runtime.plan.initialRobotPose));
+        setRobotJointValues(normalizeRobotJointValues(runtime.plan.initialJointValues));
         runtime.segmentIndex = 0;
         runtime.cycle += 1;
         runtime.reachedPoseIds.clear();
@@ -3741,11 +3738,8 @@ export default function App() {
       return;
     }
 
-    const current = latestWorkspaceRef.current;
     const plan = buildTeachingTaskTrajectory({
       task,
-      currentRobotPose: current?.robotPose || robotPose,
-      currentJointValues: current?.robotJointValues || robotJointValues,
       jointDefinitions: robotLoadState.movableJoints || [],
     });
     if (!plan.poseCount || !plan.segments.length) {
@@ -3758,27 +3752,29 @@ export default function App() {
     }
     const runtime = {
       plan,
-      task,
-      jointDefinitions: robotLoadState.movableJoints || [],
       status: 'playing',
       segmentIndex: 0,
       segmentElapsedMs: 0,
       lastTimestamp: null,
       lastAppliedTimestamp: null,
-      activeParkingPointId: null,
+      activeParkingPointId: plan.segments[0].target.parkingPointId,
       reachedPoseIds: new Set(),
       speed: 1,
       cycle: 1,
+      followRobot: false,
       context: {
         mapId: mapData?.mapId || mapData?.sourceHash || mapData?.name || '',
         robotId: selectedRobot?.id || selectedRobot?.relativePath || '',
       },
     };
     teachingPlaybackRuntimeRef.current = runtime;
+    setRobotPose(normalizeRobotPose(plan.initialRobotPose));
+    setRobotJointValues(normalizeRobotJointValues(plan.initialJointValues));
+    markTeachingPlaybackPoseReached(runtime, plan.segments[0]);
     setTeachingPlayback(teachingPlaybackStateFromRuntime(runtime));
     setRobotParkingGhost(null);
     setActiveTeachingTaskId(task.id);
-    setActiveTeachingParkingPointId(plan.segments[0]?.target?.parkingPointId || null);
+    setActiveTeachingParkingPointId(runtime.activeParkingPointId);
     setRobotControlEnabled(false);
     setHeightRangeCollapsed(true);
     setCollapsedPanel((currentPanel) => currentPanel === '3d' ? null : currentPanel);
@@ -3799,9 +3795,7 @@ export default function App() {
     mapData,
     navigateAppPage,
     notify,
-    robotJointValues,
     robotLoadState,
-    robotPose,
     selectedRobot,
     teachingContextMatches,
     teachingTasks,
@@ -3878,6 +3872,13 @@ export default function App() {
     const runtime = teachingPlaybackRuntimeRef.current;
     if (runtime) runtime.speed = speed;
     setTeachingPlayback((current) => ({ ...current, speed }));
+  }, []);
+
+  const changeTeachingPlaybackFollowRobot = useCallback((enabled) => {
+    const runtime = teachingPlaybackRuntimeRef.current;
+    if (!runtime) return;
+    runtime.followRobot = Boolean(enabled);
+    setTeachingPlayback(teachingPlaybackStateFromRuntime(runtime));
   }, []);
 
   useEffect(() => {
@@ -4520,6 +4521,7 @@ export default function App() {
                 onResume={resumeTeachingTaskPlayback}
                 onStop={() => stopTeachingTaskPlayback()}
                 onSpeedChange={changeTeachingPlaybackSpeed}
+                onFollowRobotChange={changeTeachingPlaybackFollowRobot}
               />
               {!mapData && (
                 <button type="button" className="placeholder-load" onClick={() => navigateAppPage(APP_PAGE_HOME)}>

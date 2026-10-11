@@ -1521,6 +1521,7 @@ export default function PointCloudViewer({
   const interactionModeRef = useRef('rotate');
   const precisionPanRef = useRef(null);
   const focusAnimationRef = useRef(null);
+  const robotFollowPositionRef = useRef(null);
   const pointerInteractionRef = useRef(null);
   const viewActionsRef = useRef(null);
   const initialViewRef = useRef(initialView);
@@ -1597,6 +1598,7 @@ export default function PointCloudViewer({
   robotLoadStateRef.current = robotLoadState;
   lockedRobotJointNamesRef.current = normalizeRobotJointLocks(lockedRobotJointNames);
   const [manualResolution, setManualResolution] = useState({ mapKey: null, index: null });
+  const robotFollowEnabled = robotTrajectoryActive && Boolean(teachingPlayback?.followRobot);
 
   const visionCoveragePlaybackStatus = String(teachingPlayback?.status || 'idle');
   const visionCoveragePlaybackTaskId = String(teachingPlayback?.taskId || '');
@@ -5079,6 +5081,7 @@ export default function PointCloudViewer({
       waypointGroupRef.current = null;
       visionCoverageGroupRef.current = null;
       robotLayerRef.current = null;
+      robotFollowPositionRef.current = null;
       loadedRobotRef.current = null;
       robotParkingGhostLayerRef.current = null;
       robotParkingGhostVisualRef.current = null;
@@ -5764,7 +5767,9 @@ export default function PointCloudViewer({
     const camera = cameraRef.current;
     const canvas = controls?.domElement;
     const sphere = mapData?.geometry?.boundingSphere;
-    if (!focusRequest || !controls || !camera || !canvas || !sphere) return undefined;
+    if (!focusRequest || !controls || !camera || !canvas || !sphere || robotFollowEnabled) {
+      return undefined;
+    }
 
     const pointById = new Map(waypoints.map((point) => [point.id, point]));
     let target = null;
@@ -5874,6 +5879,45 @@ export default function PointCloudViewer({
       }
     };
   }, [focusRequest, mapData?.geometry]);
+
+  useEffect(() => {
+    const controls = controlsRef.current;
+    const camera = cameraRef.current;
+    const canvas = controls?.domElement;
+    const robot = robotLayerRef.current;
+    if (canvas) canvas.dataset.robotFollowEnabled = String(robotFollowEnabled);
+    if (!robotFollowEnabled || !isActive || !controls || !camera || !loadedRobotRef.current) {
+      robotFollowPositionRef.current = null;
+      return;
+    }
+
+    if (focusAnimationRef.current) {
+      cancelAnimationFrame(focusAnimationRef.current);
+      focusAnimationRef.current = null;
+      canvas.dataset.synchronizedFocusState = 'interrupted-by-follow';
+    }
+    const { position } = normalizeRobotPose(robotPose);
+    const nextPosition = new THREE.Vector3(position.x, position.y, position.z);
+    let movement;
+    if (robotFollowPositionRef.current) {
+      movement = nextPosition.clone().sub(robotFollowPositionRef.current);
+    } else {
+      // Center once, then track base translation. Joint motion must not make
+      // the camera sway as the robot's visual bounds change.
+      const sphere = setRobotVisualBounds(new THREE.Box3(), robot)
+        .getBoundingSphere(new THREE.Sphere());
+      camera.updateMatrixWorld(true);
+      const screenUp = new THREE.Vector3().setFromMatrixColumn(camera.matrixWorld, 1).normalize();
+      // Match robot focus framing so the bottom playback dock leaves room for
+      // the chassis instead of obscuring it.
+      movement = sphere.center.addScaledVector(screenUp, -sphere.radius * 0.28).sub(controls.target);
+      precisionPanRef.current?.clear?.();
+    }
+    robotFollowPositionRef.current = nextPosition;
+    camera.position.add(movement);
+    controls.target.add(movement);
+    controls.update();
+  }, [isActive, mapData?.geometry, robotDescriptor, robotFollowEnabled, robotLoadState?.status, robotPose]);
 
   useEffect(() => {
     const materials = [cloudMaterialRef.current, meshMaterialRef.current].filter(Boolean);

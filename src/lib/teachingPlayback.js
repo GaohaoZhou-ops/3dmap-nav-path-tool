@@ -143,8 +143,6 @@ const createTargetMeta = (task, parkingPoint, pose, parkingIndex, poseIndex, pos
 
 export function buildTeachingTaskTrajectory({
   task,
-  currentRobotPose,
-  currentJointValues,
   jointDefinitions = [],
   settings = {},
 } = {}) {
@@ -160,8 +158,13 @@ export function buildTeachingTaskTrajectory({
     (sum, parkingPoint) => sum + (parkingPoint.poses?.length || 0),
     0,
   );
-  let currentPose = normalizePose(currentRobotPose);
-  let currentJoints = normalizeJoints(currentJointValues);
+  const firstParkingPoint = parkingPoints.find((point) => point.poses?.length);
+  const firstPose = ordered(firstParkingPoint?.poses)[0];
+  // Playback begins at the first recording, independent of the live robot.
+  const initialRobotPose = normalizePose(firstPose?.mapPose || firstParkingPoint?.mapPose);
+  const initialJointValues = normalizeJoints(firstPose?.fullBodyJoints?.values);
+  let currentPose = initialRobotPose;
+  let currentJoints = initialJointValues;
   let poseOrdinal = 0;
 
   parkingPoints.forEach((parkingPoint, parkingIndex) => {
@@ -274,8 +277,8 @@ export function buildTeachingTaskTrajectory({
     poseCount,
     segments,
     totalDurationMs,
-    initialRobotPose: normalizePose(currentRobotPose),
-    initialJointValues: normalizeJoints(currentJointValues),
+    initialRobotPose,
+    initialJointValues,
     finalRobotPose: currentPose,
     finalJointValues: currentJoints,
   };

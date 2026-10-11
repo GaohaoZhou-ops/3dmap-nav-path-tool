@@ -2,6 +2,7 @@ import { useId, useState } from 'react';
 import {
   ChevronLeft,
   ChevronRight,
+  Crosshair,
   Gauge,
   Pause,
   Play,
@@ -23,6 +24,7 @@ export default function TeachingPlaybackDock({
   onResume,
   onStop,
   onSpeedChange,
+  onFollowRobotChange,
 }) {
   const [collapsed, setCollapsed] = useState(false);
   const contentId = useId();
@@ -50,6 +52,7 @@ export default function TeachingPlaybackDock({
       data-playback-total-ms={Math.round(playback.totalDurationMs || 0)}
       data-playback-speed={playback.speed || 1}
       data-playback-cycle={playback.cycle || 1}
+      data-follow-robot={Boolean(playback.followRobot)}
     >
       <div id={contentId} className="teaching-playback-dock__content" hidden={collapsed}>
         <div className="teaching-playback-dock__identity">
@@ -85,6 +88,18 @@ export default function TeachingPlaybackDock({
               <option value="5">5.0×</option>
             </select>
           </label>
+          <button
+            type="button"
+            className="teaching-playback-dock__follow"
+            role="switch"
+            aria-label="跟随机器人"
+            aria-checked={Boolean(playback.followRobot)}
+            title={playback.followRobot ? '关闭跟随，保留当前视角' : '开启跟随，画面随机器人移动'}
+            onClick={() => onFollowRobotChange(!playback.followRobot)}
+          >
+            <Crosshair size={13} /> 跟随
+            <span className="teaching-playback-dock__switch" aria-hidden="true" />
+          </button>
           <button type="button" className="is-stop" onClick={onStop} aria-label="停止示教轨迹播放">
             <Square size={11} fill="currentColor" /> 停止
           </button>

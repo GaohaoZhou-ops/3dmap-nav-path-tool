@@ -418,8 +418,8 @@ def run():
         assert moved_metrics["coordinate_frames"] == 4
         assert moved_metrics["coordinate_axes"] == 12
 
-        # Playback starts with an empty projection and reveals each captured
-        # pose only after the chassis/joints have reached its hold segment.
+        # Playback immediately restores the first recording and its projection,
+        # then reveals later captures as their poses are reached.
         page.get_by_role("button", name="打开示教数据管理页").click()
         page.locator('[data-app-page="teaching-data"]').wait_for()
         page.get_by_role(
@@ -439,40 +439,8 @@ def run():
               const dock = document.querySelector(
                 '[aria-label="示教任务轨迹播放控制"]'
               );
-              return canvas?.dataset.visionCoverageGenerationMode
-                  === 'pose-arrival-progressive'
-                && canvas?.dataset.visionCoverageState === 'waiting'
-                && Number(canvas?.dataset.visionCoverageFrameCount) === 0
-                && Number(canvas?.dataset.visionCoverageAvailableFrameCount) === 4
-                && dock?.dataset.playbackReachedPose === '0/2'
-                && dock?.dataset.playbackPhase !== 'hold';
-            }
-            """,
-            timeout=30_000,
-        )
-        waiting_metrics = coverage_metrics(canvas)
-        assert waiting_metrics["generation_mode"] == "pose-arrival-progressive"
-        assert waiting_metrics["playback_status"] == "playing"
-        assert waiting_metrics["available_frames"] == 4
-        assert waiting_metrics["reached_poses"] == 0
-        assert waiting_metrics["frames"] == 0
-        assert waiting_metrics["optical_points"] == 0
-        assert waiting_metrics["coordinate_axes"] == 0
-        assert readout.get_attribute("data-playback-reached-pose-count") == "0"
-        assert readout.get_attribute("data-available-frame-count") == "4"
-        page.screenshot(
-            path="/tmp/atlas-independent-vision-coverage-playback-waiting.png",
-            full_page=True,
-        )
-
-        page.wait_for_function(
-            """
-            () => {
-              const canvas = document.querySelector('.three-canvas');
-              const dock = document.querySelector(
-                '[aria-label="示教任务轨迹播放控制"]'
-              );
-              return dock?.dataset.playbackPhase === 'hold'
+              return dock?.dataset.playbackCycle === '1'
+                && dock?.dataset.playbackPhase === 'hold'
                 && dock?.dataset.playbackReachedPose === '1/2'
                 && Number(canvas?.dataset.visionCoverageReachedPoseCount) === 1
                 && Number(canvas?.dataset.visionCoverageFrameCount) === 2;
@@ -481,12 +449,19 @@ def run():
             timeout=60_000,
         )
         first_arrival_metrics = coverage_metrics(canvas)
+        assert first_arrival_metrics["generation_mode"] == "pose-arrival-progressive"
+        assert first_arrival_metrics["playback_status"] == "playing"
+        assert first_arrival_metrics["available_frames"] == 4
         assert first_arrival_metrics["state"] == "visible"
         assert first_arrival_metrics["reached_poses"] == 1
         assert first_arrival_metrics["frames"] == 2
         assert first_arrival_metrics["optical_points"] == 2
         assert first_arrival_metrics["coordinate_frames"] == 2
         assert first_arrival_metrics["coordinate_axes"] == 6
+        assert readout.get_attribute("data-playback-reached-pose-count") == "1"
+        assert readout.get_attribute("data-available-frame-count") == "4"
+        for axis, expected in zip(("x", "y", "z"), robot_position_before_move):
+            assert abs(float(canvas.get_attribute(f"data-robot-{axis}")) - expected) < 0.001
         page.screenshot(
             path="/tmp/atlas-independent-vision-coverage-playback-first-arrival.png",
             full_page=True,
@@ -521,8 +496,7 @@ def run():
             captured_optical_pose_signature
         )
         page.get_by_role("button", name="继续示教轨迹播放", exact=True).click()
-        # These two captures share a robot pose, so the next lap immediately
-        # reaches its first hold and must show only that pose's two frames.
+        # The next lap restores its first pose and shows only its two frames.
         page.wait_for_function(
             """() => {
               const canvas = document.querySelector('.three-canvas');
@@ -586,7 +560,6 @@ def run():
         print("surface_opacity_difference=", surface_opacity_difference)
         print("zivid_opacity_difference=", zivid_opacity_difference)
         print("moved_coverage_metrics=", moved_metrics)
-        print("playback_waiting_metrics=", waiting_metrics)
         print("playback_first_arrival_metrics=", first_arrival_metrics)
         print("playback_full_lap_metrics=", full_lap_metrics)
         print("surface_tint_points=", first_surface_tint_count)

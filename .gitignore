@@ -3,6 +3,7 @@
 # configuration, design artwork, documented environment examples and test fixtures.
 # Scope captures and temporary workspaces by path so source assets stay visible.
 # Ignoring a path does not delete local data or untrack an existing Git file.
+# Inspect a rule with: git check-ignore -v --no-index -- path/to/file
 
 # JavaScript dependencies and package-manager caches
 node_modules/
@@ -83,6 +84,13 @@ test-results/
 /test-artifacts/
 /screenshots/
 /test-downloads/
+/test-videos/
+/test-traces/
+/tests/test-artifacts/
+/tests/screenshots/
+/tests/test-downloads/
+/tests/test-videos/
+/tests/test-traces/
 /ipad/test-artifacts/
 /vision/test-artifacts/
 /ipad/screenshots/
@@ -114,7 +122,14 @@ playwright/.auth/
 # UI smoke-test captures; scope device exports so source artwork stays visible.
 /atlas-*.png
 /transfer-*.png
-/atlas-ipad-*.mp4
+# Browser recordings / traces saved beside smoke-test screenshots.
+# Keep design media and fixtures outside these root-level filename patterns.
+/atlas-*.mp4
+/atlas-*.webm
+/transfer-*.mp4
+/transfer-*.webm
+/atlas-*-trace.zip
+/transfer-*-trace.zip
 /atlas-ipad-*.mov
 /atlas-ipad-*.heic
 /ipad/atlas-ipad-*.png
@@ -169,6 +184,8 @@ playwright/.auth/
 /atlas-file-picker-*/
 /atlas-portable-test-*/
 /atlas-server-result-*/
+# Download copied by tests/parking_merge_server_smoke.py.
+/atlas-parking-merge-server-job.zip
 
 # Pairing/discovery smoke-test workspaces when TMPDIR is inside the repository.
 /atlas-pairing-code-*/

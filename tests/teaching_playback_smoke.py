@@ -24,6 +24,32 @@ def scene_pose(page):
     }
 
 
+def scene_view(page):
+    return page.locator(".three-canvas").evaluate(
+        """canvas => {
+          const data = canvas.dataset;
+          const vector = prefix => ['X', 'Y', 'Z'].map(axis => Number(data[prefix + axis]));
+          return {
+            camera: vector('camera'),
+            target: vector('target'),
+            robot: vector('robot'),
+            up: vector('cameraUp'),
+            zoom: Number(data.opticalZoom),
+          };
+        }"""
+    )
+
+
+def assert_following(before, after):
+    # TrackballControls reports camera changes only above a 1 mm threshold.
+    for key in ("camera", "target"):
+        for axis in range(3):
+            expected = before[key][axis] + after["robot"][axis] - before["robot"][axis]
+            assert abs(after[key][axis] - expected) < 0.0015, (key, before, after)
+    assert after["up"] == before["up"]
+    assert after["zoom"] == before["zoom"]
+
+
 def run():
     errors = []
     with sync_playwright() as playwright:
@@ -130,9 +156,11 @@ def run():
                 ...(project.virtualTeaching || {}),
                 tasks: [task],
               };
-              // Start away from the final pose to detect any jump back to the
-              // original starting state at a loop boundary.
+              // The live robot differs from the first recording in both
+              // chassis position/orientation and joints.
               project.robot.origin = pose(0.3);
+              project.robot.origin.position.y = -0.2;
+              project.robot.origin.rpy.yaw = 25;
               project.robot.joints = { ...baseJoints, right_J1: -10 };
               record.config.ui.activeTeachingTaskId = task.id;
               record.config.ui.activeTeachingParkingPointId = 'playback-stop-2';
@@ -171,6 +199,27 @@ def run():
         assert play_task.is_enabled()
         play_task.click()
 
+        start_snapshot = page.wait_for_function(
+            """() => {
+              const dock = document.querySelector('.teaching-playback-dock');
+              const canvas = document.querySelector('.three-canvas');
+              if (!dock || !canvas) return false;
+              return {
+                ...dock.dataset,
+                pose: ['X', 'Y', 'Z', 'Roll', 'Pitch', 'Yaw'].map(
+                  axis => Number(canvas.dataset[`robot${axis}`]),
+                ),
+                joint: JSON.parse(canvas.dataset.robotJointValues).right_J1,
+              };
+            }"""
+        ).json_value()
+        assert start_snapshot["playbackCycle"] == "1"
+        assert start_snapshot["playbackPhase"] == "hold"
+        assert start_snapshot["playbackPose"] == "1/3"
+        assert start_snapshot["playbackReachedPose"] == "1/3"
+        assert all(abs(value) < 0.001 for value in start_snapshot["pose"])
+        assert abs(start_snapshot["joint"]) < 0.001
+
         page.locator('[data-app-page="teaching-data"]').wait_for(state="detached")
         assert page.url.rstrip("/") == f"{BASE_URL.rstrip('/')}/workbench"
         dock = page.get_by_label("示教任务轨迹播放控制", exact=True)
@@ -179,6 +228,8 @@ def run():
         assert dock.get_attribute("data-playback-task")
         assert dock.get_attribute("data-playback-pose").endswith("/3")
         assert dock.get_attribute("data-playback-cycle") == "1"
+        follow_switch = page.get_by_role("switch", name="跟随机器人", exact=True)
+        assert follow_switch.get_attribute("aria-checked") == "false"
         assert page.get_by_role("button", name="展开 Z 截面").get_attribute("aria-expanded") == "false"
         assert [height_range.get_attribute(f"data-slice-{edge}") for edge in ("min", "max")] == initial_slice
         assert page.locator(".point-cloud-view").get_attribute(
@@ -214,7 +265,7 @@ def run():
               if (dock?.dataset.playbackPhase !== 'joints' || !canvas) return false;
               const ordinal = Number((dock.dataset.playbackPose || '').split('/')[0]);
               const value = Number(JSON.parse(canvas.dataset.robotJointValues || '{}').right_J1);
-              const ranges = { 1: [-10, 0], 2: [0, 30], 3: [-20, 30] };
+              const ranges = { 2: [0, 30], 3: [-20, 30] };
               const range = ranges[ordinal];
               return range && value > range[0] + 0.02 && value < range[1] - 0.02;
             }
@@ -232,6 +283,23 @@ def run():
         page.wait_for_timeout(450)
         assert abs(scene_joint(page, "right_J1") - paused_joint) < 0.0001
         assert abs(scene_pose(page)["x"] - paused_pose["x"]) < 0.0001
+
+        # Following is an accessible boolean switch. Enabling it recenters the
+        # robot without changing the viewing angle or zoom.
+        before_follow = scene_view(page)
+        follow_switch.press("Space")
+        page.wait_for_function(
+            "document.querySelector('.three-canvas')?.dataset.robotFollowEnabled === 'true'"
+        )
+        assert follow_switch.get_attribute("aria-checked") == "true"
+        followed_view = scene_view(page)
+        for axis in range(3):
+            old_offset = before_follow["camera"][axis] - before_follow["target"][axis]
+            new_offset = followed_view["camera"][axis] - followed_view["target"][axis]
+            assert abs(new_offset - old_offset) < 0.0015, (before_follow, followed_view)
+        assert followed_view["zoom"] == before_follow["zoom"]
+        page.wait_for_timeout(200)
+        assert scene_view(page) == followed_view
 
         # Manually opening the slice stays possible, and both controls fit even
         # at the app's minimum supported viewport width.
@@ -253,6 +321,9 @@ def run():
                     box = button.bounding_box()
                     assert box["x"] >= dock_box["x"]
                     assert box["x"] + box["width"] <= dock_box["x"] + dock_box["width"]
+            follow_box = follow_switch.bounding_box()
+            assert follow_box["x"] >= dock_box["x"]
+            assert follow_box["x"] + follow_box["width"] <= dock_box["x"] + dock_box["width"]
             page.screenshot(path=f"/tmp/atlas-teaching-playback-width-{width}.png", full_page=True)
         page.set_viewport_size({"width": 1440, "height": 900})
         page.get_by_role("combobox", name="示教轨迹播放速度").select_option("2")
@@ -279,6 +350,7 @@ def run():
         final_pose = scene_pose(page)
         assert abs(final_pose["x"] - second_stop_pose["x"]) < 0.001
         assert abs(final_pose["y"] - second_stop_pose["y"]) < 0.001
+        assert_following(followed_view, scene_view(page))
         loop_boundary = page.wait_for_function(
             """() => {
               const dock = document.querySelector('.teaching-playback-dock');
@@ -295,23 +367,46 @@ def run():
         assert loop_boundary["playbackStatus"] == "playing"
         assert loop_boundary["playbackCycle"] == "2"
         assert loop_boundary["playbackSpeed"] == "2"
-        assert loop_boundary["playbackReachedPose"] == "0/3"
-        assert abs(loop_boundary["x"] - second_stop_pose["x"]) < 0.01
-        assert abs(loop_boundary["joint"] + 20) < 0.001
+        assert loop_boundary["playbackReachedPose"] == "1/3"
+        assert loop_boundary["playbackPhase"] == "hold"
+        assert loop_boundary["playbackPose"] == "1/3"
+        assert loop_boundary["playbackTotalMs"] == start_snapshot["playbackTotalMs"]
+        assert abs(loop_boundary["x"]) < 0.001
+        assert abs(loop_boundary["joint"]) < 0.001
+        assert loop_boundary["followRobot"] == "true"
+        assert_following(followed_view, scene_view(page))
         assert page.locator(".point-cloud-view").get_attribute("data-robot-trajectory-active") == "true"
         assert viewer_tool(page, name="定位机器人模型").is_disabled()
 
-        # The next cycle reaches the first pose again and also loops while hidden.
+        # Turning following off freezes the camera while the robot keeps moving.
+        follow_switch.press("Space")
+        page.wait_for_function(
+            "document.querySelector('.three-canvas')?.dataset.robotFollowEnabled === 'false'"
+        )
+        assert follow_switch.get_attribute("aria-checked") == "false"
+        fixed_view = scene_view(page)
         page.wait_for_function(
             """() => {
-              const data = document.querySelector('.teaching-playback-dock')?.dataset;
-              return data?.playbackCycle === '2' && data.playbackPose === '1/3'
-                && data.playbackPhase === 'hold';
+              const dock = document.querySelector('.teaching-playback-dock');
+              const canvas = document.querySelector('.three-canvas');
+              return dock?.dataset.playbackCycle === '2'
+                && dock.dataset.playbackPhase === 'chassis'
+                && Number(canvas?.dataset.robotX) > 0.025;
             }""",
             timeout=30_000,
         )
-        assert abs(scene_joint(page, "right_J1")) < 0.001
-        assert abs(scene_pose(page)["x"]) < 0.001
+        moved_view = scene_view(page)
+        assert moved_view["robot"][0] > fixed_view["robot"][0] + 0.02
+        for key in ("camera", "target", "up", "zoom"):
+            assert moved_view[key] == fixed_view[key], (key, fixed_view, moved_view)
+
+        # Following can be re-enabled mid-motion and survives a collapsed dock
+        # and the jump back to the first recording on the next cycle.
+        follow_switch.evaluate("element => element.click()")
+        page.wait_for_function(
+            "document.querySelector('.three-canvas')?.dataset.robotFollowEnabled === 'true'"
+        )
+        resumed_follow_view = scene_view(page)
         page.get_by_role("button", name="向左收起播放控制条").click()
         page.wait_for_function(
             "Number(document.querySelector('.teaching-playback-dock')?.dataset.playbackCycle) >= 3",
@@ -319,7 +414,10 @@ def run():
         )
         assert dock.get_attribute("data-collapsed") == "true"
         assert dock.get_attribute("data-playback-status") == "playing"
+        assert dock.get_attribute("data-follow-robot") == "true"
+        assert_following(resumed_follow_view, scene_view(page))
         page.get_by_role("button", name="展开播放控制条").click()
+        assert follow_switch.get_attribute("aria-checked") == "true"
         page.get_by_role("button", name="停止示教轨迹播放").click()
         dock.wait_for(state="detached")
         assert page.locator(".point-cloud-view").get_attribute(
@@ -327,14 +425,18 @@ def run():
         ) == "false"
         stopped_pose = scene_pose(page)
         stopped_joint = scene_joint(page, "right_J1")
+        stopped_view = scene_view(page)
+        assert page.locator(".three-canvas").get_attribute("data-robot-follow-enabled") == "false"
         page.wait_for_timeout(700)
         assert scene_pose(page) == stopped_pose
         assert scene_joint(page, "right_J1") == stopped_joint
+        assert scene_view(page) == stopped_view
         assert viewer_tool(page, name="定位机器人模型").is_enabled()
 
         page.screenshot(path="/tmp/atlas-teaching-playback.png", full_page=True)
         assert not errors, errors
         print("pose_count=3")
+        print("start_snapshot=", start_snapshot)
         print("paused_joint=", round(paused_joint, 4))
         print("completed_joint=", round(completed_joint, 4))
         print("loop_boundary=", loop_boundary)

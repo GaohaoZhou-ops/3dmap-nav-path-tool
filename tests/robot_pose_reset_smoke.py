@@ -52,13 +52,17 @@ def run():
         assert reset_button.is_enabled()
         assert int(reset_button.get_attribute("data-resettable-joint-count")) > 0
 
-        slice_control_box = page.locator(".height-range").bounding_box()
+        page.get_by_role("button", name="展开 Z 截面").click()
+        slice_control_box = page.get_by_role("button", name="收起 Z 截面").bounding_box()
+        slice_popup_box = page.get_by_role("dialog", name="3D Z 截面").bounding_box()
         slice_rail_box = page.locator(".height-range__rail").bounding_box()
-        toolbar_box = page.get_by_role("button", name="视图工具", exact=True).bounding_box()
-        assert slice_control_box and slice_rail_box and toolbar_box
-        assert slice_control_box["height"] <= 227
+        display_box = page.get_by_role("button", name="显示设置", exact=True).bounding_box()
+        assert slice_control_box and slice_popup_box and slice_rail_box and display_box
+        assert slice_control_box["height"] == display_box["height"]
+        assert abs(slice_control_box["y"] - display_box["y"]) <= 1
+        assert slice_control_box["x"] >= display_box["x"] + display_box["width"]
+        assert slice_popup_box["y"] >= slice_control_box["y"] + slice_control_box["height"]
         assert slice_rail_box["height"] <= 110
-        assert slice_control_box["y"] >= toolbar_box["y"] + toolbar_box["height"]
 
         initial_pose = canvas_pose(canvas)
         page.get_by_role("button", name="打开全关节浮动窗口").click()

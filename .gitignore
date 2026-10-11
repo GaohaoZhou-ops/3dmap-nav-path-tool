@@ -104,14 +104,24 @@ test-results/
 /ipad/test-artifacts-*.zip
 /vision/test-artifacts.zip
 /vision/test-artifacts-*.zip
-# Compressed browser reports / recordings stay local; fixture ZIPs stay visible.
+# ZIP copies of the test-output directories above stay local.
+# Use explicit output paths so fixture archives and design media stay visible.
 /playwright-report.zip
 /blob-report.zip
 /test-results.zip
+/screenshots.zip
+/test-downloads.zip
 /test-traces.zip
 /test-videos.zip
+/tests/playwright-report.zip
+/tests/blob-report.zip
+/tests/test-results.zip
+/tests/screenshots.zip
+/tests/test-downloads.zip
 /tests/test-traces.zip
 /tests/test-videos.zip
+/ipad/screenshots.zip
+/vision/screenshots.zip
 .playwright/
 .local-browsers/
 ms-playwright/
@@ -308,22 +318,17 @@ Desktop.ini
 robots/
 
 # Point-cloud assets are ignored by default; keep compact repository fixtures
+# A /**/ exception matches files both directly in a fixture folder and below it.
 *.[pP][lL][yY]
 !maps/xian_map.ply
-!tests/fixtures/*.[pP][lL][yY]
 !tests/fixtures/**/*.[pP][lL][yY]
-!ipad/Tests/Fixtures/*.[pP][lL][yY]
 !ipad/Tests/Fixtures/**/*.[pP][lL][yY]
-!vision/Tests/Fixtures/*.[pP][lL][yY]
 !vision/Tests/Fixtures/**/*.[pP][lL][yY]
 
 # Local iPad / Vision Pro model-transfer payloads; keep test fixtures trackable.
 *.atls
-!tests/fixtures/*.atls
 !tests/fixtures/**/*.atls
-!ipad/Tests/Fixtures/*.atls
 !ipad/Tests/Fixtures/**/*.atls
-!vision/Tests/Fixtures/*.atls
 !vision/Tests/Fixtures/**/*.atls
 
 # Locally recovered/exported projects may contain hundreds of MB of map data

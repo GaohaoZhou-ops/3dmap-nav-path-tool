@@ -42,7 +42,7 @@ def run():
 
         page.goto(f"{BASE_URL.rstrip('/')}/workbench", wait_until="networkidle")
         page.locator('[data-session-state="ready"]').wait_for()
-        page.get_by_role("tab", name="虚拟示教与相机").click()
+        page.get_by_role("tab", name="示教").click()
 
         floating_window = page.get_by_label("全关节控制浮动窗口", exact=True)
         assert floating_window.count() == 0
@@ -93,10 +93,10 @@ def run():
         panel = page.get_by_label("机器人全关节控制", exact=True)
         assert panel.is_visible()
 
-        page.get_by_role("tab", name="工程配置").click()
+        page.get_by_role("tab", name="路径与导航").click()
         assert floating_window.is_visible()
         assert panel.is_visible()
-        page.get_by_role("tab", name="虚拟示教与相机").click()
+        page.get_by_role("tab", name="示教").click()
 
         page.locator('input[type="file"][accept=".ply"]').set_input_files(
             str(map_file)
@@ -129,6 +129,7 @@ def run():
         page.wait_for_function(
             "document.querySelector('[aria-label=\"虚拟示教\"]')?.dataset.teachingTaskCount === '1'"
         )
+        page.get_by_role("tab", name="相机", exact=True).click()
         zivid_panel = page.get_by_label("Zivid 2 M70 相机视图", exact=True)
         assert zivid_panel.is_visible()
         assert page.get_by_label("相机视角反算示教", exact=True).count() == 0

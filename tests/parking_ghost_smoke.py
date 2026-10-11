@@ -55,7 +55,7 @@ def run():
             timeout=180_000,
         )
 
-        page.get_by_role("tab", name="虚拟示教与相机").click()
+        page.get_by_role("tab", name="示教").click()
         page.get_by_role("button", name="新建示教任务", exact=True).click()
         dialog = page.get_by_role("dialog", name="新建示教任务")
         dialog.get_by_role("button", name="添加当前位置为停车点").click()

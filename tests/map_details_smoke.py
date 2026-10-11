@@ -48,7 +48,7 @@ def run():
 
         page.goto(f"{BASE_URL.rstrip('/')}/workbench", wait_until="networkidle")
         page.locator('[data-session-state="ready"]').wait_for()
-        details_button = page.get_by_role("button", name="查看地图详细信息")
+        details_button = page.get_by_role("button", name="查看地图与工程配置")
         assert details_button.is_disabled()
 
         page.locator('input[type="file"][accept=".ply"]').set_input_files(str(MAP_FIXTURE))
@@ -60,11 +60,11 @@ def run():
         assert heading_buttons.nth(0).get_attribute("aria-label") == "折叠3D窗口"
         navigation_buttons = page.locator(".topbar-actions > button")
         assert navigation_buttons.nth(0).get_attribute("aria-label") == "返回主页面"
-        assert navigation_buttons.nth(1).get_attribute("aria-label") == "查看地图详细信息"
+        assert navigation_buttons.nth(1).get_attribute("aria-label") == "查看地图与工程配置"
         page.screenshot(path="/tmp/atlas-map-details-trigger.png", full_page=True)
 
         details_button.click()
-        dialog = page.get_by_role("dialog", name="地图详细信息")
+        dialog = page.get_by_role("dialog", name="地图与工程配置")
         dialog.wait_for()
         assert dialog.get_attribute("data-map-name") == MAP_FIXTURE.name
         assert int(float(dialog.get_attribute("data-map-byte-length"))) == MAP_FIXTURE.stat().st_size
@@ -75,12 +75,36 @@ def run():
         assert modified_at
         assert dialog.get_by_text("本地文件选择器", exact=True).is_visible()
         assert dialog.get_by_text("PLY 实时解析", exact=True).is_visible()
+        project = dialog.locator(".map-details-project")
+        assert project.get_by_text("工程配置", exact=True).is_visible()
+        assert project.get_by_text("完整地图", exact=True).is_visible()
+        assert project.get_by_text("MAP", exact=True).is_visible()
+        assert project.locator(".robot-config-row").inner_text().endswith("尚未加载")
+        assert project.get_by_text("截面下限", exact=True).is_visible()
+        assert project.get_by_text("截面上限", exact=True).is_visible()
+        assert project.get_by_text("截面跨度", exact=True).is_visible()
+        assert page.get_by_role("tab", name="工程配置").count() == 0
         assert dialog.get_by_role("table", name="XYZ坐标范围").is_visible()
         assert_axis(dialog, "x", -1.4, 4.7, 6.1)
         assert_axis(dialog, "y", -1.5, 2.0, 3.5)
         assert_axis(dialog, "z", 0.0, 4.4, 4.4)
         assert_original_download(page, dialog)
         dialog.screenshot(path="/tmp/atlas-map-details.png")
+
+        for width, height in [(1600, 900), (1024, 768), (680, 720)]:
+            page.set_viewport_size({"width": width, "height": height})
+            box = dialog.locator(".map-details-dialog").bounding_box()
+            assert 0 <= box["x"] and box["x"] + box["width"] <= width
+            assert 0 <= box["y"] and box["y"] + box["height"] <= height
+            assert dialog.locator(".map-details-dialog__body").evaluate(
+                "node => node.scrollWidth <= node.clientWidth"
+            )
+            dialog.get_by_role("table", name="XYZ坐标范围").scroll_into_view_if_needed()
+            dialog.get_by_role("button", name="下载原始文件", exact=True).scroll_into_view_if_needed()
+            assert project.locator("dl").evaluate(
+                "node => getComputedStyle(node).gridTemplateColumns.split(' ').length"
+            ) == (1 if width <= 720 else 2)
+        page.set_viewport_size({"width": 1440, "height": 900})
 
         page.keyboard.press("Escape")
         dialog.wait_for(state="detached")
@@ -90,15 +114,15 @@ def run():
         page.locator('[data-session-state="ready"]').wait_for()
         page.locator(".loading-curtain").wait_for(state="hidden")
         assert page.locator(".three-canvas").get_attribute("data-geometry-source") == "session-cache"
-        page.get_by_role("button", name="查看地图详细信息").click()
-        restored_dialog = page.get_by_role("dialog", name="地图详细信息")
+        page.get_by_role("button", name="查看地图与工程配置").click()
+        restored_dialog = page.get_by_role("dialog", name="地图与工程配置")
         restored_dialog.wait_for()
         assert int(float(restored_dialog.get_attribute("data-map-byte-length"))) == MAP_FIXTURE.stat().st_size
         assert restored_dialog.get_attribute("data-map-modified-at") == modified_at
         assert restored_dialog.get_attribute("data-map-source-kind") == "local-file"
         assert restored_dialog.get_by_text("会话几何缓存直载", exact=True).is_visible()
         assert_original_download(page, restored_dialog)
-        restored_dialog.get_by_role("button", name="关闭地图详细信息").click()
+        restored_dialog.get_by_role("button", name="关闭地图与工程配置").click()
         restored_dialog.wait_for(state="detached")
 
         # Older geometry-only caches must never offer a reconstructed file as the original.

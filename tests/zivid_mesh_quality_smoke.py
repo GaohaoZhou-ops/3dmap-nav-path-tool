@@ -42,7 +42,7 @@ def run():
             "document.querySelector('.three-canvas')?.dataset.robotModelState === 'loaded'",
             timeout=180_000,
         )
-        page.get_by_role("tab", name="虚拟示教与相机").click()
+        page.get_by_role("tab", name="相机").click()
         panel = page.get_by_label("Zivid 2 M70 相机视图", exact=True)
         panel.scroll_into_view_if_needed()
         page.wait_for_function(

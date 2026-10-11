@@ -3,10 +3,10 @@ import {
   ArrowLeft,
   ArrowRight,
   Bot,
+  Camera,
   CheckCircle2,
   ChevronRight,
   CircleGauge,
-  Compass,
   MoveHorizontal,
   PanelRightClose,
   PanelRightOpen,
@@ -20,7 +20,6 @@ import {
   TriangleAlert,
 } from 'lucide-react';
 import { calculatePathDistances } from '../lib/pathMetrics.js';
-import { resolveMeshRenderQuality } from '../lib/mapGeometry.js';
 import FloatingRobotJointPanel from './FloatingRobotJointPanel.jsx';
 import VirtualTeachingPanel from './VirtualTeachingPanel.jsx';
 import ZividCameraPanel from './ZividCameraPanel.jsx';
@@ -67,7 +66,6 @@ const statusMeta = {
 export default function Inspector({
   mapData,
   teachingSpaceMode = 'map',
-  heightRange,
   waypoints,
   edges,
   selectedWaypointId,
@@ -78,8 +76,6 @@ export default function Inspector({
   robotPose,
   robotJointValues,
   lockedRobotJointNames = [],
-  robotControlEnabled,
-  robotHeightLocked = false,
   meshRenderQuality = 'auto',
   onMeshRenderQualityChange,
   spaceMouseInputRef,
@@ -120,14 +116,13 @@ export default function Inspector({
   onCollapsedChange,
   isWorkbenchActive = true,
 }) {
-  const [activePage, setActivePage] = useState('project');
+  const [activePage, setActivePage] = useState('teaching');
   const [activeTeachingCameraSide, setActiveTeachingCameraSide] = useState('left');
   const [jointWindowOpen, setJointWindowOpen] = useState(false);
   const scrollRef = useRef(null);
   const workbenchActivityRef = useRef(isWorkbenchActive);
   const selectedWaypoint = waypoints.find((point) => point.id === selectedWaypointId);
   const selectedEdge = edges.find((edge) => edge.id === selectedEdgeId);
-  const meshQualityPlan = resolveMeshRenderQuality(meshRenderQuality, mapData?.faceCount);
   const isIndependentTeachingSpace = teachingSpaceMode === 'independent';
   const coordinateFrameLabel = isIndependentTeachingSpace ? 'VIRTUAL_ORIGIN' : 'MAP';
   const pointById = useMemo(() => new Map(waypoints.map((point) => [point.id, point])), [waypoints]);
@@ -168,9 +163,7 @@ export default function Inspector({
   useEffect(() => {
     const resumed = isWorkbenchActive && !workbenchActivityRef.current;
     workbenchActivityRef.current = isWorkbenchActive;
-    if (!isWorkbenchActive) {
-      setActivePage('project');
-    } else if (resumed) {
+    if (resumed) {
       setActivePage('teaching');
     }
   }, [isWorkbenchActive]);
@@ -219,27 +212,24 @@ export default function Inspector({
       icon: Route,
     },
     {
-      id: 'project',
+      id: 'teaching',
       index: '02',
-      label: '工程配置',
-      compactLabel: '工程配置',
-      summary: mapData?.bounds
-        ? isIndependentTeachingSpace ? 'LOCAL · ON' : 'MAP · ON'
-        : 'NO SPACE',
-      icon: Compass,
+      label: '示教',
+      compactLabel: '示教',
+      summary: `${teachingTasks.length} TASKS`,
+      icon: Bot,
     },
     {
-      id: 'teaching',
+      id: 'camera',
       index: '03',
-      label: '虚拟示教与相机',
-      compactLabel: '示教 / 相机',
-      summary: `${teachingTasks.length}T · ${robotLoadState?.zividCount || 0}C`,
-      icon: Bot,
+      label: '相机',
+      compactLabel: '相机',
+      summary: `${robotLoadState?.zividCount || 0} CAMERAS`,
+      icon: Camera,
     },
   ];
   const activePageMeta = inspectorPages.find((page) => page.id === activePage)
     || inspectorPages[0];
-  const ActivePageIcon = activePageMeta.icon;
 
   useEffect(() => {
     if (selectedWaypointId || selectedEdgeId) setActivePage('navigation');
@@ -302,7 +292,6 @@ export default function Inspector({
             <SlidersHorizontal size={12} />
             <span>关节</span>
           </button>
-          <div className="graph-count"><ActivePageIcon size={14} /> {activePageMeta.summary}</div>
         </div>
       </div>
 
@@ -654,75 +643,7 @@ export default function Inspector({
           </div>
         )}
 
-        {activePage === 'project' && (
-          <div
-            className="inspector-page inspector-page--project"
-            role="tabpanel"
-            id="inspector-page-project"
-            aria-labelledby="inspector-tab-project"
-          >
-            <section className="project-overview">
-              <div className="section-title"><Compass size={14} /><span>工程配置</span></div>
-              <dl className="config-list">
-                <div>
-                  <dt>示教环境</dt>
-                  <dd>{isIndependentTeachingSpace ? '独立示教空间' : '完整地图'}</dd>
-                </div>
-                <div><dt>{isIndependentTeachingSpace ? '空间点云' : '地图文件'}</dt><dd title={mapData?.name}>{mapData?.name || '尚未加载'}</dd></div>
-                <div><dt>点云数量</dt><dd>{mapData?.pointCount ? mapData.pointCount.toLocaleString('zh-CN') : '—'}</dd></div>
-                <div><dt>网格三角面</dt><dd>{mapData?.faceCount ? mapData.faceCount.toLocaleString('zh-CN') : '—'}</dd></div>
-                <div>
-                  <dt>网格质量</dt>
-                  <dd>{mapData?.faceCount ? `${meshQualityPlan.requestedLabel} · ${meshQualityPlan.renderedFaceCount.toLocaleString('zh-CN')} 面` : '—'}</dd>
-                </div>
-                <div className={robot ? `robot-config-row is-${robotLoadState?.status || 'pending'}` : ''}>
-                  <dt><Bot size={11} />机器人模型</dt>
-                  <dd title={robot?.relativePath}>
-                    {robot
-                      ? `${robot.name} · ${robotLoadState?.status === 'loaded' ? '已加载' : robotLoadState?.status === 'error' ? '异常' : robotLoadState?.status === 'pending' ? '等待地图' : '装配中'}`
-                      : '尚未加载'}
-                  </dd>
-                </div>
-                {robot && (
-                  <div
-                    className="robot-pose-row"
-                    data-robot-x={robotPose?.position?.x ?? 0}
-                    data-robot-y={robotPose?.position?.y ?? 0}
-                    data-robot-z={robotPose?.position?.z ?? 0}
-                    data-robot-yaw={robotPose?.rpy?.yaw ?? 0}
-                  >
-                    <dt>当前位姿</dt>
-                    <dd>
-                      X {(robotPose?.position?.x ?? 0).toFixed(2)} / Y {(robotPose?.position?.y ?? 0).toFixed(2)} / Z {(robotPose?.position?.z ?? 0).toFixed(2)} · YAW {(robotPose?.rpy?.yaw ?? 0).toFixed(1)}°
-                    </dd>
-                  </div>
-                )}
-                {robot && (
-                  <div className={`robot-drive-row ${robotControlEnabled ? 'is-active' : ''} ${robotHeightLocked ? 'is-height-locked' : ''}`}>
-                    <dt>麦轮控制</dt>
-                    <dd>{robotControlEnabled
-                      ? robotHeightLocked
-                        ? '键盘已接管 · Z 高度已锁'
-                        : '键盘已接管 · WASD / 方向键'
-                      : robotHeightLocked
-                        ? '待机 · Z 高度已锁'
-                        : '待机 · 点击 3D“机器人”'}</dd>
-                  </div>
-                )}
-                {robotLoadState?.status === 'loaded' && robotLoadState.zividCount > 0 && (
-                  <div><dt>末端相机</dt><dd>{robotLoadState.zividCount} × Zivid · {robotLoadState.opticalFrameCount || 0} optical frames</dd></div>
-                )}
-                <div><dt>坐标系</dt><dd>{coordinateFrameLabel}</dd></div>
-                <div><dt>投影平面</dt><dd>XY / Z 轴切片</dd></div>
-                <div><dt>截面下限</dt><dd>{heightRange[0].toFixed(2)} m</dd></div>
-                <div><dt>截面上限</dt><dd>{heightRange[1].toFixed(2)} m</dd></div>
-                <div><dt>截面跨度</dt><dd>{Math.max(0, heightRange[1] - heightRange[0]).toFixed(2)} m</dd></div>
-              </dl>
-            </section>
-          </div>
-        )}
-
-        {activePage === 'teaching' && (
+        {isWorkbenchActive && activePage === 'teaching' && (
           <div
             className="inspector-page inspector-page--teaching"
             role="tabpanel"
@@ -748,13 +669,24 @@ export default function Inspector({
               onSelectParkingPoint={onSelectTeachingParkingPoint}
               onCapturePoint={onCaptureTeachingPoint}
             />
+          </div>
+        )}
 
+        {isWorkbenchActive && (
+          <div
+            className="inspector-page inspector-page--camera"
+            role="tabpanel"
+            id="inspector-page-camera"
+            aria-labelledby="inspector-tab-camera"
+            hidden={activePage !== 'camera'}
+          >
             <div
               className="camera-teaching-workspace is-active"
               data-camera-controls-location="adjacent-to-viewport"
               data-camera-inverse-activation="automatic"
             >
               <ZividCameraPanel
+                active={activePage === 'camera' && !collapsed}
                 mapData={mapData}
                 robot={robot}
                 robotLoadState={robotLoadState}
@@ -774,7 +706,6 @@ export default function Inspector({
                 onCaptureProviderChange={onZividCaptureProviderChange}
               />
             </div>
-
           </div>
         )}
       </div>

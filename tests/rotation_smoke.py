@@ -281,6 +281,7 @@ def run():
 
         # Numeric/text editing must retain normal keyboard ownership and must
         # never steer the 3D camera in the background.
+        page.get_by_role("button", name="展开 Z 截面").click()
         height_input = page.get_by_label("截面中心高度数值")
         height_input.focus()
         edit_target_before = {
@@ -668,6 +669,7 @@ def run():
         # smaller than float32 GPU matrix precision, but the old fallback did
         # not activate until 32x. Enter that exact transition range and verify
         # that wheel interaction also takes keyboard focus back from an input.
+        page.get_by_role("button", name="展开 Z 截面").click()
         height_input.focus()
         assert page.evaluate(
             "document.activeElement === document.querySelector('[aria-label=\"截面中心高度数值\"]')"

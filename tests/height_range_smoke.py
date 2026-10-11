@@ -24,6 +24,7 @@ def run():
         page.locator(".loading-curtain").wait_for(state="hidden")
         page.locator(".projection-status").wait_for(state="hidden")
 
+        page.get_by_role("button", name="展开 Z 截面").click()
         rail = page.locator(".height-range__rail")
         center_slider = page.get_by_role("slider", name="截面中心高度")
         span_slider = page.get_by_role("slider", name="截面高度跨度")

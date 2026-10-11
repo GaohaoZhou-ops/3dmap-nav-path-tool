@@ -1,13 +1,29 @@
-import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { ChevronDown, X } from 'lucide-react';
 
-export default function ViewerMenu({ children, label, title, icon: Icon, align = 'end', isActive = true }) {
+export default function ViewerMenu({
+  children,
+  label,
+  triggerLabel = label,
+  title,
+  icon: Icon,
+  align = 'end',
+  isActive = true,
+  open: controlledOpen,
+  onOpenChange,
+  panelClassName = '',
+}) {
   const menuId = useId();
   const triggerRef = useRef(null);
   const menuRef = useRef(null);
-  const [open, setOpen] = useState(false);
+  const [internalOpen, setInternalOpen] = useState(false);
+  const open = controlledOpen ?? internalOpen;
   const [position, setPosition] = useState({});
+  const setOpen = useCallback((nextOpen) => {
+    if (controlledOpen == null) setInternalOpen(nextOpen);
+    onOpenChange?.(nextOpen);
+  }, [controlledOpen, onOpenChange]);
 
   const closeAndFocus = () => {
     setOpen(false);
@@ -16,7 +32,7 @@ export default function ViewerMenu({ children, label, title, icon: Icon, align =
 
   useEffect(() => {
     if (!isActive) setOpen(false);
-  }, [isActive]);
+  }, [isActive, setOpen]);
 
   useEffect(() => {
     if (!open) return undefined;
@@ -28,7 +44,7 @@ export default function ViewerMenu({ children, label, title, icon: Icon, align =
     document.addEventListener('pointerdown', onPointerDown, true);
     menuRef.current?.focus();
     return () => document.removeEventListener('pointerdown', onPointerDown, true);
-  }, [open]);
+  }, [open, setOpen]);
 
   useLayoutEffect(() => {
     if (!open) return undefined;
@@ -67,7 +83,7 @@ export default function ViewerMenu({ children, label, title, icon: Icon, align =
       window.removeEventListener('resize', updatePosition);
       window.removeEventListener('scroll', updatePosition, true);
     };
-  }, [open, align]);
+  }, [open, align, setOpen]);
 
   return (
     <div
@@ -90,11 +106,11 @@ export default function ViewerMenu({ children, label, title, icon: Icon, align =
         ref={triggerRef}
         type="button"
         className={`viewer-menu__trigger ${open ? 'is-open' : ''}`}
-        aria-label={label}
+        aria-label={triggerLabel}
         aria-haspopup="dialog"
         aria-expanded={open}
         aria-controls={open ? menuId : undefined}
-        onClick={() => setOpen((value) => !value)}
+        onClick={() => setOpen(!open)}
         onKeyDown={(event) => {
           if (event.key === 'ArrowDown') {
             event.preventDefault();
@@ -112,7 +128,7 @@ export default function ViewerMenu({ children, label, title, icon: Icon, align =
         <div
           ref={menuRef}
           id={menuId}
-          className="viewer-menu__panel"
+          className={`viewer-menu__panel ${panelClassName}`}
           role="dialog"
           aria-label={`3D ${label}`}
           tabIndex={-1}

@@ -3,7 +3,9 @@ import { createPortal } from 'react-dom';
 import {
   Axis3D,
   Box,
+  Bot,
   Clock3,
+  Compass,
   Database,
   Download,
   FileBox,
@@ -12,6 +14,7 @@ import {
   Ruler,
   X,
 } from 'lucide-react';
+import { resolveMeshRenderQuality } from '../lib/mapGeometry.js';
 
 const finiteNumber = (value, fallback = 0) => {
   const parsed = Number(value);
@@ -71,7 +74,19 @@ const loadMethodLabels = {
   'project-metadata': '仅恢复工程元数据',
 };
 
-export default function MapDetailsDialog({ mapData, onClose, returnFocusRef }) {
+export default function MapDetailsDialog({
+  mapData,
+  teachingSpaceMode = 'map',
+  heightRange = [0, 0],
+  robot,
+  robotLoadState,
+  robotPose,
+  robotControlEnabled,
+  robotHeightLocked,
+  meshRenderQuality = 'auto',
+  onClose,
+  returnFocusRef,
+}) {
   const bounds = mapData?.bounds;
   const axes = useMemo(() => ['x', 'y', 'z'].map((axis) => {
     const min = finiteNumber(bounds?.min?.[axis]);
@@ -90,8 +105,9 @@ export default function MapDetailsDialog({ mapData, onClose, returnFocusRef }) {
   const sourceKind = mapData?.sourceKind || (mapData?.metadataOnly ? 'project-metadata' : 'unknown');
   const geometryLabel = mapData?.faceCount > 0 ? '点云 + 三角网格' : '点云';
   const hash = mapData?.sourceHash || null;
-  const isIndependentTeachingSpace = mapData?.teachingSpaceMode === 'independent';
+  const isIndependentTeachingSpace = teachingSpaceMode === 'independent';
   const coordinateFrame = isIndependentTeachingSpace ? 'VIRTUAL_ORIGIN' : 'MAP';
+  const meshQualityPlan = resolveMeshRenderQuality(meshRenderQuality, mapData?.faceCount);
   const sourceBlob = mapData?.sourceBlob;
   const canDownloadOriginal = sourceBlob instanceof Blob && sourceBlob.size > 0;
 
@@ -133,7 +149,7 @@ export default function MapDetailsDialog({ mapData, onClose, returnFocusRef }) {
       data-map-face-count={finiteNumber(mapData.faceCount)}
       data-map-modified-at={mapData.fileModifiedAt || ''}
       data-map-source-kind={sourceKind}
-      data-teaching-space-mode={mapData.teachingSpaceMode || 'map'}
+      data-teaching-space-mode={teachingSpaceMode}
       onPointerDown={(event) => {
         if (event.target === event.currentTarget) onClose();
       }}
@@ -142,8 +158,8 @@ export default function MapDetailsDialog({ mapData, onClose, returnFocusRef }) {
         <header className="map-details-dialog__header">
           <span className="map-details-dialog__icon"><FileBox size={21} /></span>
           <div>
-            <small>MAP ASSET / TECHNICAL MANIFEST</small>
-            <h2 id="map-details-title">地图详细信息</h2>
+            <small>MAP / PROJECT CONFIGURATION</small>
+            <h2 id="map-details-title">地图与工程配置</h2>
             <strong title={fileName}>{fileName}</strong>
           </div>
           <div className="map-details-dialog__badges" aria-label="地图类型">
@@ -155,7 +171,7 @@ export default function MapDetailsDialog({ mapData, onClose, returnFocusRef }) {
           <button
             type="button"
             autoFocus
-            aria-label="关闭地图详细信息"
+            aria-label="关闭地图与工程配置"
             onClick={onClose}
           >
             <X size={16} />
@@ -188,6 +204,58 @@ export default function MapDetailsDialog({ mapData, onClose, returnFocusRef }) {
               <strong>{formatCoordinate(diagonal)} m</strong>
               <small>空间包围盒对角线</small>
             </article>
+          </section>
+
+          <section className="map-details-section map-details-project" aria-labelledby="map-details-project-title">
+            <header>
+              <Compass size={14} />
+              <div><small>PROJECT CONFIGURATION</small><strong id="map-details-project-title">工程配置</strong></div>
+            </header>
+            <dl>
+              <div><dt>示教环境</dt><dd>{isIndependentTeachingSpace ? '独立示教空间' : '完整地图'}</dd></div>
+              <div>
+                <dt>网格质量</dt>
+                <dd>{mapData.faceCount ? `${meshQualityPlan.requestedLabel} · ${formatInteger(meshQualityPlan.renderedFaceCount)} 面` : '无网格面'}</dd>
+              </div>
+              <div className={`is-wide robot-config-row is-${robotLoadState?.status || 'pending'}`}>
+                <dt><Bot size={11} />机器人模型</dt>
+                <dd title={robot?.relativePath}>
+                  {robot
+                    ? `${robot.name} · ${robotLoadState?.status === 'loaded' ? '已加载' : robotLoadState?.status === 'error' ? '异常' : robotLoadState?.status === 'pending' ? '等待地图' : '装配中'}`
+                    : '尚未加载'}
+                </dd>
+              </div>
+              {robot && (
+                <div
+                  className="is-wide robot-pose-row"
+                  data-robot-x={robotPose?.position?.x ?? 0}
+                  data-robot-y={robotPose?.position?.y ?? 0}
+                  data-robot-z={robotPose?.position?.z ?? 0}
+                  data-robot-yaw={robotPose?.rpy?.yaw ?? 0}
+                >
+                  <dt>当前位姿</dt>
+                  <dd>
+                    X {finiteNumber(robotPose?.position?.x).toFixed(2)} / Y {finiteNumber(robotPose?.position?.y).toFixed(2)} / Z {finiteNumber(robotPose?.position?.z).toFixed(2)} · YAW {finiteNumber(robotPose?.rpy?.yaw).toFixed(1)}°
+                  </dd>
+                </div>
+              )}
+              {robot && (
+                <div className={`is-wide robot-drive-row ${robotControlEnabled ? 'is-active' : ''} ${robotHeightLocked ? 'is-height-locked' : ''}`}>
+                  <dt>麦轮控制</dt>
+                  <dd>{robotControlEnabled
+                    ? robotHeightLocked ? '键盘已接管 · Z 高度已锁' : '键盘已接管 · WASD / 方向键'
+                    : robotHeightLocked ? '待机 · Z 高度已锁' : '待机 · 点击 3D“机器人”'}</dd>
+                </div>
+              )}
+              {robotLoadState?.status === 'loaded' && robotLoadState.zividCount > 0 && (
+                <div className="is-wide"><dt>末端相机</dt><dd>{robotLoadState.zividCount} × Zivid · {robotLoadState.opticalFrameCount || 0} optical frames</dd></div>
+              )}
+              <div><dt>坐标系</dt><dd>{coordinateFrame}</dd></div>
+              <div><dt>投影平面</dt><dd>XY / Z 轴切片</dd></div>
+              <div><dt>截面下限</dt><dd>{finiteNumber(heightRange[0]).toFixed(2)} m</dd></div>
+              <div><dt>截面上限</dt><dd>{finiteNumber(heightRange[1]).toFixed(2)} m</dd></div>
+              <div className="is-wide"><dt>截面跨度</dt><dd>{Math.max(0, finiteNumber(heightRange[1]) - finiteNumber(heightRange[0])).toFixed(2)} m</dd></div>
+            </dl>
           </section>
 
           <section className="map-details-section map-details-file" aria-labelledby="map-details-file-title">

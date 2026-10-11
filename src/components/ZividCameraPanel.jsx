@@ -1659,6 +1659,7 @@ function MainViewportPane({ sourceCanvasRef }) {
 }
 
 export default function ZividCameraPanel({
+  active = true,
   mapData,
   robot,
   robotLoadState,
@@ -1678,6 +1679,7 @@ export default function ZividCameraPanel({
   onCaptureProviderChange,
 }) {
   const enabled = isM70Robot(robot, robotLoadState);
+  const viewEnabled = active && enabled;
   const [internalActiveSide, setInternalActiveSide] = useState('left');
   const activeSide = ['left', 'right'].includes(controlledActiveSide)
     ? controlledActiveSide
@@ -1752,8 +1754,8 @@ export default function ZividCameraPanel({
   );
   const builtCameraMeshRegionKeyRef = useRef('');
   const frustumStats = useMemo(
-    () => estimateVisiblePoints(mapData?.geometry, activePose),
-    [activePose, mapData?.geometry],
+    () => estimateVisiblePoints(viewEnabled ? mapData?.geometry : null, activePose),
+    [activePose, mapData?.geometry, viewEnabled],
   );
 
   poseRef.current = activePose;
@@ -1765,22 +1767,22 @@ export default function ZividCameraPanel({
   spaceMouseHudVisibleRef.current = spaceMouseHud.visible;
 
   useEffect(() => {
-    if (!enabled && expanded) setExpanded(false);
-  }, [enabled, expanded]);
+    if (!viewEnabled && expanded) setExpanded(false);
+  }, [expanded, viewEnabled]);
 
   useEffect(() => {
     if (!mapData?.geometry) setCameraMeshStats(EMPTY_CAMERA_MESH_STATS);
   }, [mapData?.geometry]);
 
   useEffect(() => {
-    if (!mapData?.geometry || liveCameraMeshRegionKey === builtCameraMeshRegionKeyRef.current) {
+    if (!viewEnabled || !mapData?.geometry || liveCameraMeshRegionKey === builtCameraMeshRegionKeyRef.current) {
       return undefined;
     }
     const settleTimer = window.setTimeout(() => {
       setSettledCameraMeshRegionKey(liveCameraMeshRegionKey);
     }, 280);
     return () => window.clearTimeout(settleTimer);
-  }, [liveCameraMeshRegionKey, mapData?.geometry]);
+  }, [liveCameraMeshRegionKey, mapData?.geometry, viewEnabled]);
 
   useEffect(() => {
     setZoom(1);
@@ -1831,6 +1833,7 @@ export default function ZividCameraPanel({
   }, [expanded, spaceMouseInputRef]);
 
   useEffect(() => {
+    if (!viewEnabled) return undefined;
     const syncCollisionStatus = () => {
       const dataset = mainViewportCanvasRef?.current?.dataset;
       const protectionEnabled = dataset?.collisionProtectionEnabled === 'true';
@@ -1867,7 +1870,7 @@ export default function ZividCameraPanel({
     syncCollisionStatus();
     const statusTimer = window.setInterval(syncCollisionStatus, 120);
     return () => window.clearInterval(statusTimer);
-  }, [mainViewportCanvasRef]);
+  }, [mainViewportCanvasRef, viewEnabled]);
 
   useEffect(() => {
     const deviceUnavailable = !spaceMouseStatus.connected
@@ -2068,6 +2071,7 @@ export default function ZividCameraPanel({
   }, [activeSide, expanded, spaceMouseInputRef, spaceMouseViewEnabled]);
 
   useEffect(() => {
+    // Pose recording needs both snapshots even while the camera tab is inactive.
     if (!onCaptureProviderChange) return undefined;
     if (!enabled || !mapData?.geometry) {
       onCaptureProviderChange(null);
@@ -2085,7 +2089,7 @@ export default function ZividCameraPanel({
   useEffect(() => {
     const mount = mountRef.current;
     const sourceGeometry = mapData?.geometry;
-    if (!enabled || !mount || !sourceGeometry) return undefined;
+    if (!viewEnabled || !mount || !sourceGeometry) return undefined;
 
     const topology = prepareMapGeometryTopology(sourceGeometry);
     const qualityPlan = resolveMeshRenderQuality(meshRenderQuality, topology.faceCount);
@@ -2459,14 +2463,26 @@ export default function ZividCameraPanel({
     };
   }, [
     activeSide,
-    enabled,
+    viewEnabled,
     expanded,
     mapData?.geometry,
     meshRenderQuality,
     settledCameraMeshRegionKey,
   ]);
 
-  if (!enabled) return null;
+  if (!active) return null;
+  if (!enabled) {
+    return (
+      <section className="camera-empty-state" aria-label="相机未就绪">
+        <Camera size={24} />
+        <strong>相机视图待就绪</strong>
+        <p>{robotLoadState?.status === 'loading'
+          ? '机器人正在装配，相机就绪后将显示实时画面。'
+          : '请先加载地图与带 Zivid 2 M70 的机器人模型。'}</p>
+        <small>在“示教”页创建匹配的任务后，可使用相机大图中的反算控制。</small>
+      </section>
+    );
+  }
 
   const changeZoom = (nextValue) => {
     setZoom((current) => THREE.MathUtils.clamp(

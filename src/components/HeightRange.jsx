@@ -1,14 +1,17 @@
-import { useId, useRef, useState } from 'react';
-import { ChevronDown, ChevronUp, Layers3 } from 'lucide-react';
+import { useCallback, useRef, useState } from 'react';
+import { Layers3 } from 'lucide-react';
 import { getSliceControlBounds } from '../lib/sliceRange.js';
+import ViewerMenu from './ViewerMenu.jsx';
 
 const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
 
-export default function HeightRange({ bounds, value, onChange, disabled, collapsed, onCollapsedChange }) {
-  const controlsId = useId();
+export default function HeightRange({ bounds, value, onChange, disabled, collapsed, onCollapsedChange, isActive = true }) {
   const railRef = useRef(null);
   const dragPointerRef = useRef(null);
   const [dragging, setDragging] = useState(false);
+  const handleOpenChange = useCallback((open) => {
+    onCollapsedChange(!open);
+  }, [onCollapsedChange]);
   const controlBounds = getSliceControlBounds(bounds);
   const {
     min,
@@ -125,141 +128,138 @@ export default function HeightRange({ bounds, value, onChange, disabled, collaps
       data-control-max={max}
       data-control-margin={margin}
     >
-      <button
-        type="button"
-        className="height-range__title"
-        aria-label={collapsed ? '展开 Z 截面' : '收起 Z 截面'}
-        aria-expanded={!collapsed}
-        aria-controls={controlsId}
+      <ViewerMenu
+        label="Z 截面"
+        triggerLabel={collapsed ? '展开 Z 截面' : '收起 Z 截面'}
+        icon={Layers3}
+        open={!collapsed}
+        onOpenChange={handleOpenChange}
+        isActive={isActive}
+        panelClassName="height-range__dropdown"
         title={collapsed
           ? `展开 Z 截面：当前 ${sliceMin.toFixed(2)} 至 ${sliceMax.toFixed(2)} m`
           : '收起 Z 截面'}
-        onClick={() => onCollapsedChange(!collapsed)}
       >
-        <Layers3 size={14} />
-        <span>Z 截面</span>
-        {collapsed ? <ChevronUp size={10} /> : <ChevronDown size={10} />}
-      </button>
-
-      <div id={controlsId} className="height-range__body" hidden={collapsed}>
-        <div className="height-range__meter">
-          <span className="height-range__bound">{max.toFixed(2)}</span>
-          <div
-            className="height-range__rail"
-            ref={railRef}
-            onPointerDown={startDragging}
-            onPointerMove={continueDragging}
-            onPointerUp={stopDragging}
-            onPointerCancel={stopDragging}
-            data-center-min={centerMin}
-            data-center-max={centerMax}
-            data-control-min={min}
-            data-control-max={max}
-          >
+        <div className="height-range__body">
+          <div className="height-range__meter">
+            <span className="height-range__bound">{max.toFixed(2)}</span>
             <div
-              className="height-range__selection"
-              style={{
-                bottom: `${rangeBottom}%`,
-                height: `${rangePercentage}%`,
-              }}
-            />
-            {hasCloudBounds && (
-              <>
-                <span
-                  className="height-range__cloud-limit is-min"
-                  style={{ bottom: `${cloudMinPercentage}%` }}
-                  title={`点云下限 ${cloudMin.toFixed(2)} m`}
-                />
-                <span
-                  className="height-range__cloud-limit is-max"
-                  style={{ bottom: `${cloudMaxPercentage}%` }}
-                  title={`点云上限 ${cloudMax.toFixed(2)} m`}
-                />
-              </>
-            )}
-            <button
-              type="button"
-              role="slider"
-              className={`height-range__handle ${dragging ? 'is-active' : ''} ${percentage <= 0.001 ? 'is-at-min' : ''} ${percentage >= 99.999 ? 'is-at-max' : ''}`}
-              style={{ bottom: `${percentage}%` }}
-              onKeyDown={(event) => {
-                const step = Math.max(controlSpan / 160, 0.01);
-                if (event.key === 'ArrowUp' || event.key === 'ArrowRight') {
-                  event.preventDefault();
-                  updateCenter(center + step);
-                } else if (event.key === 'ArrowDown' || event.key === 'ArrowLeft') {
-                  event.preventDefault();
-                  updateCenter(center - step);
-                } else if (event.key === 'Home') {
-                  event.preventDefault();
-                  updateCenter(centerMin);
-                } else if (event.key === 'End') {
-                  event.preventDefault();
-                  updateCenter(centerMax);
-                }
-              }}
-              aria-label="截面中心高度"
-              aria-valuemin={centerMin}
-              aria-valuemax={centerMax}
-              aria-valuenow={center}
-              aria-valuetext={`${center.toFixed(2)} 米，截面 ${sliceMin.toFixed(2)} 至 ${sliceMax.toFixed(2)} 米`}
-              data-track-percentage={percentage.toFixed(3)}
-              data-slice-min={sliceMin}
-              data-slice-max={sliceMax}
-              data-slice-span={windowSize}
-              disabled={disabled || controlSpan <= 1e-9}
-            />
+              className="height-range__rail"
+              ref={railRef}
+              onPointerDown={startDragging}
+              onPointerMove={continueDragging}
+              onPointerUp={stopDragging}
+              onPointerCancel={stopDragging}
+              data-center-min={centerMin}
+              data-center-max={centerMax}
+              data-control-min={min}
+              data-control-max={max}
+            >
+              <div
+                className="height-range__selection"
+                style={{
+                  bottom: `${rangeBottom}%`,
+                  height: `${rangePercentage}%`,
+                }}
+              />
+              {hasCloudBounds && (
+                <>
+                  <span
+                    className="height-range__cloud-limit is-min"
+                    style={{ bottom: `${cloudMinPercentage}%` }}
+                    title={`点云下限 ${cloudMin.toFixed(2)} m`}
+                  />
+                  <span
+                    className="height-range__cloud-limit is-max"
+                    style={{ bottom: `${cloudMaxPercentage}%` }}
+                    title={`点云上限 ${cloudMax.toFixed(2)} m`}
+                  />
+                </>
+              )}
+              <button
+                type="button"
+                role="slider"
+                className={`height-range__handle ${dragging ? 'is-active' : ''} ${percentage <= 0.001 ? 'is-at-min' : ''} ${percentage >= 99.999 ? 'is-at-max' : ''}`}
+                style={{ bottom: `${percentage}%` }}
+                onKeyDown={(event) => {
+                  const step = Math.max(controlSpan / 160, 0.01);
+                  if (event.key === 'ArrowUp' || event.key === 'ArrowRight') {
+                    event.preventDefault();
+                    updateCenter(center + step);
+                  } else if (event.key === 'ArrowDown' || event.key === 'ArrowLeft') {
+                    event.preventDefault();
+                    updateCenter(center - step);
+                  } else if (event.key === 'Home') {
+                    event.preventDefault();
+                    updateCenter(centerMin);
+                  } else if (event.key === 'End') {
+                    event.preventDefault();
+                    updateCenter(centerMax);
+                  }
+                }}
+                aria-label="截面中心高度"
+                aria-valuemin={centerMin}
+                aria-valuemax={centerMax}
+                aria-valuenow={center}
+                aria-valuetext={`${center.toFixed(2)} 米，截面 ${sliceMin.toFixed(2)} 至 ${sliceMax.toFixed(2)} 米`}
+                data-track-percentage={percentage.toFixed(3)}
+                data-slice-min={sliceMin}
+                data-slice-max={sliceMax}
+                data-slice-span={windowSize}
+                disabled={disabled || controlSpan <= 1e-9}
+              />
+            </div>
+            <span className="height-range__bound">{min.toFixed(2)}</span>
           </div>
-          <span className="height-range__bound">{min.toFixed(2)}</span>
-        </div>
 
-        <div className="height-range__inputs">
-          <label className="height-range__center-input">
-            <span>中心</span>
-            <input
-              type="number"
-              aria-label="截面中心高度数值"
-              step="0.01"
-              value={center.toFixed(2)}
-              onChange={(event) => updateCenter(event.target.value)}
-              disabled={disabled || controlSpan <= 1e-9}
-            />
-          </label>
-          <label className="height-range__span-control">
-            <span className="height-range__span-label">
-              <b>跨度</b>
-              <output>{windowSize.toFixed(2)}m</output>
-            </span>
-            <input
-              type="range"
-              aria-label="截面高度跨度"
-              min={minimumWindow}
-              max={controlSpan || 1}
-              step={Math.min(Math.max(controlSpan / 10000, 0.001), 0.1)}
-              value={windowSize}
-              onChange={(event) => updateSpan(event.target.value)}
-              onKeyDown={(event) => {
-                const step = Math.max(controlSpan / 200, 0.01);
-                if (event.key === 'ArrowRight' || event.key === 'ArrowUp') {
-                  event.preventDefault();
-                  updateSpan(windowSize + step);
-                } else if (event.key === 'ArrowLeft' || event.key === 'ArrowDown') {
-                  event.preventDefault();
-                  updateSpan(windowSize - step);
-                } else if (event.key === 'Home') {
-                  event.preventDefault();
-                  updateSpan(minimumWindow);
-                } else if (event.key === 'End') {
-                  event.preventDefault();
-                  updateSpan(controlSpan);
-                }
-              }}
-              style={{ '--span-progress': `${spanPercentage}%` }}
-              disabled={disabled || controlSpan <= minimumWindow}
-            />
-          </label>
+          <div className="height-range__inputs">
+            <label className="height-range__center-input">
+              <span>中心</span>
+              <input
+                type="number"
+                aria-label="截面中心高度数值"
+                step="0.01"
+                value={center.toFixed(2)}
+                onChange={(event) => updateCenter(event.target.value)}
+                disabled={disabled || controlSpan <= 1e-9}
+              />
+            </label>
+            <label className="height-range__span-control">
+              <span className="height-range__span-label">
+                <b>跨度</b>
+                <output>{windowSize.toFixed(2)}m</output>
+              </span>
+              <input
+                type="range"
+                aria-label="截面高度跨度"
+                min={minimumWindow}
+                max={controlSpan || 1}
+                step={Math.min(Math.max(controlSpan / 10000, 0.001), 0.1)}
+                value={windowSize}
+                onChange={(event) => updateSpan(event.target.value)}
+                onKeyDown={(event) => {
+                  const step = Math.max(controlSpan / 200, 0.01);
+                  if (event.key === 'ArrowRight' || event.key === 'ArrowUp') {
+                    event.preventDefault();
+                    updateSpan(windowSize + step);
+                  } else if (event.key === 'ArrowLeft' || event.key === 'ArrowDown') {
+                    event.preventDefault();
+                    updateSpan(windowSize - step);
+                  } else if (event.key === 'Home') {
+                    event.preventDefault();
+                    updateSpan(minimumWindow);
+                  } else if (event.key === 'End') {
+                    event.preventDefault();
+                    updateSpan(controlSpan);
+                  }
+                }}
+                style={{ '--span-progress': `${spanPercentage}%` }}
+                disabled={disabled || controlSpan <= minimumWindow}
+              />
+            </label>
+          </div>
         </div>
-      </div>
+      </ViewerMenu>
     </aside>
   );
 }

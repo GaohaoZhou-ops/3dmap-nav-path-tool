@@ -190,6 +190,7 @@ def run():
         }
         height_range = page.locator(".height-range")
         initial_slice = [height_range.get_attribute(f"data-slice-{edge}") for edge in ("min", "max")]
+        page.get_by_role("button", name="展开 Z 截面").click()
         assert page.get_by_role("button", name="收起 Z 截面").get_attribute("aria-expanded") == "true"
 
         page.get_by_role("button", name="打开示教数据管理页").click()
@@ -309,9 +310,12 @@ def run():
             page.set_viewport_size({"width": width, "height": 900})
             page.wait_for_timeout(250)
             dock_box = dock.bounding_box()
-            slice_box = height_range.bounding_box()
+            slice_box = page.get_by_role("dialog", name="3D Z 截面").bounding_box()
             assert dock_box["width"] <= 520
-            assert dock_box["x"] + dock_box["width"] + 8 <= slice_box["x"]
+            assert (
+                slice_box["y"] + slice_box["height"] + 8 <= dock_box["y"]
+                or dock_box["x"] + dock_box["width"] + 8 <= slice_box["x"]
+            )
             assert page.locator(".teaching-playback-dock__content").evaluate(
                 "element => element.scrollWidth <= element.clientWidth"
             )

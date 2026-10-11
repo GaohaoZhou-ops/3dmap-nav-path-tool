@@ -71,7 +71,7 @@ def run():
             timeout=240_000,
         )
 
-        page.get_by_role("tab", name="虚拟示教与相机").click()
+        page.get_by_role("tab", name="示教").click()
         page.get_by_role("button", name="新建示教任务", exact=True).click()
         create_dialog = page.get_by_role("dialog", name="新建示教任务")
         create_dialog.get_by_role("textbox", name="新示教任务名称").fill("Server 合并验证")

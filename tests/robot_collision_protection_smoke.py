@@ -58,7 +58,7 @@ def run():
 
         page.goto(f"{BASE_URL.rstrip('/')}/workbench", wait_until="networkidle")
         page.locator('[data-session-state="ready"]').wait_for()
-        page.get_by_role("tab", name="虚拟示教与相机").click()
+        page.get_by_role("tab", name="示教").click()
         assert page.get_by_label("全关节控制浮动窗口", exact=True).count() == 0
 
         panel = page.get_by_label("虚拟示教", exact=True)
@@ -82,6 +82,7 @@ def run():
         page.get_by_role("button", name="加载机器人", exact=True).click()
         page.get_by_role("option", name="加载机器人 botx_abx_zivid_m70").click()
         wait_for_robot(page)
+        page.get_by_role("tab", name="相机", exact=True).click()
 
         canvas = page.locator(".three-canvas")
         toggle = viewer_tool(page, name="开启碰撞保护")
@@ -225,7 +226,7 @@ def run():
         page.locator('[data-session-state="ready"]').wait_for()
         page.locator(".loading-curtain").wait_for(state="hidden")
         wait_for_robot(page)
-        page.get_by_role("tab", name="虚拟示教与相机").click(force=True)
+        page.get_by_role("tab", name="示教").click(force=True)
         canvas = page.locator(".three-canvas")
         assert page.get_by_label("自碰撞保护", exact=True).count() == 0
         assert canvas.get_attribute("data-collision-worker") == "inactive"

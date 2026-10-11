@@ -124,6 +124,7 @@ def run():
         assert page.get_by_label("点云高程比例尺").count() == 0
         assert page.get_by_label("二维矢量点云截面").get_attribute("data-source-point-count") == "24"
 
+        page.get_by_role("button", name="展开 Z 截面").click()
         height_input = page.get_by_label("截面中心高度数值")
         requested_height = float(height_input.input_value()) + 0.25
         height_input.fill(f"{requested_height:.2f}")
@@ -305,6 +306,7 @@ def run():
         click_path_midpoint(page, route_button)
         assert page.locator(".route-edge.is-selected").count() == 1
         assert page.get_by_role("heading", name="路径参数").is_visible()
+        page.get_by_role("button", name="展开 Z 截面").click()
         actual_restored_height = float(
             page.get_by_role("slider", name="截面中心高度").get_attribute("aria-valuenow")
         )

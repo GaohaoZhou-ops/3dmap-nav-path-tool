@@ -208,6 +208,7 @@ def run():
         assert interaction_button.inner_text().strip() == "旋转"
         assert "lucide-rotate3d" in interaction_button.locator("svg").get_attribute("class")
 
+        page.get_by_role("button", name="展开 Z 截面").click()
         height_bar = page.get_by_role("slider", name="截面中心高度")
         span_bar = page.get_by_role("slider", name="截面高度跨度")
         assert page.get_by_role("slider", name="截面中心高度").count() == 1

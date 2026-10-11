@@ -185,7 +185,7 @@ def run():
         assert control.get_attribute("data-spacemouse-calibrated") == "true"
         assert control.get_attribute("data-spacemouse-selected-axis") == "x"
 
-        page.get_by_role("tab", name="虚拟示教与相机").click()
+        page.get_by_role("tab", name="示教").click()
         assert page.get_by_label("全关节控制浮动窗口", exact=True).count() == 0
         page.locator('input[type="file"][accept=".ply"]').set_input_files(
             str(ROOT / "tests/fixtures/rotation-map.ply")
@@ -203,6 +203,7 @@ def run():
         page.wait_for_function(
             "document.querySelector('[aria-label=\"虚拟示教\"]')?.dataset.teachingTaskCount === '1'"
         )
+        page.get_by_role("tab", name="相机", exact=True).click()
         page.wait_for_function(
             "document.querySelector('[aria-label=\"Zivid 2 M70 相机视图\"]')?.dataset.cameraTeachingMode === 'active'"
         )

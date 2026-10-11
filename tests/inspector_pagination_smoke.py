@@ -44,18 +44,20 @@ def run():
         inspector = page.locator(".inspector-panel")
         tabs = page.get_by_role("tablist", name="控制台子页")
         navigation_tab = page.get_by_role("tab", name="路径与导航")
-        project_tab = page.get_by_role("tab", name="工程配置")
-        teaching_tab = page.get_by_role("tab", name="虚拟示教与相机")
+        camera_tab = page.get_by_role("tab", name="相机", exact=True)
+        teaching_tab = page.get_by_role("tab", name="示教")
         data_page_link = page.get_by_role("button", name="打开示教数据管理页")
 
         assert tabs.get_by_role("tab").count() == 3
         assert page.get_by_role("tab", name="示教数据管理").count() == 0
-        assert inspector.get_attribute("data-active-page") == "project"
-        assert project_tab.get_attribute("aria-selected") == "true"
+        assert page.get_by_role("tab", name="工程配置").count() == 0
+        assert inspector.get_attribute("data-active-page") == "teaching"
+        assert camera_tab.get_attribute("aria-selected") == "false"
         assert navigation_tab.get_attribute("aria-selected") == "false"
-        assert teaching_tab.get_attribute("aria-selected") == "false"
-        assert page.get_by_role("tabpanel").get_attribute("id") == "inspector-page-project"
-        assert page.locator(".project-overview").is_visible()
+        assert teaching_tab.get_attribute("aria-selected") == "true"
+        assert page.get_by_role("tabpanel").get_attribute("id") == "inspector-page-teaching"
+        assert page.get_by_label("虚拟示教", exact=True).is_visible()
+        assert page.locator(".project-overview").count() == 0
         assert data_page_link.is_visible()
         assert page.locator('section[aria-label="示教数据管理"]').count() == 0
 
@@ -105,16 +107,24 @@ def run():
         # The reduced console keeps a standard three-tab keyboard cycle.
         navigation_tab.focus()
         page.keyboard.press("ArrowRight")
-        assert inspector.get_attribute("data-active-page") == "project"
-        page.wait_for_function(
-            "document.activeElement?.id === 'inspector-tab-project'"
-        )
-        page.keyboard.press("ArrowRight")
         assert inspector.get_attribute("data-active-page") == "teaching"
+        page.wait_for_function(
+            "document.activeElement?.id === 'inspector-tab-teaching'"
+        )
         assert teaching_tab.get_attribute("aria-selected") == "true"
         assert page.get_by_label("虚拟示教", exact=True).is_visible()
         teaching_tab.focus()
         page.keyboard.press("ArrowRight")
+        assert inspector.get_attribute("data-active-page") == "camera"
+        assert camera_tab.get_attribute("aria-selected") == "true"
+        assert page.get_by_label("相机未就绪", exact=True).is_visible()
+        assert page.get_by_label("虚拟示教", exact=True).count() == 0
+        page.wait_for_function("document.activeElement?.id === 'inspector-tab-camera'")
+        page.keyboard.press("ArrowRight")
+        assert inspector.get_attribute("data-active-page") == "navigation"
+        page.keyboard.press("End")
+        assert inspector.get_attribute("data-active-page") == "camera"
+        page.keyboard.press("Home")
         assert inspector.get_attribute("data-active-page") == "navigation"
 
         # Teaching archive is now a sibling route, not another inspector page.
@@ -185,14 +195,18 @@ def run():
             "data-route-persistence-probe"
         ) == "same-scene"
         page.locator('input[type="file"][accept*=".zip"]').set_input_files(
-            str(Path(download.path()))
+            {"name": download.suggested_filename, "mimeType": "application/zip",
+             "buffer": Path(download.path()).read_bytes()}
         )
         page.get_by_text("ZIP 工程包已加载", exact=False).wait_for()
         assert page.locator(".waypoint-marker").count() == 1
 
-        project_tab.click()
-        assert page.locator(".project-overview").is_visible()
-        assert "rotation-map.ply" in page.locator(".project-overview").inner_text()
+        page.get_by_role("button", name="查看地图与工程配置").click()
+        configuration = page.get_by_role("dialog", name="地图与工程配置")
+        assert configuration.is_visible()
+        assert "rotation-map.ply" in configuration.inner_text()
+        assert configuration.get_by_text("工程配置", exact=True).is_visible()
+        configuration.get_by_role("button", name="关闭", exact=True).click()
         page.screenshot(path="/tmp/atlas-inspector-pagination.png", full_page=True)
 
         # A direct URL also resolves as an application-level page and returns safely.

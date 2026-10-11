@@ -78,11 +78,10 @@ def run():
             timeout=180_000,
         )
 
-        page.get_by_role("tab", name="虚拟示教与相机").click()
+        page.get_by_role("tab", name="示教").click()
         assert page.get_by_label("全关节控制浮动窗口", exact=True).count() == 0
-        page.wait_for_function(
-            "document.querySelector('.zivid-camera-canvas')?.dataset.contextState === 'ready'"
-        )
+        # Recording must work before the separate camera page has ever been opened.
+        assert page.locator(".zivid-camera-canvas").count() == 0
         page.get_by_role("button", name="新建示教任务", exact=True).click()
         create_dialog = page.get_by_role("dialog", name="新建示教任务")
         create_dialog.get_by_role("textbox", name="新示教任务名称").fill("双目视觉采集")
@@ -98,6 +97,51 @@ def run():
             timeout=180_000,
         )
         assert capture_button.get_attribute("aria-busy") == "false"
+
+        # Changing tabs preserves the selected task and parking point, along with
+        # camera view settings. The live renderer is released outside its page.
+        task_id = teaching_panel.get_attribute("data-active-teaching-task")
+        parking_id = teaching_panel.get_attribute("data-active-parking-point")
+        assert task_id and parking_id
+        camera_tab = page.get_by_role("tab", name="相机", exact=True)
+        teaching_tab = page.get_by_role("tab", name="示教", exact=True)
+        camera_tab.click()
+        assert teaching_panel.count() == 0
+        page.wait_for_function(
+            "document.querySelector('.zivid-camera-canvas')?.dataset.contextState === 'ready'"
+        )
+        camera_panel = page.get_by_label("Zivid 2 M70 相机视图", exact=True)
+        assert camera_panel.get_attribute("data-camera-teaching-mode") == "active"
+        camera_panel.get_by_role("button", name="点云", exact=True).click()
+        camera_panel.get_by_role("button", name="放大相机画面", exact=True).click()
+        page.wait_for_function(
+            "Number(document.querySelector('.zivid-camera-canvas')?.dataset.digitalZoom) > 1"
+        )
+        zoom = page.locator(".zivid-camera-canvas").get_attribute("data-digital-zoom")
+        teaching_tab.click()
+        assert page.locator(".zivid-camera-canvas").count() == 0
+        assert teaching_panel.get_attribute("data-active-teaching-task") == task_id
+        assert teaching_panel.get_attribute("data-active-parking-point") == parking_id
+        assert capture_button.is_enabled()
+        camera_tab.click()
+        page.wait_for_function(
+            "document.querySelector('.zivid-camera-canvas')?.dataset.contextState === 'ready'"
+        )
+        assert camera_panel.get_attribute("data-render-mode") == "pointcloud"
+        assert page.locator(".zivid-camera-canvas").get_attribute("data-digital-zoom") == zoom
+        teaching_tab.click()
+
+        page.get_by_role("button", name="查看地图与工程配置").click()
+        project_dialog = page.get_by_role("dialog", name="地图与工程配置")
+        assert project_dialog.locator(".robot-config-row").inner_text().endswith("已加载")
+        assert project_dialog.locator(".robot-pose-row").is_visible()
+        assert "2 × Zivid" in project_dialog.inner_text()
+        for axis in ("x", "y", "z", "yaw"):
+            displayed = float(project_dialog.locator(".robot-pose-row").get_attribute(f"data-robot-{axis}"))
+            actual = float(page.locator(".three-canvas").get_attribute(f"data-robot-{axis}"))
+            assert abs(displayed - actual) < 1e-5
+        project_dialog.screenshot(path="/tmp/atlas-map-project-with-robot.png")
+        project_dialog.get_by_role("button", name="关闭", exact=True).click()
 
         page.get_by_role("button", name="打开示教数据管理页").click()
         page.locator('[data-app-page="teaching-data"]').wait_for()
@@ -176,7 +220,8 @@ def run():
         ) > 0
 
         page.locator('input[type="file"][accept*=".zip"]').set_input_files(
-            str(archive["path"])
+            {"name": download.suggested_filename, "mimeType": "application/zip",
+             "buffer": archive["path"].read_bytes()}
         )
         page.get_by_text("ZIP 工程包已加载", exact=False).wait_for()
         page.get_by_role("button", name="打开示教数据管理页").click()

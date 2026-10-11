@@ -52,7 +52,7 @@ def run():
             "document.querySelector('.three-canvas')?.dataset.robotModelState === 'loaded'",
             timeout=180_000,
         )
-        page.get_by_role("tab", name="虚拟示教与相机").click()
+        page.get_by_role("tab", name="示教").click()
         page.get_by_role("button", name="打开全关节浮动窗口").click()
 
         panel = page.get_by_label("机器人全关节控制", exact=True)
@@ -154,7 +154,7 @@ def run():
         )
         page.locator(".loading-curtain").wait_for(state="hidden")
         print("stage=session-restored", flush=True)
-        page.get_by_role("tab", name="虚拟示教与相机").click()
+        page.get_by_role("tab", name="示教").click()
         page.get_by_role("button", name="打开全关节浮动窗口").click()
         restored_panel = page.get_by_label("机器人全关节控制", exact=True)
         restored_panel.wait_for()

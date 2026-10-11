@@ -545,7 +545,7 @@ export default function VirtualTeachingPanel({
           </strong>
           <span>
             {isDataView
-              ? '请先返回主工作台，在“示教 / 相机”中新建任务并采集机器人姿态。'
+              ? '请先返回主工作台，在“示教”页中新建任务并采集机器人姿态。'
               : canCreate
                 ? '任务将绑定当前地图和机器人；调整完成后逐点记录全身状态。'
                 : '机器人装配完成后，可记录地图定位与所有可动关节。'}

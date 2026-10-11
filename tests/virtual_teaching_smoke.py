@@ -35,7 +35,7 @@ def run():
 
         page.goto(f"{BASE_URL.rstrip('/')}/workbench", wait_until="networkidle")
         page.locator('[data-session-state="ready"]').wait_for()
-        teaching_tab = page.get_by_role("tab", name="虚拟示教与相机")
+        teaching_tab = page.get_by_role("tab", name="示教")
         teaching_tab.click()
         assert teaching_tab.get_attribute("aria-selected") == "true"
         assert page.get_by_label("全关节控制浮动窗口", exact=True).count() == 0

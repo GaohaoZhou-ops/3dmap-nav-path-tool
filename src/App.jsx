@@ -461,7 +461,7 @@ export default function App() {
   const [mapData, setMapData] = useState(null);
   const [teachingSpaceMode, setTeachingSpaceMode] = useState('map');
   const [heightRange, setHeightRange] = useState([0, 1]);
-  const [heightRangeCollapsed, setHeightRangeCollapsed] = useState(false);
+  const [heightRangeCollapsed, setHeightRangeCollapsed] = useState(true);
   const [waypoints, setWaypoints] = useState([]);
   const [edges, setEdges] = useState([]);
   const [mode, setMode] = useState('select');
@@ -478,6 +478,7 @@ export default function App() {
   const [collapsedPanel, setCollapsedPanel] = useState(null);
   const [inspectorCollapsed, setInspectorCollapsed] = useState(false);
   const [mapDetailsOpen, setMapDetailsOpen] = useState(false);
+  const [displaySettingsContainer, setDisplaySettingsContainer] = useState(null);
   const [synchronizedFocus, setSynchronizedFocus] = useState(null);
   const [selectedRobot, setSelectedRobot] = useState(null);
   const [robotLoadState, setRobotLoadState] = useState({ status: 'idle' });
@@ -4327,13 +4328,13 @@ export default function App() {
             type="button"
             className="action-button"
             ref={mapDetailsButtonRef}
-            aria-label="查看地图详细信息"
+            aria-label="查看地图与工程配置"
             disabled={!mapData?.bounds}
             onClick={() => setMapDetailsOpen(true)}
-            title={mapData?.bounds ? '查看当前地图文件与空间范围' : '请先加载地图'}
+            title={mapData?.bounds ? '查看地图文件、空间范围与工程配置' : '请先加载地图'}
           >
             <FileSearch size={15} />
-            <span>地图详情</span>
+            <span>地图与工程配置</span>
           </button>
           <button
             type="button"
@@ -4438,6 +4439,19 @@ export default function App() {
                 ))}
                 <small>m</small>
               </div>
+              <div
+                className="panel-heading__display-settings"
+                ref={setDisplaySettingsContainer}
+              />
+              <HeightRange
+                bounds={mapData?.bounds}
+                value={heightRange}
+                onChange={setHeightRange}
+                disabled={!mapData?.geometry}
+                collapsed={heightRangeCollapsed}
+                onCollapsedChange={setHeightRangeCollapsed}
+                isActive={appPage === APP_PAGE_WORKBENCH && !teachingTransferDialog && !ipadTeachingOpen}
+              />
               {!isIndependentTeachingSpace && (
                 <button
                   type="button"
@@ -4459,6 +4473,7 @@ export default function App() {
             >
               <PointCloudViewer
                 mapData={mapData}
+                displaySettingsContainer={displaySettingsContainer}
                 heightRange={heightRange}
                 waypoints={waypoints}
                 edges={edges}
@@ -4505,14 +4520,6 @@ export default function App() {
                 onClearRobotParkingGhost={clearRobotParkingGhost}
                 onMoveToParkingPoint={applyTeachingParkingPoint}
                 isActive={appPage === APP_PAGE_WORKBENCH && !teachingTransferDialog && !ipadTeachingOpen}
-              />
-              <HeightRange
-                bounds={mapData?.bounds}
-                value={heightRange}
-                onChange={setHeightRange}
-                disabled={!mapData?.geometry}
-                collapsed={heightRangeCollapsed}
-                onCollapsedChange={setHeightRangeCollapsed}
               />
               <TeachingPlaybackDock
                 key={teachingPlayback.taskId}
@@ -4625,7 +4632,6 @@ export default function App() {
         <Inspector
           mapData={mapData}
           teachingSpaceMode={teachingSpaceMode}
-          heightRange={heightRange}
           waypoints={waypoints}
           edges={edges}
           selectedWaypointId={selectedWaypointId}
@@ -4636,8 +4642,6 @@ export default function App() {
           robotPose={robotPose}
           robotJointValues={robotJointValues}
           lockedRobotJointNames={lockedRobotJointNames}
-          robotControlEnabled={robotControlEnabled}
-          robotHeightLocked={robotHeightLocked}
           meshRenderQuality={meshRenderQuality}
           onMeshRenderQualityChange={setMeshRenderQuality}
           spaceMouseInputRef={spaceMouseInputRef}
@@ -4757,6 +4761,14 @@ export default function App() {
       {appPage === APP_PAGE_WORKBENCH && mapDetailsOpen && mapData?.bounds && (
         <MapDetailsDialog
           mapData={mapData}
+          teachingSpaceMode={teachingSpaceMode}
+          heightRange={heightRange}
+          robot={selectedRobot}
+          robotLoadState={robotLoadState}
+          robotPose={robotPose}
+          robotControlEnabled={robotControlEnabled}
+          robotHeightLocked={robotHeightLocked}
+          meshRenderQuality={meshRenderQuality}
           onClose={closeMapDetails}
           returnFocusRef={mapDetailsButtonRef}
         />

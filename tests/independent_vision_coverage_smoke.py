@@ -130,19 +130,22 @@ def run():
             timeout=180_000,
         )
 
-        page.get_by_role("tab", name="虚拟示教与相机").click()
+        page.get_by_role("tab", name="相机", exact=True).click()
         page.wait_for_function(
             "document.querySelector('.zivid-camera-canvas')?.dataset.contextState === 'ready'"
         )
         zivid_canvas = page.locator(".zivid-camera-canvas")
+        # The LOD renderer may replace its canvas after the pose settles.
+        camera_mount = page.locator(".zivid-camera-render-mount")
         assert zivid_canvas.get_attribute("data-teaching-surface-tint") == "disabled"
         assert (
             zivid_canvas.get_attribute("data-surface-appearance-source")
             == "original-map-geometry"
         )
-        zivid_before_capture = zivid_canvas.screenshot(
+        zivid_before_capture = camera_mount.screenshot(
             path="/tmp/atlas-zivid-before-surface-tint.png"
         )
+        page.get_by_role("tab", name="示教", exact=True).click()
         page.get_by_role("button", name="新建示教任务", exact=True).click()
         create_dialog = page.get_by_role("dialog", name="新建示教任务")
         create_dialog.get_by_role("textbox", name="新示教任务名称").fill(
@@ -212,7 +215,11 @@ def run():
             canvas.get_attribute("data-teaching-surface-tint-camera-isolation")
             == "main-view-only"
         )
-        zivid_after_first_capture = zivid_canvas.screenshot(
+        page.get_by_role("tab", name="相机", exact=True).click()
+        page.wait_for_function(
+            "document.querySelector('.zivid-camera-canvas')?.dataset.contextState === 'ready'"
+        )
+        zivid_after_first_capture = camera_mount.screenshot(
             path="/tmp/atlas-zivid-after-surface-tint.png"
         )
         first_camera_difference = image_pixel_difference(
@@ -221,6 +228,8 @@ def run():
         )
         assert first_camera_difference["maximum"] <= 1
         assert first_camera_difference["mean"] <= 0.5
+
+        page.get_by_role("tab", name="示教", exact=True).click()
 
         # Record the identical pose again. The number of viewing volumes grows,
         # while the binary surface-union mask must retain the same intensity and size.
@@ -257,7 +266,11 @@ def run():
             canvas.get_attribute("data-teaching-surface-tint-rasterization")
             == "per-fragment-depth-atlas+vertex-points"
         )
-        zivid_after_overlap_capture = zivid_canvas.screenshot()
+        page.get_by_role("tab", name="相机", exact=True).click()
+        page.wait_for_function(
+            "document.querySelector('.zivid-camera-canvas')?.dataset.contextState === 'ready'"
+        )
+        zivid_after_overlap_capture = camera_mount.screenshot()
         overlap_camera_difference = image_pixel_difference(
             zivid_before_capture,
             zivid_after_overlap_capture,

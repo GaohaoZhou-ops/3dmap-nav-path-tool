@@ -35,7 +35,7 @@ def run():
             "document.querySelector('.three-canvas')?.dataset.robotModelState === 'loaded'",
             timeout=180_000,
         )
-        page.get_by_role("tab", name="虚拟示教与相机").click()
+        page.get_by_role("tab", name="相机").click()
         page.wait_for_function(
             "document.querySelector('.zivid-camera-canvas')?.dataset.contextState === 'ready'"
         )

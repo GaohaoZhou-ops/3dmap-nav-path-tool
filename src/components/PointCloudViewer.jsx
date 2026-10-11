@@ -1,4 +1,5 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { createIPadCaptureLayer, disposeIPadCaptureLayer } from '../lib/ipadCaptureDisplay.js';
 import * as THREE from 'three';
 import { TrackballControls } from 'three/examples/jsm/controls/TrackballControls.js';
@@ -1427,6 +1428,7 @@ const createRosAxisArrow = (direction, color, length, shaftRadius) => {
 
 export default function PointCloudViewer({
   mapData,
+  displaySettingsContainer,
   heightRange,
   waypoints,
   edges,
@@ -7152,7 +7154,7 @@ export default function PointCloudViewer({
                 </button>
               </div>
             </ViewerMenu>
-            <ViewerMenu
+            {displaySettingsContainer && createPortal(<ViewerMenu
               key={`display-${resolutionMapKey}`}
               label="显示设置"
               title="点云颜色、显示密度与网格质量"
@@ -7245,7 +7247,7 @@ export default function PointCloudViewer({
                   <strong>{formatPointCount(meshInfo.faceCount)} 面</strong>
                 </div>
               )}
-            </ViewerMenu>
+            </ViewerMenu>, displaySettingsContainer)}
           </div>
           {isHeightColor && (
             <aside className="height-color-legend" aria-label="点云高程比例尺">

@@ -38,9 +38,9 @@ def run():
         )
 
         main_canvas = page.locator(".three-canvas")
-        teaching_tab = page.get_by_role("tab", name="虚拟示教与相机")
-        teaching_tab.click()
-        assert teaching_tab.get_attribute("aria-selected") == "true"
+        camera_tab = page.get_by_role("tab", name="相机")
+        camera_tab.click()
+        assert camera_tab.get_attribute("aria-selected") == "true"
         assert page.get_by_label("全关节控制浮动窗口", exact=True).count() == 0
         panel = page.get_by_label("Zivid 2 M70 相机视图")
         panel.scroll_into_view_if_needed()
